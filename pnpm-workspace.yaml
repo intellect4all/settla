@@ -1,0 +1,4 @@
+packages:
+  - "api/gateway"
+  - "api/webhook"
+  - "dashboard"
