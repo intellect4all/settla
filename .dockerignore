@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.nuxt/
+.output/
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+.env
+.env.*
+!.env.example
+.git/
+.github/
+docs/
+*.md
+!README.md

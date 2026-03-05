@@ -1,0 +1,50 @@
+# Go
+bin/
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# Node / TypeScript
+node_modules/
+dist/
+.nuxt/
+.output/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+*.coverprofile
+
+# Docker
+.docker/
+
+# Generated
+gen/
+
+# Build artifacts
+/settla-server
+/settla-node
+/loadtest
+/chaos
