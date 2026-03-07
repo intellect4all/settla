@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+// Money represents a currency-qualified decimal amount.
+// Amount is a string to preserve decimal precision (never use float for money).
+message Money {
+  string amount = 1;   // Decimal string, e.g. "1000.50"
+  string currency = 2; // ISO 4217 or stablecoin symbol, e.g. "NGN", "USDT"
+}
+
+// FeeBreakdown itemizes fees applied to a transfer or quote.
+// All fee amounts are decimal strings.
+message FeeBreakdown {
+  string on_ramp_fee = 1;    // Fee charged by on-ramp provider
+  string network_fee = 2;    // Blockchain gas / network fee
+  string off_ramp_fee = 3;   // Fee charged by off-ramp provider
+  string total_fee_usd = 4;  // Total fees in USD equivalent
+}
+
+// RouteInfo describes the settlement route selected for a quote or transfer.
+message RouteInfo {
+  string chain = 1;               // Blockchain network, e.g. "tron", "ethereum"
+  string stable_coin = 2;         // Stablecoin used, e.g. "USDT", "USDC"
+  int32 estimated_time_min = 3;   // Estimated settlement time in minutes
+  string on_ramp_provider = 4;    // On-ramp provider ID
+  string off_ramp_provider = 5;   // Off-ramp provider ID
+}
+
+// Sender identifies the party initiating a transfer.
+message Sender {
+  string id = 1;       // UUID
+  string name = 2;
+  string email = 3;
+  string country = 4;  // ISO 3166-1 alpha-2
+}
+
+// Recipient identifies the party receiving funds.
+message Recipient {
+  string name = 1;
+  string account_number = 2;
+  string sort_code = 3;
+  string bank_name = 4;
+  string country = 5;  // ISO 3166-1 alpha-2
+  string iban = 6;
+}

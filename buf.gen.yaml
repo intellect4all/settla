@@ -1,0 +1,20 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/intellect4all/settla/gen
+plugins:
+  # Go protobuf messages
+  - remote: buf.build/protocolbuffers/go
+    out: gen
+    opt: paths=source_relative
+  # Go gRPC service stubs
+  - remote: buf.build/grpc/go
+    out: gen
+    opt: paths=source_relative
+  # TypeScript / ConnectRPC messages + service clients
+  - remote: buf.build/bufbuild/es
+    out: api/gateway/src/gen
+  - remote: buf.build/connectrpc/es
+    out: api/gateway/src/gen

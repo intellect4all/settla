@@ -1,0 +1,347 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+import "settla/v1/types.proto";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SettlementService — transfer and quote lifecycle
+// ──────────────────────────────────────────────────────────────────────────────
+
+service SettlementService {
+  rpc CreateQuote(CreateQuoteRequest) returns (CreateQuoteResponse);
+  rpc GetQuote(GetQuoteRequest) returns (GetQuoteResponse);
+  rpc CreateTransfer(CreateTransferRequest) returns (CreateTransferResponse);
+  rpc GetTransfer(GetTransferRequest) returns (GetTransferResponse);
+  rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
+  rpc CancelTransfer(CancelTransferRequest) returns (CancelTransferResponse);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TreasuryService — liquidity position management
+// ──────────────────────────────────────────────────────────────────────────────
+
+service TreasuryService {
+  rpc GetPositions(GetPositionsRequest) returns (GetPositionsResponse);
+  rpc GetPosition(GetPositionRequest) returns (GetPositionResponse);
+  rpc GetLiquidityReport(GetLiquidityReportRequest) returns (GetLiquidityReportResponse);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LedgerService — account balances and transaction history
+// ──────────────────────────────────────────────────────────────────────────────
+
+service LedgerService {
+  rpc GetAccounts(GetAccountsRequest) returns (GetAccountsResponse);
+  rpc GetAccountBalance(GetAccountBalanceRequest) returns (GetAccountBalanceResponse);
+  rpc GetTransactions(GetTransactionsRequest) returns (GetTransactionsResponse);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AuthService — API key validation for the gateway
+// ──────────────────────────────────────────────────────────────────────────────
+
+service AuthService {
+  rpc ValidateAPIKey(ValidateAPIKeyRequest) returns (ValidateAPIKeyResponse);
+}
+
+message ValidateAPIKeyRequest {
+  string key_hash = 1; // SHA-256 hex digest of the raw API key
+}
+
+message ValidateAPIKeyResponse {
+  bool valid = 1;
+  string tenant_id = 2;           // UUID
+  string slug = 3;
+  string status = 4;              // ACTIVE, SUSPENDED, etc.
+  string fee_schedule_json = 5;   // JSON: {"onramp_bps":40,"offramp_bps":25,...}
+  string daily_limit_usd = 6;    // Decimal string
+  string per_transfer_limit = 7;  // Decimal string
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Quote messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message Quote {
+  string id = 1;                             // UUID
+  string tenant_id = 2;                      // UUID — tenant scope
+  string source_currency = 3;
+  string source_amount = 4;                  // Decimal string
+  string dest_currency = 5;
+  string dest_amount = 6;                    // Decimal string
+  string fx_rate = 7;                        // Decimal string
+  FeeBreakdown fees = 8;
+  RouteInfo route = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+message CreateQuoteRequest {
+  string tenant_id = 1;                      // UUID — required, tenant scope
+  string source_currency = 2;                // ISO 4217 or stablecoin
+  string source_amount = 3;                  // Decimal string, must be positive
+  string dest_currency = 4;                  // ISO 4217 or stablecoin
+  string dest_country = 5;                   // ISO 3166-1 alpha-2
+}
+
+message CreateQuoteResponse {
+  Quote quote = 1;
+}
+
+message GetQuoteRequest {
+  string tenant_id = 1;                      // UUID — required, tenant scope
+  string quote_id = 2;                       // UUID
+}
+
+message GetQuoteResponse {
+  Quote quote = 1;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Transfer messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TransferStatus mirrors the domain state machine.
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+  TRANSFER_STATUS_CREATED = 1;
+  TRANSFER_STATUS_FUNDED = 2;
+  TRANSFER_STATUS_ON_RAMPING = 3;
+  TRANSFER_STATUS_SETTLING = 4;
+  TRANSFER_STATUS_OFF_RAMPING = 5;
+  TRANSFER_STATUS_COMPLETING = 6;
+  TRANSFER_STATUS_COMPLETED = 7;
+  TRANSFER_STATUS_FAILED = 8;
+  TRANSFER_STATUS_REFUNDING = 9;
+  TRANSFER_STATUS_REFUNDED = 10;
+}
+
+message Transfer {
+  string id = 1;                              // UUID
+  string tenant_id = 2;                       // UUID — tenant scope
+  string external_ref = 3;
+  string idempotency_key = 4;
+  TransferStatus status = 5;
+  int64 version = 6;
+
+  string source_currency = 7;
+  string source_amount = 8;                   // Decimal string
+  string dest_currency = 9;
+  string dest_amount = 10;                    // Decimal string
+
+  string stable_coin = 11;
+  string stable_amount = 12;                  // Decimal string
+  string chain = 13;
+
+  string fx_rate = 14;                        // Decimal string
+  FeeBreakdown fees = 15;
+
+  Sender sender = 16;
+  Recipient recipient = 17;
+
+  string quote_id = 18;                       // UUID, optional
+
+  google.protobuf.Timestamp created_at = 19;
+  google.protobuf.Timestamp updated_at = 20;
+  google.protobuf.Timestamp funded_at = 21;    // Set when funded
+  google.protobuf.Timestamp completed_at = 22; // Set when completed
+  google.protobuf.Timestamp failed_at = 23;    // Set when failed
+
+  string failure_reason = 24;
+  string failure_code = 25;
+}
+
+message CreateTransferRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string idempotency_key = 2;                 // Required for exactly-once semantics
+  string external_ref = 3;                    // Caller's reference
+  string source_currency = 4;                 // ISO 4217
+  string source_amount = 5;                   // Decimal string, must be positive
+  string dest_currency = 6;                   // ISO 4217
+  Sender sender = 7;
+  Recipient recipient = 8;                    // Required: name and country at minimum
+  string quote_id = 9;                        // UUID, optional — use existing quote
+}
+
+message CreateTransferResponse {
+  Transfer transfer = 1;
+}
+
+message GetTransferRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string transfer_id = 2;                     // UUID
+}
+
+message GetTransferResponse {
+  Transfer transfer = 1;
+}
+
+message ListTransfersRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  int32 page_size = 2;                        // Max results per page (default 50, max 1000)
+  string page_token = 3;                      // Opaque token for cursor-based pagination
+}
+
+message ListTransfersResponse {
+  repeated Transfer transfers = 1;
+  string next_page_token = 2;                 // Empty if no more results
+  int32 total_count = 3;                      // Total matching transfers
+}
+
+message CancelTransferRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string transfer_id = 2;                     // UUID
+  string reason = 3;                          // Human-readable cancellation reason
+}
+
+message CancelTransferResponse {
+  Transfer transfer = 1;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Position messages (Treasury)
+// ──────────────────────────────────────────────────────────────────────────────
+
+message Position {
+  string id = 1;                              // UUID
+  string tenant_id = 2;                       // UUID — tenant scope
+  string currency = 3;
+  string location = 4;                        // e.g. "bank:gtbank:ngn"
+  string balance = 5;                         // Decimal string — total balance
+  string locked = 6;                          // Decimal string — reserved amount
+  string available = 7;                       // Decimal string — balance - locked
+  string min_balance = 8;                     // Decimal string — alert threshold
+  string target_balance = 9;                  // Decimal string — target level
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message GetPositionsRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+}
+
+message GetPositionsResponse {
+  repeated Position positions = 1;
+}
+
+message GetPositionRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string currency = 2;
+  string location = 3;
+}
+
+message GetPositionResponse {
+  Position position = 1;
+}
+
+message GetLiquidityReportRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+}
+
+message GetLiquidityReportResponse {
+  string tenant_id = 1;                       // UUID
+  repeated Position positions = 2;
+  map<string, string> total_available = 3;    // Currency → decimal string
+  repeated Position alert_positions = 4;      // Positions below min_balance
+  google.protobuf.Timestamp generated_at = 5;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Ledger messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+// AccountType classifies a ledger account.
+enum AccountType {
+  ACCOUNT_TYPE_UNSPECIFIED = 0;
+  ACCOUNT_TYPE_ASSET = 1;
+  ACCOUNT_TYPE_LIABILITY = 2;
+  ACCOUNT_TYPE_REVENUE = 3;
+  ACCOUNT_TYPE_EXPENSE = 4;
+}
+
+message Account {
+  string id = 1;                              // UUID
+  string tenant_id = 2;                       // UUID, empty for system accounts
+  string code = 3;                            // Hierarchical code
+  string name = 4;
+  AccountType type = 5;
+  string currency = 6;
+  bool is_active = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message AccountBalance {
+  string account_code = 1;
+  string balance = 2;                         // Decimal string — current balance
+  string currency = 3;
+}
+
+// EntryType indicates debit or credit.
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  ENTRY_TYPE_DEBIT = 1;
+  ENTRY_TYPE_CREDIT = 2;
+}
+
+message EntryLine {
+  string id = 1;                              // UUID
+  string account_id = 2;                      // UUID
+  string account_code = 3;
+  EntryType entry_type = 4;
+  string amount = 5;                          // Decimal string, always positive
+  string currency = 6;
+  string description = 7;
+}
+
+message JournalEntry {
+  string id = 1;                              // UUID
+  string tenant_id = 2;                       // UUID, empty for system entries
+  string idempotency_key = 3;
+  google.protobuf.Timestamp posted_at = 4;
+  google.protobuf.Timestamp effective_date = 5;
+  string description = 6;
+  string reference_type = 7;                  // e.g. "transfer", "fee"
+  string reference_id = 8;                    // UUID of referenced entity
+  repeated EntryLine lines = 9;
+  map<string, string> metadata = 10;
+}
+
+message GetAccountsRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message GetAccountsResponse {
+  repeated Account accounts = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message GetAccountBalanceRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string account_code = 2;                    // Hierarchical account code
+}
+
+message GetAccountBalanceResponse {
+  AccountBalance account_balance = 1;
+}
+
+message GetTransactionsRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string account_code = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp to = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message GetTransactionsResponse {
+  repeated EntryLine entries = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
