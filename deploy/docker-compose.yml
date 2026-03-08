@@ -1,0 +1,441 @@
+services:
+  # ── PostgreSQL (one per bounded context) ─────────────────────────
+  # Raw Postgres ports exposed for migrations and direct admin access.
+  # Application traffic goes through PgBouncer (see below).
+
+  postgres-ledger:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: settla_ledger
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata-ledger:/var/lib/postgresql/data
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_ledger"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres-transfer:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: settla_transfer
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata-transfer:/var/lib/postgresql/data
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_transfer"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres-treasury:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: settla_treasury
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata-treasury:/var/lib/postgresql/data
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_treasury"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── PgBouncer (connection pooling per bounded context) ──────────
+  # Production: 6+ settla-server replicas × 100 conns = 600 client conns
+  # PgBouncer pools these to ~50 actual Postgres connections per DB.
+  # pool_mode=transaction: connections released back to pool after each transaction.
+
+  pgbouncer-ledger:
+    image: edoburu/pgbouncer:1.21.0-p2
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 10
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_IDLE_TIMEOUT: 300
+      SERVER_LIFETIME: 3600
+      LOG_CONNECTIONS: 0
+      LOG_DISCONNECTIONS: 0
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6433:5432"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  pgbouncer-transfer:
+    image: edoburu/pgbouncer:1.21.0-p2
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 10
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_IDLE_TIMEOUT: 300
+      SERVER_LIFETIME: 3600
+      LOG_CONNECTIONS: 0
+      LOG_DISCONNECTIONS: 0
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6434:5432"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-transfer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  pgbouncer-treasury:
+    image: edoburu/pgbouncer:1.21.0-p2
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 10
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_IDLE_TIMEOUT: 300
+      SERVER_LIFETIME: 3600
+      LOG_CONNECTIONS: 0
+      LOG_DISCONNECTIONS: 0
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6435:5432"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-treasury:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── TigerBeetle (ledger write authority) ────────────────────────
+  # TigerBeetle handles 1M+ TPS for double-entry balance mutations.
+  # It is the source of truth for account balances.
+  # Postgres ledger tables are the CQRS read model, populated by a sync consumer.
+  #
+  # Production: clusterable with 3+ replicas for fault tolerance.
+  # Dev: single node, cluster_id=0.
+
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.11
+    # privileged required for io_uring on Docker Desktop (macOS/Windows).
+    # Not needed on native Linux hosts with kernel 5.6+.
+    privileged: true
+    command:
+      - "start"
+      - "--addresses=0.0.0.0:3001"
+      - "/data/0_0.tigerbeetle"
+    ports:
+      - "3001:3001"
+    volumes:
+      - tbdata:/data
+    networks:
+      - settla-net
+    depends_on:
+      tigerbeetle-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # TigerBeetle REPL connects and exits. Exit 0 = port reachable.
+      test: ["CMD-SHELL", "echo '' | timeout 3 /tigerbeetle repl --cluster=0 --addresses=127.0.0.1:3001 2>&1 | grep -q 'connected to replica'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Init container: creates the TigerBeetle data file if it doesn't exist.
+  # Runs once, exits 0 on success. If file already exists, TB format exits 1
+  # with "already formatted", so we use a shell wrapper to handle both cases.
+  tigerbeetle-init:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.11
+    privileged: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -f /data/0_0.tigerbeetle ]; then
+          echo "TigerBeetle data file already exists, skipping format."
+          exit 0
+        fi
+        /tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+    volumes:
+      - tbdata:/data
+    networks:
+      - settla-net
+
+  # ── NATS with JetStream ────────────────────────────────────────
+  # Single node for dev. Production config (3-node cluster) documented in
+  # deploy/nats/nats-cluster.conf for reference.
+  #
+  # Streams are partitioned by tenant hash (8 partitions default) to allow
+  # per-tenant ordering with cross-tenant parallelism.
+
+  nats:
+    image: nats:2.10-alpine
+    command:
+      - "--config=/etc/nats/nats.conf"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── Redis ──────────────────────────────────────────────────────
+  # Used for: quote cache, idempotency, rate limiting (L2), tenant config (L2).
+  # L1 is an in-process local cache in gateway/settla-server (30s TTL).
+  #
+  # Production: 3-node Redis cluster.
+  # Dev: single node, 512MB max.
+
+  redis:
+    image: redis:7.2-alpine
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+      - "--save"
+      - "900 1"
+      - "--save"
+      - "300 10"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── Application services ───────────────────────────────────────
+  # All DB URLs point to PgBouncer, NOT raw Postgres.
+
+  settla-server:
+    build:
+      context: ..
+      dockerfile: deploy/docker/settla-server.Dockerfile
+    ports:
+      - "${SETTLA_SERVER_HTTP_PORT:-8080}:8080"
+      - "${SETTLA_SERVER_GRPC_PORT:-9090}:9090"
+      - "${SETTLA_PPROF_PORT:-6060}:6060"
+    environment:
+      # DB URLs connect directly to Postgres (pgx prepared statements work)
+      # PgBouncer is used in production with session mode or dedicated adapters
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001
+      SETTLA_REDIS_URL: redis://redis:6379
+      SETTLA_NATS_URL: nats://nats:4222
+      SETTLA_SERVER_HTTP_PORT: "8080"
+      SETTLA_SERVER_GRPC_PORT: "9090"
+      SETTLA_PPROF_PORT: "6060"
+      SETTLA_PPROF: "${SETTLA_PPROF:-true}"
+      SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
+      SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
+      SETTLA_ENV: ${SETTLA_ENV:-development}
+    networks:
+      - settla-net
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      postgres-transfer:
+        condition: service_healthy
+      postgres-treasury:
+        condition: service_healthy
+      tigerbeetle:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  settla-node:
+    build:
+      context: ..
+      dockerfile: deploy/docker/settla-node.Dockerfile
+    ports:
+      - "${SETTLA_NODE_METRICS_PORT:-9091}:9091"
+    environment:
+      SETTLA_NATS_URL: nats://nats:4222
+      SETTLA_REDIS_URL: redis://redis:6379
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_NODE_PARTITIONS: "${SETTLA_NODE_PARTITIONS:-8}"
+      SETTLA_NODE_METRICS_PORT: "9091"
+      SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
+      SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      # In dev, single instance handles all partitions (PARTITION_ID not set).
+      # In prod, run 8 instances each with SETTLA_NODE_PARTITION_ID=0..7.
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
+      SETTLA_ENV: ${SETTLA_ENV:-development}
+    networks:
+      - settla-net
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      postgres-transfer:
+        condition: service_healthy
+      postgres-treasury:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/docker/gateway.Dockerfile
+    ports:
+      - "${SETTLA_GATEWAY_PORT:-3000}:3000"
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      SETTLA_REDIS_URL: redis://redis:6379
+      SETTLA_SERVER_GRPC_URL: settla-server:9090
+      SETTLA_GRPC_POOL_SIZE: "${SETTLA_GRPC_POOL_SIZE:-50}"
+      SETTLA_TENANT_CACHE_TTL_SECONDS: "${SETTLA_TENANT_CACHE_TTL_SECONDS:-30}"
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
+      SETTLA_ENV: ${SETTLA_ENV:-development}
+    networks:
+      - settla-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  # ── Observability ───────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${SETTLA_PROMETHEUS_PORT:-9092}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    networks:
+      - settla-net
+    depends_on:
+      - settla-server
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    ports:
+      - "${SETTLA_GRAFANA_PORT:-3002}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-settla}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - settla-net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pgdata-ledger:
+  pgdata-transfer:
+  pgdata-treasury:
+  tbdata:
+  natsdata:
+  redisdata:
+  promdata:
+  grafanadata:
+
+networks:
+  settla-net:
+    driver: bridge

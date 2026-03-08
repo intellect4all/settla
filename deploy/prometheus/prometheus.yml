@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── Go services ──────────────────────────────────────────────
+  - job_name: "settla-server"
+    static_configs:
+      - targets: ["settla-server:8080"]
+    metrics_path: /metrics
+
+  - job_name: "settla-node"
+    static_configs:
+      - targets: ["settla-node:9091"]
+    metrics_path: /metrics
+
+  # ── TypeScript services ──────────────────────────────────────
+  - job_name: "gateway"
+    static_configs:
+      - targets: ["gateway:3000"]
+    metrics_path: /metrics
+
+  - job_name: "webhook"
+    static_configs:
+      - targets: ["webhook:3001"]
+    metrics_path: /metrics
+
+  # ── Infrastructure ───────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
