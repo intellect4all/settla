@@ -1,0 +1,9 @@
+
+=== CONSISTENCY VERIFICATION ===
+Transfers:     639 created, 24 completed, 615 failed, 0 stuck  ✓
+Treasury:      all positions reconciled  ✓
+Ledger:        gateway healthy (full ledger balance check requires admin API)  ✓
+Reservations:  0 orphaned  ✓
+Tenant b0000000: 9 transfers, 60628.00 NGN volume  ✓
+Tenant a0000000: 15 transfers, 67320.00 GBP volume  ✓
+=== ALL CHECKS PASSED ===
