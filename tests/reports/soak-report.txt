@@ -1,0 +1,30 @@
+
+=== SOAK TEST REPORT (2m32s @ 20 TPS) ===
+
+Duration:        2m32s
+Transfers:       9 created, 0 completed, 0 failed
+
+THROUGHPUT:
+  Sustained TPS:  0.1 (target: 20)
+  Peak TPS:       0
+
+LATENCY (end-to-end):
+  Baseline:       p50=0s  p95=0s  p99=0s
+  Final:          p50=0s  p95=0s  p99=0s
+  Degradation:    +0.0% (ACCEPTABLE: <20%)         PASS
+
+STABILITY:
+  Memory (RSS):      Start=17MB  End=17MB  Δ=+0MB   PASS (<50MB)
+  Goroutines:        Start=12  End=14  Δ=+2    PASS (<1000)
+  PgBouncer waiting: Max=0 (limit: 10)                PASS
+  NATS depth:        Max=0 (limit: 1000)              PASS
+
+CONSISTENCY:
+  Ledger balanced:     YES                              PASS
+  Treasury reconciled: YES                              PASS
+  Stuck transfers:     0                              PASS
+
+PROFILING:
+  Profiles:          not captured                      FAIL
+
+=== SOAK TEST PASSED ===
