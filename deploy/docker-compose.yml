@@ -295,6 +295,18 @@ services:
       SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
+      # Provider mode: mock (default) | testnet (real blockchain) | live (future)
+      SETTLA_PROVIDER_MODE: ${SETTLA_PROVIDER_MODE:-mock}
+      # Wallet management (required for testnet mode)
+      SETTLA_WALLET_ENCRYPTION_KEY: ${SETTLA_WALLET_ENCRYPTION_KEY:-}
+      SETTLA_MASTER_SEED: ${SETTLA_MASTER_SEED:-}
+      SETTLA_WALLET_STORAGE_PATH: ${SETTLA_WALLET_STORAGE_PATH:-/data/wallets}
+      # Blockchain RPC URLs (testnet defaults)
+      SETTLA_TRON_RPC_URL: ${SETTLA_TRON_RPC_URL:-https://nile.trongrid.io}
+      SETTLA_TRON_API_KEY: ${SETTLA_TRON_API_KEY:-}
+      SETTLA_ETHEREUM_RPC_URL: ${SETTLA_ETHEREUM_RPC_URL:-https://rpc.sepolia.org}
+      SETTLA_BASE_RPC_URL: ${SETTLA_BASE_RPC_URL:-https://sepolia.base.org}
+      SETTLA_SOLANA_RPC_URL: ${SETTLA_SOLANA_RPC_URL:-https://api.devnet.solana.com}
     networks:
       - settla-net
     depends_on:
@@ -337,6 +349,16 @@ services:
       # In prod, run 8 instances each with SETTLA_NODE_PARTITION_ID=0..7.
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
+      # Provider mode + blockchain RPC (same as settla-server)
+      SETTLA_PROVIDER_MODE: ${SETTLA_PROVIDER_MODE:-mock}
+      SETTLA_WALLET_ENCRYPTION_KEY: ${SETTLA_WALLET_ENCRYPTION_KEY:-}
+      SETTLA_MASTER_SEED: ${SETTLA_MASTER_SEED:-}
+      SETTLA_WALLET_STORAGE_PATH: ${SETTLA_WALLET_STORAGE_PATH:-/data/wallets}
+      SETTLA_TRON_RPC_URL: ${SETTLA_TRON_RPC_URL:-https://nile.trongrid.io}
+      SETTLA_TRON_API_KEY: ${SETTLA_TRON_API_KEY:-}
+      SETTLA_ETHEREUM_RPC_URL: ${SETTLA_ETHEREUM_RPC_URL:-https://rpc.sepolia.org}
+      SETTLA_BASE_RPC_URL: ${SETTLA_BASE_RPC_URL:-https://sepolia.base.org}
+      SETTLA_SOLANA_RPC_URL: ${SETTLA_SOLANA_RPC_URL:-https://api.devnet.solana.com}
     networks:
       - settla-net
     depends_on:
