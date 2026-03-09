@@ -77,6 +77,58 @@
 
 ---
 
+## Phase 2.5: Settla Provider — Real Testnet Blockchain Integration (In Progress)
+*Goal: Real blockchain transactions on testnets. Fiat simulated, crypto real.*
+
+- [x] **2.5.1 — Wallet Management (WP-1 through WP-3)**
+  - [x] BIP-44 HD derivation: Tron, Solana, Ethereum, Base
+  - [x] AES-256-GCM key encryption at rest
+  - [x] System wallets (`system/{chain}/hot`) and tenant wallets (`tenant/{slug}/{chain}`)
+  - [x] Faucet integration: Tron Nile (automated), Solana Devnet (automated), Sepolia/Base (manual)
+  - [x] Private keys never appear in logs or error messages
+
+- [x] **2.5.2 — Blockchain Clients (WP-4 through WP-7)**
+  - [x] Tron Nile client: TRX + TRC20 balance, send, get tx, subscribe
+  - [x] Ethereum Sepolia + Base Sepolia client: ETH/ERC20, gas estimation, nonce management
+  - [x] Solana Devnet client: SOL + SPL token transfers, ATA creation
+  - [x] Blockchain registry: `GetClient(chain)`, RPC failover, circuit breaker
+  - [x] Explorer URL generation for all four testnets
+
+- [x] **2.5.3 — Settla Provider: FX Oracle & Fiat Simulator (WP-8, WP-9)**
+  - [x] FX oracle: NGN/GBP/EUR/GHS/USD with ±0.15% jitter, cross rates, thread-safe
+  - [x] Fiat simulator: collection (PENDING → PROCESSING → COLLECTED) + payout (PAYOUT_INITIATED → COMPLETED)
+  - [x] Per-currency delays: NGN 3–5s, GBP 5–10s, USD 10–30s, EUR/GHS 5–10s
+  - [x] Configurable failure rate (default 2%)
+
+- [x] **2.5.4 — On-Ramp Provider (WP-10)**
+  - [x] `ID() → "settla-onramp"`, fiat → stablecoin pairs (GBP/NGN/USD/EUR/GHS → USDT/USDC)
+  - [x] 30bps spread + minimum fee applied to quotes
+  - [x] Async flow: fiat collection → real blockchain send → `GetStatus` polling
+  - [x] Explorer URL in all transaction metadata
+  - [x] USDT defaults to Tron, USDC defaults to Ethereum/Base
+
+- [x] **2.5.5 — Off-Ramp Provider (WP-11)**
+  - [x] `ID() → "settla-offramp"`, stablecoin → fiat pairs (USDT/USDC → GBP/NGN/USD/EUR/GHS)
+  - [x] 30bps spread applied (rate < 1 for provider profit on stablecoin→fiat)
+  - [x] Async flow: crypto receipt verification → fiat payout simulation
+  - [x] Falls back to simulated receipt when RPC unavailable (graceful degradation)
+  - [x] Deposit address (system hot wallet) returned on Execute
+  - [x] Explorer URL in all transaction metadata
+
+- [x] **2.5.6 — Provider Registry & Router Integration (WP-12, WP-13)**
+  - [x] `SETTLA_PROVIDER_MODE` env var: `mock | testnet | live`
+  - [x] Registry wires Settla on/off-ramp based on mode
+  - [x] Transfer API response includes `blockchain_transactions` with explorer URLs
+  - [x] Router includes explorer URLs in `RouteInfo`
+
+- [ ] **2.5.7 — Testnet Setup & Makefile (WP-14)**
+  - [ ] `make testnet-setup` initialises and funds wallets
+  - [ ] `make provider-mode-mock` / `make provider-mode-testnet`
+  - [ ] `.env.example` updated with all testnet variables
+  - [ ] `docker-compose.yml` updated with testnet env vars
+
+---
+
 ## Phase 3: Event-Driven Infrastructure ✅
 *Goal: Partitioned NATS for parallel processing, Redis with local cache.*
 
