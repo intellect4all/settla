@@ -409,9 +409,9 @@ const file_settla_v1_types_proto_rawDesc = "" +
 	"\tsort_code\x18\x03 \x01(\tR\bsortCode\x12\x1b\n" +
 	"\tbank_name\x18\x04 \x01(\tR\bbankName\x12\x18\n" +
 	"\acountry\x18\x05 \x01(\tR\acountry\x12\x12\n" +
-	"\x04iban\x18\x06 \x01(\tR\x04ibanB\x92\x01\n" +
+	"\x04iban\x18\x06 \x01(\tR\x04ibanB\x98\x01\n" +
 	"\rcom.settla.v1B\n" +
-	"TypesProtoP\x01Z0github.com/intellect4all/settla/gen/settla/v1;settlav1\xa2\x02\x03SXX\xaa\x02\tSettla.V1\xca\x02\tSettla\\V1\xe2\x02\x15Settla\\V1\\GPBMetadata\xea\x02\n" +
+	"TypesProtoP\x01Z6github.com/intellect4all/settla/gen/settla/v1;settlav1\xa2\x02\x03SXX\xaa\x02\tSettla.V1\xca\x02\tSettla\\V1\xe2\x02\x15Settla\\V1\\GPBMetadata\xea\x02\n" +
 	"Settla::V1b\x06proto3"
 
 var (

@@ -2803,8 +2803,8 @@ const file_settla_v1_settlement_proto_rawDesc = "" +
 	"\x11GetAccountBalance\x12#.settla.v1.GetAccountBalanceRequest\x1a$.settla.v1.GetAccountBalanceResponse\x12X\n" +
 	"\x0fGetTransactions\x12!.settla.v1.GetTransactionsRequest\x1a\".settla.v1.GetTransactionsResponse2d\n" +
 	"\vAuthService\x12U\n" +
-	"\x0eValidateAPIKey\x12 .settla.v1.ValidateAPIKeyRequest\x1a!.settla.v1.ValidateAPIKeyResponseB\x97\x01\n" +
-	"\rcom.settla.v1B\x0fSettlementProtoP\x01Z0github.com/intellect4all/settla/gen/settla/v1;settlav1\xa2\x02\x03SXX\xaa\x02\tSettla.V1\xca\x02\tSettla\\V1\xe2\x02\x15Settla\\V1\\GPBMetadata\xea\x02\n" +
+	"\x0eValidateAPIKey\x12 .settla.v1.ValidateAPIKeyRequest\x1a!.settla.v1.ValidateAPIKeyResponseB\x9d\x01\n" +
+	"\rcom.settla.v1B\x0fSettlementProtoP\x01Z6github.com/intellect4all/settla/gen/settla/v1;settlav1\xa2\x02\x03SXX\xaa\x02\tSettla.V1\xca\x02\tSettla\\V1\xe2\x02\x15Settla\\V1\\GPBMetadata\xea\x02\n" +
 	"Settla::V1b\x06proto3"
 
 var (
