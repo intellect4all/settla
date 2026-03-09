@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,8 +31,10 @@ import (
 	"github.com/intellect4all/settla/ledger"
 	"github.com/intellect4all/settla/node/messaging"
 	"github.com/intellect4all/settla/observability"
+	"github.com/intellect4all/settla/rail/blockchain"
 	"github.com/intellect4all/settla/rail/provider"
 	"github.com/intellect4all/settla/rail/provider/mock"
+	settlaprovider "github.com/intellect4all/settla/rail/provider/settla"
 	"github.com/intellect4all/settla/rail/router"
 	"github.com/intellect4all/settla/store/ledgerdb"
 	"github.com/intellect4all/settla/store/transferdb"
@@ -153,9 +156,17 @@ func main() {
 	defer treasurySvc.Stop()
 	logger.Info("settla-server: treasury loaded", "positions", treasurySvc.PositionCount())
 
-	// Rail: provider registry with mock providers
-	providerReg := provider.NewRegistry()
-	registerMockProviders(providerReg)
+	// Rail: provider registry — mode-switched via SETTLA_PROVIDER_MODE
+	providerMode := provider.ProviderModeFromEnv()
+	var providerReg *provider.Registry
+	switch providerMode {
+	case provider.ProviderModeTestnet:
+		providerReg = initTestnetProviders(logger)
+	default:
+		providerReg = provider.NewRegistry()
+		registerMockProviders(providerReg)
+	}
+	logger.Info("settla-server: provider mode", "mode", string(providerMode))
 	coreAdapter := &coreRegistryAdapter{reg: providerReg}
 
 	// Router: smart routing with tenant fee schedules
@@ -298,6 +309,49 @@ func registerMockProviders(reg *provider.Registry) {
 
 	// Blockchain: Tron
 	reg.RegisterBlockchainClient(mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.10)))
+}
+
+// initTestnetProviders creates a registry with Settla testnet on/off-ramp
+// providers backed by real blockchain clients (Tron Nile, Sepolia, etc.).
+func initTestnetProviders(logger *slog.Logger) *provider.Registry {
+	// Blockchain registry from env (RPC URLs).
+	chainCfg := blockchain.LoadConfigFromEnv()
+	chainReg, err := blockchain.NewRegistryFromConfig(chainCfg, logger)
+	if err != nil {
+		logger.Error("settla-server: failed to create blockchain registry, falling back to mock", "error", err)
+		reg := provider.NewRegistry()
+		registerMockProviders(reg)
+		return reg
+	}
+
+	// Shared dependencies for Settla providers.
+	fxOracle := settlaprovider.NewFXOracle()
+	fiatSim := settlaprovider.NewFiatSimulator(settlaprovider.DefaultSimulatorConfig())
+
+	// On-ramp: fiat → stablecoin (real blockchain delivery).
+	onRamp := settlaprovider.NewOnRampProvider(fxOracle, fiatSim, chainReg, nil, /* wallet manager — nil for read-only mode */
+		settlaprovider.DefaultOnRampConfig(),
+	)
+
+	// Off-ramp: stablecoin → fiat (simulated crypto receipt + simulated payout).
+	offRamp := settlaprovider.NewOffRampProvider(fxOracle, fiatSim, chainReg, nil, /* wallet manager */ logger)
+
+	// Build provider registry from testnet deps.
+	var chains []domain.BlockchainClient
+	for _, ch := range chainReg.Chains() {
+		c, _ := chainReg.GetClient(ch)
+		if c != nil {
+			chains = append(chains, c)
+		}
+	}
+
+	reg := provider.NewRegistryFromMode(provider.ProviderModeTestnet, &provider.SettlaProviderDeps{
+		OnRamp:  onRamp,
+		OffRamp: offRamp,
+		Chains:  chains,
+	}, logger)
+
+	return reg
 }
 
 // newPgxPool creates a pgxpool. In development we connect directly to Postgres.

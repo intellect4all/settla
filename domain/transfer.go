@@ -74,6 +74,15 @@ type FeeBreakdown struct {
 	TotalFeeUSD decimal.Decimal
 }
 
+// BlockchainTx records a single blockchain transaction associated with a transfer.
+type BlockchainTx struct {
+	Chain       string // e.g. "tron", "ethereum"
+	Type        string // "on_ramp", "off_ramp", "settlement"
+	TxHash      string
+	ExplorerURL string
+	Status      string // "pending", "confirmed", "failed"
+}
+
 // Transfer is the core domain aggregate representing a settlement request.
 // All transfers are tenant-scoped and use optimistic locking via Version.
 type Transfer struct {
@@ -103,6 +112,8 @@ type Transfer struct {
 	Recipient Recipient
 
 	QuoteID *uuid.UUID
+
+	BlockchainTxs []BlockchainTx // on-chain transactions for this transfer
 
 	CreatedAt     time.Time
 	UpdatedAt     time.Time

@@ -17,8 +17,8 @@ export const config = {
     (Number(process.env.SETTLA_TENANT_CACHE_TTL_SECONDS) || 30) * 1000,
   redisCacheTtlSeconds: 300, // 5 minutes
 
-  // Rate limiting defaults
-  rateLimitWindow: 60, // seconds
-  rateLimitMax: 1000, // requests per window per tenant
-  rateLimitSyncIntervalMs: 5000, // sync local counters to Redis every 5s
+  // Rate limiting defaults (high limits for load testing)
+  rateLimitWindow: Number(process.env.SETTLA_RATE_LIMIT_WINDOW) || 60, // seconds
+  rateLimitMax: Number(process.env.SETTLA_RATE_LIMIT_MAX) || 100000, // requests per window per tenant
+  rateLimitSyncIntervalMs: Number(process.env.SETTLA_RATE_LIMIT_SYNC_MS) || 5000, // sync local counters to Redis every 5s
 } as const;

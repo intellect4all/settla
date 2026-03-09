@@ -53,6 +53,13 @@ function mapTransfer(t: any): any {
         }
       : undefined,
     quote_id: t.quoteId,
+    blockchain_transactions: (t.blockchainTransactions || []).map((tx: any) => ({
+      chain: tx.chain,
+      type: tx.type,
+      tx_hash: tx.txHash,
+      explorer_url: tx.explorerUrl,
+      status: tx.status,
+    })),
     created_at: t.createdAt,
     updated_at: t.updatedAt,
     funded_at: t.fundedAt,

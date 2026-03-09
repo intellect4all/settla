@@ -142,4 +142,5 @@ type RouteResult struct {
 	Fee             Money
 	Rate            decimal.Decimal
 	StableAmount    decimal.Decimal // intermediate stablecoin amount (e.g., USDT on-chain)
+	ExplorerURL     string          // block explorer base URL for the chain (testnet)
 }
