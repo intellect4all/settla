@@ -14,6 +14,7 @@ type RouteInfo struct {
 	EstimatedTimeMin int
 	OnRampProvider   string
 	OffRampProvider  string
+	ExplorerURL      string // block explorer base URL for the selected chain (testnet)
 }
 
 // Quote represents an FX rate quote with an expiry window.

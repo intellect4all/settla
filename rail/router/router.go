@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
+	"github.com/intellect4all/settla/rail/blockchain"
 )
 
 // Scoring weights for route selection.
@@ -108,6 +109,9 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 		return nil, fmt.Errorf("settla-rail: amount too small: stable amount would be %s after fees", stableAmount)
 	}
 
+	// Generate block explorer URL for the selected chain (empty for unknown chains).
+	explorerURL := blockchain.ExplorerURL(best.Chain, "")
+
 	return &domain.RouteResult{
 		ProviderID:      best.OnRamp.ID(),
 		OffRampProvider: best.OffRamp.ID(),
@@ -116,6 +120,7 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 		Fee:             domain.Money{Amount: totalFee, Currency: domain.CurrencyUSD},
 		Rate:            best.OnQuote.Rate.Mul(best.OffQuote.Rate),
 		StableAmount:    stableAmount,
+		ExplorerURL:     explorerURL,
 	}, nil
 }
 
@@ -317,6 +322,7 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 			StableCoin:      stable,
 			OnRampProvider:  result.ProviderID,
 			OffRampProvider: result.OffRampProvider,
+			ExplorerURL:     result.ExplorerURL,
 		},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
 		CreatedAt: time.Now().UTC(),

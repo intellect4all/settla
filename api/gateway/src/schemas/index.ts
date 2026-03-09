@@ -24,6 +24,7 @@ const routeInfoSchema = {
     estimated_time_min: { type: "integer" as const },
     on_ramp_provider: { type: "string" as const },
     off_ramp_provider: { type: "string" as const },
+    explorer_url: { type: "string" as const },
   },
 };
 
@@ -82,6 +83,17 @@ export const createQuoteBodySchema = {
 
 // ── Transfer schemas ────────────────────────────────────────────────────────
 
+const blockchainTxSchema = {
+  type: "object" as const,
+  properties: {
+    chain: { type: "string" as const },
+    type: { type: "string" as const },
+    tx_hash: { type: "string" as const },
+    explorer_url: { type: "string" as const },
+    status: { type: "string" as const },
+  },
+};
+
 export const transferResponseSchema = {
   type: "object" as const,
   properties: {
@@ -103,6 +115,10 @@ export const transferResponseSchema = {
     sender: senderSchema,
     recipient: recipientSchema,
     quote_id: { type: "string" as const },
+    blockchain_transactions: {
+      type: "array" as const,
+      items: blockchainTxSchema,
+    },
     created_at: { type: "string" as const },
     updated_at: { type: "string" as const },
     funded_at: { type: "string" as const },

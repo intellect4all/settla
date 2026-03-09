@@ -32,6 +32,7 @@ function mapQuote(q: any): any {
           estimated_time_min: q.route.estimatedTimeMin,
           on_ramp_provider: q.route.onRampProvider,
           off_ramp_provider: q.route.offRampProvider,
+          explorer_url: q.route.explorerUrl,
         }
       : undefined,
     expires_at: q.expiresAt,

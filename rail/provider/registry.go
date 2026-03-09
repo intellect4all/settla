@@ -3,10 +3,92 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"sync"
 
 	"github.com/intellect4all/settla/domain"
 )
+
+// ProviderMode controls which set of providers the registry initialises.
+type ProviderMode string
+
+const (
+	// ProviderModeMock uses mock providers (unit tests, CI).
+	ProviderModeMock ProviderMode = "mock"
+	// ProviderModeTestnet uses Settla on/off-ramp providers with real testnet blockchain.
+	ProviderModeTestnet ProviderMode = "testnet"
+	// ProviderModeLive is reserved for future production providers.
+	ProviderModeLive ProviderMode = "live"
+)
+
+// ProviderModeFromEnv reads SETTLA_PROVIDER_MODE from the environment.
+// Returns ProviderModeTestnet if not set (development default).
+// In test builds (SETTLA_ENV=test), defaults to ProviderModeMock.
+func ProviderModeFromEnv() ProviderMode {
+	mode := os.Getenv("SETTLA_PROVIDER_MODE")
+	switch ProviderMode(mode) {
+	case ProviderModeMock:
+		return ProviderModeMock
+	case ProviderModeTestnet:
+		return ProviderModeTestnet
+	case ProviderModeLive:
+		return ProviderModeLive
+	default:
+		if os.Getenv("SETTLA_ENV") == "test" {
+			return ProviderModeMock
+		}
+		return ProviderModeTestnet
+	}
+}
+
+// SettlaProviderDeps holds the dependencies needed to construct Settla testnet providers.
+type SettlaProviderDeps struct {
+	OnRamp  domain.OnRampProvider
+	OffRamp domain.OffRampProvider
+	Chains  []domain.BlockchainClient
+}
+
+// NewRegistryFromMode creates a registry populated according to the given mode.
+//
+//   - mock: caller must register mock providers separately (returns empty registry)
+//   - testnet: uses the supplied SettlaProviderDeps
+//   - live: reserved (returns empty registry)
+func NewRegistryFromMode(mode ProviderMode, deps *SettlaProviderDeps, logger *slog.Logger) *Registry {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	reg := NewRegistry()
+
+	switch mode {
+	case ProviderModeTestnet:
+		if deps == nil {
+			logger.Warn("settla-rail: testnet mode requested but no provider deps supplied, registry empty")
+			return reg
+		}
+		if deps.OnRamp != nil {
+			reg.RegisterOnRamp(deps.OnRamp)
+			logger.Info("settla-rail: registered testnet on-ramp", "provider", deps.OnRamp.ID())
+		}
+		if deps.OffRamp != nil {
+			reg.RegisterOffRamp(deps.OffRamp)
+			logger.Info("settla-rail: registered testnet off-ramp", "provider", deps.OffRamp.ID())
+		}
+		for _, c := range deps.Chains {
+			reg.RegisterBlockchainClient(c)
+			logger.Info("settla-rail: registered testnet blockchain", "chain", c.Chain())
+		}
+
+	case ProviderModeLive:
+		logger.Warn("settla-rail: live provider mode not yet implemented, registry empty")
+
+	default:
+		// ProviderModeMock — caller registers mock providers after construction.
+		logger.Info("settla-rail: mock provider mode, registry empty for caller to populate")
+	}
+
+	return reg
+}
 
 // Registry manages the set of available on-ramp, off-ramp, and blockchain providers.
 type Registry struct {

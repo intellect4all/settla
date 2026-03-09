@@ -41,7 +41,7 @@ export const authPlugin = fp(async function authPluginInner(
 
       const authHeader = request.headers.authorization;
 
-      if (!authHeader || !authHeader.startsWith("Bearer ") || !authHeader.startsWith("bearer ")) {
+      if (!authHeader || (!authHeader.startsWith("Bearer ") && !authHeader.startsWith("bearer "))) {
         reply.code(401).send({
           error: "UNAUTHORIZED",
           message: "Missing or invalid Authorization header",
