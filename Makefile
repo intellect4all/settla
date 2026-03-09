@@ -1,6 +1,7 @@
 .PHONY: build test lint proto migrate-up migrate-down docker-up docker-down docker-logs docker-reset \
        seed demo clean bench loadtest loadtest-quick loadtest-sustained loadtest-burst loadtest-flood \
-       loadtest-multi soak soak-short chaos report test-integration profile
+       loadtest-multi soak soak-short chaos report test-integration profile \
+       testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet
 
 # Go
 GO := go
@@ -148,6 +149,47 @@ profile:
 	curl -s http://localhost:6060/debug/pprof/profile?seconds=30 > tests/loadtest/profiles/cpu-manual.prof
 	@echo "Profiles saved to tests/loadtest/profiles/"
 	@echo "Analyze with: go tool pprof tests/loadtest/profiles/<file>.prof"
+
+## testnet-setup: Initialize testnet wallets and fund from faucets
+testnet-setup:
+	bash scripts/testnet-setup.sh
+
+## testnet-verify: Verify testnet RPC connectivity and wallet status
+testnet-verify:
+	bash scripts/testnet-verify.sh
+
+## testnet-status: Show testnet wallet addresses and explorer links
+testnet-status:
+	@if [ -f .env ]; then set -a && . ./.env && set +a; fi && \
+	$(GO) run ./cmd/testnet-tools/ status
+
+## provider-mode-mock: Set provider mode to mock (no blockchain)
+provider-mode-mock:
+	@if [ -f .env ]; then \
+		if grep -q '^SETTLA_PROVIDER_MODE=' .env; then \
+			sed -i'' -e 's/^SETTLA_PROVIDER_MODE=.*/SETTLA_PROVIDER_MODE=mock/' .env; \
+		else \
+			echo 'SETTLA_PROVIDER_MODE=mock' >> .env; \
+		fi; \
+		echo "Provider mode set to: mock"; \
+	else \
+		echo "ERROR: .env file not found. Run: cp .env.example .env"; \
+		exit 1; \
+	fi
+
+## provider-mode-testnet: Set provider mode to testnet (real blockchain)
+provider-mode-testnet:
+	@if [ -f .env ]; then \
+		if grep -q '^SETTLA_PROVIDER_MODE=' .env; then \
+			sed -i'' -e 's/^SETTLA_PROVIDER_MODE=.*/SETTLA_PROVIDER_MODE=testnet/' .env; \
+		else \
+			echo 'SETTLA_PROVIDER_MODE=testnet' >> .env; \
+		fi; \
+		echo "Provider mode set to: testnet"; \
+	else \
+		echo "ERROR: .env file not found. Run: cp .env.example .env"; \
+		exit 1; \
+	fi
 
 ## clean: Remove build artifacts
 clean:
