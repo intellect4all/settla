@@ -19,15 +19,21 @@ const (
 	EntryTypeCredit EntryType = "CREDIT"
 )
 
-// EntryLine is a single debit or credit line within a journal entry.
-type EntryLine struct {
-	ID          uuid.UUID
-	AccountID   uuid.UUID
+// Posting is a value object representing a single debit or credit against an account.
+// It captures the minimal information needed to express one side of a balanced entry.
+type Posting struct {
 	AccountCode string
 	EntryType   EntryType
 	Amount      decimal.Decimal // Always positive; direction is determined by EntryType.
 	Currency    Currency
 	Description string
+}
+
+// EntryLine is a persisted posting within a journal entry, enriched with IDs.
+type EntryLine struct {
+	ID          uuid.UUID
+	AccountID   uuid.UUID
+	Posting
 }
 
 // JournalEntry represents a balanced set of postings in the ledger.

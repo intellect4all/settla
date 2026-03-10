@@ -16,36 +16,44 @@ func BenchmarkValidateEntries(b *testing.B) {
 	// Create a 4-line balanced entry (typical transfer posting)
 	lines := []EntryLine{
 		{
-			ID:          uuid.New(),
-			AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
-			EntryType:   EntryTypeDebit,
-			Amount:      decimal.NewFromInt(100000),
-			Currency:    CurrencyGBP,
-			Description: "Debit clearing",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
+				EntryType:   EntryTypeDebit,
+				Amount:      decimal.NewFromInt(100000),
+				Currency:    CurrencyGBP,
+				Description: "Debit clearing",
+			},
 		},
 		{
-			ID:          uuid.New(),
-			AccountCode: "assets:crypto:usdt:tron",
-			EntryType:   EntryTypeCredit,
-			Amount:      decimal.NewFromInt(99900),
-			Currency:    CurrencyGBP,
-			Description: "Credit crypto asset",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "assets:crypto:usdt:tron",
+				EntryType:   EntryTypeCredit,
+				Amount:      decimal.NewFromInt(99900),
+				Currency:    CurrencyGBP,
+				Description: "Credit crypto asset",
+			},
 		},
 		{
-			ID:          uuid.New(),
-			AccountCode: "expenses:provider:onramp",
-			EntryType:   EntryTypeDebit,
-			Amount:      decimal.NewFromInt(100),
-			Currency:    CurrencyGBP,
-			Description: "On-ramp fee",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "expenses:provider:onramp",
+				EntryType:   EntryTypeDebit,
+				Amount:      decimal.NewFromInt(100),
+				Currency:    CurrencyGBP,
+				Description: "On-ramp fee",
+			},
 		},
 		{
-			ID:          uuid.New(),
-			AccountCode: "revenue:fees:settlement",
-			EntryType:   EntryTypeCredit,
-			Amount:      decimal.NewFromInt(100),
-			Currency:    CurrencyGBP,
-			Description: "Settlement fee revenue",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "revenue:fees:settlement",
+				EntryType:   EntryTypeCredit,
+				Amount:      decimal.NewFromInt(100),
+				Currency:    CurrencyGBP,
+				Description: "Settlement fee revenue",
+			},
 		},
 	}
 
@@ -63,20 +71,24 @@ func BenchmarkValidateEntries(b *testing.B) {
 func BenchmarkValidateEntries_TwoLine(b *testing.B) {
 	lines := []EntryLine{
 		{
-			ID:          uuid.New(),
-			AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
-			EntryType:   EntryTypeDebit,
-			Amount:      decimal.NewFromInt(1000),
-			Currency:    CurrencyGBP,
-			Description: "Debit",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
+				EntryType:   EntryTypeDebit,
+				Amount:      decimal.NewFromInt(1000),
+				Currency:    CurrencyGBP,
+				Description: "Debit",
+			},
 		},
 		{
-			ID:          uuid.New(),
-			AccountCode: "tenant:lemfi:liabilities:customer:pending",
-			EntryType:   EntryTypeCredit,
-			Amount:      decimal.NewFromInt(1000),
-			Currency:    CurrencyGBP,
-			Description: "Credit",
+			ID: uuid.New(),
+			Posting: Posting{
+				AccountCode: "tenant:lemfi:liabilities:customer:pending",
+				EntryType:   EntryTypeCredit,
+				Amount:      decimal.NewFromInt(1000),
+				Currency:    CurrencyGBP,
+				Description: "Credit",
+			},
 		},
 	}
 
@@ -151,7 +163,6 @@ func BenchmarkTransferTransition_FullLifecycle(b *testing.B) {
 		TransferStatusOnRamping,
 		TransferStatusSettling,
 		TransferStatusOffRamping,
-		TransferStatusCompleting,
 		TransferStatusCompleted,
 	}
 

@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -46,6 +48,10 @@ type OnRampRequest struct {
 	FromCurrency Currency
 	ToCurrency   Currency
 	Reference    string
+	// QuotedRate is the FX rate presented to the user at quote time. When set,
+	// the provider must reject execution if the live rate has moved more than
+	// the configured slippage tolerance (default 2%).
+	QuotedRate decimal.Decimal
 }
 
 // OffRampRequest is the input for executing an off-ramp (stablecoin→fiat) transaction.
@@ -55,6 +61,10 @@ type OffRampRequest struct {
 	ToCurrency   Currency
 	Recipient    Recipient
 	Reference    string
+	// QuotedRate is the FX rate presented to the user at quote time. When set,
+	// the provider must reject execution if the live rate has moved more than
+	// the configured slippage tolerance (default 2%).
+	QuotedRate decimal.Decimal
 }
 
 // OnRampProvider is a provider that converts fiat to stablecoin.
@@ -119,6 +129,46 @@ type BlockchainClient interface {
 	SubscribeTransactions(ctx context.Context, address string, ch chan<- ChainTx) error
 }
 
+// ProviderRegistry lists available providers and blockchain clients.
+type ProviderRegistry interface {
+	ListOnRampIDs(ctx context.Context) []string
+	ListOffRampIDs(ctx context.Context) []string
+	GetOnRamp(id string) (OnRampProvider, error)
+	GetOffRamp(id string) (OffRampProvider, error)
+	GetBlockchain(chain string) (BlockchainClient, error)
+	ListBlockchainChains() []string
+}
+
+// Corridor represents a source → stablecoin → destination currency path.
+type Corridor struct {
+	SourceCurrency Currency
+	StableCoin     Currency
+	DestCurrency   Currency
+}
+
+// NewCorridor creates a Corridor value object.
+func NewCorridor(source, stable, dest Currency) Corridor {
+	return Corridor{SourceCurrency: source, StableCoin: stable, DestCurrency: dest}
+}
+
+// String returns the corridor in "GBP→USDT→NGN" format.
+func (c Corridor) String() string {
+	return fmt.Sprintf("%s→%s→%s", c.SourceCurrency, c.StableCoin, c.DestCurrency)
+}
+
+// ParseCorridor parses a corridor string in "SRC→STABLE→DEST" format.
+func ParseCorridor(s string) (Corridor, error) {
+	parts := strings.Split(s, "→")
+	if len(parts) != 3 {
+		return Corridor{}, fmt.Errorf("settla-domain: invalid corridor format %q, expected SRC→STABLE→DEST", s)
+	}
+	return Corridor{
+		SourceCurrency: Currency(parts[0]),
+		StableCoin:     Currency(parts[1]),
+		DestCurrency:   Currency(parts[2]),
+	}, nil
+}
+
 // Router selects the optimal provider and corridor for a settlement.
 type Router interface {
 	// Route evaluates available providers and selects the optimal route.
@@ -133,14 +183,30 @@ type RouteRequest struct {
 	Amount         decimal.Decimal
 }
 
+// RouteAlternative represents a fallback route that can be tried if the primary
+// route's provider fails. Alternatives travel in the outbox payload so the
+// worker can retry without round-tripping back through the engine.
+type RouteAlternative struct {
+	OnRampProvider  string          `json:"on_ramp_provider"`
+	OffRampProvider string          `json:"off_ramp_provider"`
+	Chain           string          `json:"chain"`
+	StableCoin      Currency        `json:"stablecoin"`
+	Fee             Money           `json:"fee"`
+	Rate            decimal.Decimal `json:"rate"`
+	StableAmount    decimal.Decimal `json:"stable_amount"`
+	Score           decimal.Decimal `json:"score"`
+}
+
 // RouteResult is the router's decision.
 type RouteResult struct {
-	ProviderID      string // on-ramp provider ID
-	OffRampProvider string // off-ramp provider ID
-	BlockchainChain string // blockchain chain (e.g., "tron")
-	Corridor        string
-	Fee             Money
-	Rate            decimal.Decimal
-	StableAmount    decimal.Decimal // intermediate stablecoin amount (e.g., USDT on-chain)
-	ExplorerURL     string          // block explorer base URL for the chain (testnet)
+	ProviderID       string // on-ramp provider ID
+	OffRampProvider  string // off-ramp provider ID
+	BlockchainChain  string // blockchain chain (e.g., "tron")
+	Corridor         string
+	Fee              Money
+	Rate             decimal.Decimal
+	StableAmount     decimal.Decimal        // intermediate stablecoin amount (e.g., USDT on-chain)
+	ExplorerURL      string                 // block explorer base URL for the chain (testnet)
+	EstimatedSeconds int                    // total estimated settlement time (on-ramp + off-ramp)
+	Alternatives     []RouteAlternative     // fallback routes, ordered by score descending
 }

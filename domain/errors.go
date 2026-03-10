@@ -49,7 +49,12 @@ const (
 	CodeReservationFailed   = "RESERVATION_FAILED"
 	CodeCurrencyMismatch    = "CURRENCY_MISMATCH"
 	CodeAccountNotFound     = "ACCOUNT_NOT_FOUND"
-	CodeTransferNotFound    = "TRANSFER_NOT_FOUND"
+	CodeTransferNotFound      = "TRANSFER_NOT_FOUND"
+	CodeProviderUnavailable   = "PROVIDER_UNAVAILABLE"
+	CodeNetworkError          = "NETWORK_ERROR"
+	CodeBlockchainReorg       = "BLOCKCHAIN_REORG"
+	CodeCompensationFailed    = "COMPENSATION_FAILED"
+	CodeRateLimitExceeded     = "RATE_LIMIT_EXCEEDED"
 )
 
 // ErrQuoteExpired creates a domain error for an expired quote.
@@ -150,4 +155,29 @@ func ErrAccountNotFound(code string) *DomainError {
 // ErrTransferNotFound creates a domain error for a missing transfer.
 func ErrTransferNotFound(transferID string) *DomainError {
 	return &DomainError{code: CodeTransferNotFound, message: fmt.Sprintf("settla-domain: transfer %s not found", transferID)}
+}
+
+// ErrProviderUnavailable creates a domain error when a provider is unreachable.
+func ErrProviderUnavailable(providerID string) *DomainError {
+	return &DomainError{code: CodeProviderUnavailable, message: fmt.Sprintf("settla-domain: provider %s is unavailable", providerID)}
+}
+
+// ErrNetworkError creates a domain error wrapping a network failure.
+func ErrNetworkError(operation string, err error) *DomainError {
+	return &DomainError{code: CodeNetworkError, message: fmt.Sprintf("settla-domain: network error during %s", operation), err: err}
+}
+
+// ErrBlockchainReorg creates a domain error for a detected blockchain reorganization.
+func ErrBlockchainReorg(chain string, blockNumber uint64) *DomainError {
+	return &DomainError{code: CodeBlockchainReorg, message: fmt.Sprintf("settla-domain: blockchain reorg detected on %s at block %d", chain, blockNumber)}
+}
+
+// ErrCompensationFailed creates a domain error when a compensation action fails.
+func ErrCompensationFailed(transferID string, err error) *DomainError {
+	return &DomainError{code: CodeCompensationFailed, message: fmt.Sprintf("settla-domain: compensation failed for transfer %s", transferID), err: err}
+}
+
+// ErrRateLimitExceeded creates a domain error when a tenant exceeds their rate limit.
+func ErrRateLimitExceeded(tenantID string) *DomainError {
+	return &DomainError{code: CodeRateLimitExceeded, message: fmt.Sprintf("settla-domain: rate limit exceeded for tenant %s", tenantID)}
 }

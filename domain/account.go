@@ -85,3 +85,32 @@ func ParseAccountCode(code string) ([]string, error) {
 	}
 	return strings.Split(code, ":"), nil
 }
+
+// AccountCode is a validated, colon-delimited account identifier.
+type AccountCode string
+
+// NewAccountCode validates and returns an AccountCode.
+func NewAccountCode(code string) (AccountCode, error) {
+	if code == "" {
+		return "", fmt.Errorf("settla-domain: empty account code")
+	}
+	return AccountCode(code), nil
+}
+
+// NewTenantAccountCode builds a tenant-scoped AccountCode value object.
+func NewTenantAccountCode(slug, path string) AccountCode {
+	return AccountCode(fmt.Sprintf("tenant:%s:%s", slug, path))
+}
+
+// IsSystem returns true if the account code does NOT have a "tenant:" prefix.
+func (c AccountCode) IsSystem() bool {
+	return !strings.HasPrefix(string(c), "tenant:")
+}
+
+// Parse splits the account code on ":" and returns the segments.
+func (c AccountCode) Parse() []string {
+	return strings.Split(string(c), ":")
+}
+
+// String returns the underlying string value.
+func (c AccountCode) String() string { return string(c) }

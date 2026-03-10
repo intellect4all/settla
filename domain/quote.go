@@ -9,12 +9,13 @@ import (
 
 // RouteInfo describes the settlement route selected for a quote.
 type RouteInfo struct {
-	Chain            string
-	StableCoin       Currency
-	EstimatedTimeMin int
-	OnRampProvider   string
-	OffRampProvider  string
-	ExplorerURL      string // block explorer base URL for the selected chain (testnet)
+	Chain             string             `json:"chain"`
+	StableCoin        Currency           `json:"stablecoin"`
+	EstimatedTimeMin  int                `json:"estimated_time_min,omitempty"`
+	OnRampProvider    string             `json:"on_ramp_provider"`
+	OffRampProvider   string             `json:"off_ramp_provider"`
+	ExplorerURL       string             `json:"explorer_url,omitempty"`
+	AlternativeRoutes []RouteAlternative `json:"alternative_routes,omitempty"`
 }
 
 // Quote represents an FX rate quote with an expiry window.

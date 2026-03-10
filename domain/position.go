@@ -22,8 +22,13 @@ type Position struct {
 }
 
 // Available returns the amount that can be reserved (Balance - Locked).
+// Returns zero if Locked exceeds Balance (corruption guard).
 func (p *Position) Available() decimal.Decimal {
-	return p.Balance.Sub(p.Locked)
+	avail := p.Balance.Sub(p.Locked)
+	if avail.IsNegative() {
+		return decimal.Zero
+	}
+	return avail
 }
 
 // IsAboveMinimum returns true if the current balance is at or above MinBalance.
