@@ -113,7 +113,6 @@ func TestTransitionToFullLifecycle(t *testing.T) {
 		TransferStatusOnRamping,
 		TransferStatusSettling,
 		TransferStatusOffRamping,
-		TransferStatusCompleting,
 		TransferStatusCompleted,
 	}
 

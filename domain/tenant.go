@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,7 +63,8 @@ var bpsDivisor = decimal.NewFromInt(10000)
 // CalculateFee computes the fee for a given amount based on the fee type.
 // feeType must be "onramp" or "offramp". The computed fee is clamped
 // between MinFeeUSD and MaxFeeUSD.
-func (f FeeSchedule) CalculateFee(amount decimal.Decimal, feeType string) decimal.Decimal {
+// Returns an error for unknown fee types instead of silently returning zero.
+func (f FeeSchedule) CalculateFee(amount decimal.Decimal, feeType string) (decimal.Decimal, error) {
 	var bps int
 	switch feeType {
 	case "onramp":
@@ -70,7 +72,7 @@ func (f FeeSchedule) CalculateFee(amount decimal.Decimal, feeType string) decima
 	case "offramp":
 		bps = f.OffRampBPS
 	default:
-		return decimal.Zero
+		return decimal.Zero, fmt.Errorf("settla-domain: unknown fee type %q", feeType)
 	}
 
 	fee := amount.Mul(decimal.NewFromInt(int64(bps))).Div(bpsDivisor)
@@ -82,7 +84,7 @@ func (f FeeSchedule) CalculateFee(amount decimal.Decimal, feeType string) decima
 		fee = f.MaxFeeUSD
 	}
 
-	return fee
+	return fee, nil
 }
 
 // Tenant represents a fintech customer (e.g., Lemfi, Fincra, Paystack).

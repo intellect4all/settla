@@ -13,7 +13,10 @@ func TestFeeScheduleCalculateFeeOnRamp(t *testing.T) {
 		MinFeeUSD: decimal.NewFromFloat(1.00),
 		MaxFeeUSD: decimal.NewFromFloat(50.00),
 	}
-	fee := fs.CalculateFee(decimal.NewFromInt(1000), "onramp")
+	fee, err := fs.CalculateFee(decimal.NewFromInt(1000), "onramp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected, _ := decimal.NewFromString("4") // 1000 * 40/10000 = 4.00
 	if !fee.Equal(expected) {
 		t.Errorf("expected fee %s, got %s", expected, fee)
@@ -26,7 +29,10 @@ func TestFeeScheduleCalculateFeeOffRamp(t *testing.T) {
 		MinFeeUSD:  decimal.NewFromFloat(1.00),
 		MaxFeeUSD:  decimal.NewFromFloat(50.00),
 	}
-	fee := fs.CalculateFee(decimal.NewFromInt(2000), "offramp")
+	fee, err := fs.CalculateFee(decimal.NewFromInt(2000), "offramp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected, _ := decimal.NewFromString("6") // 2000 * 30/10000 = 6.00
 	if !fee.Equal(expected) {
 		t.Errorf("expected fee %s, got %s", expected, fee)
@@ -40,7 +46,10 @@ func TestFeeScheduleBelowMinReturnsMin(t *testing.T) {
 		MaxFeeUSD: decimal.NewFromFloat(100.00),
 	}
 	// 100 * 10/10000 = 0.10, which is below min of 5.00
-	fee := fs.CalculateFee(decimal.NewFromInt(100), "onramp")
+	fee, err := fs.CalculateFee(decimal.NewFromInt(100), "onramp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected, _ := decimal.NewFromString("5")
 	if !fee.Equal(expected) {
 		t.Errorf("expected min fee %s, got %s", expected, fee)
@@ -54,7 +63,10 @@ func TestFeeScheduleAboveMaxReturnsMax(t *testing.T) {
 		MaxFeeUSD: decimal.NewFromFloat(10.00),
 	}
 	// 5000 * 100/10000 = 50.00, which exceeds max of 10.00
-	fee := fs.CalculateFee(decimal.NewFromInt(5000), "onramp")
+	fee, err := fs.CalculateFee(decimal.NewFromInt(5000), "onramp")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected, _ := decimal.NewFromString("10")
 	if !fee.Equal(expected) {
 		t.Errorf("expected max fee %s, got %s", expected, fee)
@@ -63,9 +75,9 @@ func TestFeeScheduleAboveMaxReturnsMax(t *testing.T) {
 
 func TestFeeScheduleInvalidFeeType(t *testing.T) {
 	fs := FeeSchedule{OnRampBPS: 40}
-	fee := fs.CalculateFee(decimal.NewFromInt(1000), "invalid")
-	if !fee.IsZero() {
-		t.Errorf("expected zero for invalid fee type, got %s", fee)
+	_, err := fs.CalculateFee(decimal.NewFromInt(1000), "invalid")
+	if err == nil {
+		t.Error("expected error for invalid fee type, got nil")
 	}
 }
 

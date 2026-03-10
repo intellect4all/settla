@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,8 +23,6 @@ const (
 	TransferStatusSettling TransferStatus = "SETTLING"
 	// TransferStatusOffRamping indicates stablecoin→fiat conversion is in progress.
 	TransferStatusOffRamping TransferStatus = "OFF_RAMPING"
-	// TransferStatusCompleting indicates final confirmation is in progress.
-	TransferStatusCompleting TransferStatus = "COMPLETING"
 	// TransferStatusCompleted is the terminal success state.
 	TransferStatusCompleted TransferStatus = "COMPLETED"
 	// TransferStatusFailed indicates the transfer encountered an error.
@@ -36,14 +35,13 @@ const (
 
 // ValidTransitions defines the allowed state machine transitions as data.
 // The transfer lifecycle: CREATED → FUNDED → ON_RAMPING → SETTLING →
-// OFF_RAMPING → COMPLETING → COMPLETED. Failures trigger refunds.
+// OFF_RAMPING → COMPLETED. Failures trigger refunds.
 var ValidTransitions = map[TransferStatus][]TransferStatus{
 	TransferStatusCreated:    {TransferStatusFunded, TransferStatusFailed},
 	TransferStatusFunded:     {TransferStatusOnRamping, TransferStatusRefunding},
-	TransferStatusOnRamping:  {TransferStatusSettling, TransferStatusRefunding},
+	TransferStatusOnRamping:  {TransferStatusSettling, TransferStatusRefunding, TransferStatusFailed},
 	TransferStatusSettling:   {TransferStatusOffRamping, TransferStatusFailed},
-	TransferStatusOffRamping: {TransferStatusCompleting, TransferStatusFailed},
-	TransferStatusCompleting: {TransferStatusCompleted, TransferStatusFailed},
+	TransferStatusOffRamping: {TransferStatusCompleted, TransferStatusFailed},
 	TransferStatusFailed:     {TransferStatusRefunding},
 	TransferStatusRefunding:  {TransferStatusRefunded},
 }
@@ -173,6 +171,24 @@ type TransferEvent struct {
 	Metadata    map[string]string
 	ProviderRef string
 }
+
+// IdempotencyKey is a validated idempotency key string.
+type IdempotencyKey string
+
+// NewIdempotencyKey validates and returns an IdempotencyKey.
+// Returns an error if the key is empty or exceeds 256 characters.
+func NewIdempotencyKey(key string) (IdempotencyKey, error) {
+	if key == "" {
+		return "", fmt.Errorf("settla-domain: idempotency key must not be empty")
+	}
+	if len(key) > 256 {
+		return "", fmt.Errorf("settla-domain: idempotency key exceeds 256 characters")
+	}
+	return IdempotencyKey(key), nil
+}
+
+// String returns the underlying string value.
+func (k IdempotencyKey) String() string { return string(k) }
 
 // TransferStore persists transfer aggregates.
 type TransferStore interface {

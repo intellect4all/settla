@@ -9,8 +9,8 @@ import (
 
 func TestValidateEntriesBalanced(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
 	}
 	if err := ValidateEntries(lines); err != nil {
 		t.Errorf("expected balanced entries to pass, got: %v", err)
@@ -19,8 +19,8 @@ func TestValidateEntriesBalanced(t *testing.T) {
 
 func TestValidateEntriesImbalanced(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(99), Currency: CurrencyUSD},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(99), Currency: CurrencyUSD}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
@@ -44,7 +44,7 @@ func TestValidateEntriesEmpty(t *testing.T) {
 
 func TestValidateEntriesSingleLine(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
@@ -54,8 +54,8 @@ func TestValidateEntriesSingleLine(t *testing.T) {
 
 func TestValidateEntriesNegativeAmount(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(-100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(-100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
@@ -65,8 +65,8 @@ func TestValidateEntriesNegativeAmount(t *testing.T) {
 
 func TestValidateEntriesZeroAmount(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.Zero, Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.Zero, Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
@@ -76,10 +76,10 @@ func TestValidateEntriesZeroAmount(t *testing.T) {
 
 func TestValidateEntriesMultiCurrencyBalanced(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:usd", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "liabilities:usd", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "assets:gbp", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP},
-		{ID: uuid.New(), AccountCode: "liabilities:gbp", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:usd", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "liabilities:usd", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:gbp", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "liabilities:gbp", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP}},
 	}
 	if err := ValidateEntries(lines); err != nil {
 		t.Errorf("expected multi-currency balanced entries to pass, got: %v", err)
@@ -88,10 +88,10 @@ func TestValidateEntriesMultiCurrencyBalanced(t *testing.T) {
 
 func TestValidateEntriesMultiCurrencyImbalanced(t *testing.T) {
 	lines := []EntryLine{
-		{ID: uuid.New(), AccountCode: "assets:usd", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "liabilities:usd", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: uuid.New(), AccountCode: "assets:gbp", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP},
-		{ID: uuid.New(), AccountCode: "liabilities:gbp", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(70), Currency: CurrencyGBP},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:usd", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "liabilities:usd", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "assets:gbp", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(80), Currency: CurrencyGBP}},
+		{ID: uuid.New(), Posting: Posting{AccountCode: "liabilities:gbp", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(70), Currency: CurrencyGBP}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
@@ -102,8 +102,8 @@ func TestValidateEntriesMultiCurrencyImbalanced(t *testing.T) {
 func TestValidateEntriesDuplicateIDs(t *testing.T) {
 	id := uuid.New()
 	lines := []EntryLine{
-		{ID: id, AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
-		{ID: id, AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD},
+		{ID: id, Posting: Posting{AccountCode: "assets:cash", EntryType: EntryTypeDebit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
+		{ID: id, Posting: Posting{AccountCode: "revenue:fees", EntryType: EntryTypeCredit, Amount: decimal.NewFromInt(100), Currency: CurrencyUSD}},
 	}
 	err := ValidateEntries(lines)
 	if err == nil {
