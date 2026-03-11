@@ -110,3 +110,15 @@ type PositionHistoryDefault struct {
 	TriggerRef  pgtype.UUID    `json:"trigger_ref"`
 	RecordedAt  time.Time      `json:"recorded_at"`
 }
+
+type ReserveOp struct {
+	ID        uuid.UUID      `json:"id"`
+	TenantID  uuid.UUID      `json:"tenant_id"`
+	Currency  string         `json:"currency"`
+	Location  string         `json:"location"`
+	Amount    pgtype.Numeric `json:"amount"`
+	Reference uuid.UUID      `json:"reference"`
+	OpType    string         `json:"op_type"`
+	Completed bool           `json:"completed"`
+	CreatedAt time.Time      `json:"created_at"`
+}

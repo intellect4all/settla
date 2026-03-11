@@ -62,7 +62,7 @@ INSERT INTO tenants (
     kyb_status, metadata
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
-) RETURNING id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at
+) RETURNING id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events
 `
 
 type CreateTenantParams struct {
@@ -110,6 +110,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookEvents,
 	)
 	return i, err
 }
@@ -124,7 +125,7 @@ func (q *Queries) DeactivateAPIKey(ctx context.Context, id uuid.UUID) error {
 }
 
 const getTenant = `-- name: GetTenant :one
-SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at FROM tenants WHERE id = $1
+SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events FROM tenants WHERE id = $1
 `
 
 func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
@@ -146,12 +147,13 @@ func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookEvents,
 	)
 	return i, err
 }
 
 const getTenantBySlug = `-- name: GetTenantBySlug :one
-SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at FROM tenants WHERE slug = $1
+SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events FROM tenants WHERE slug = $1
 `
 
 func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, error) {
@@ -173,6 +175,7 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, err
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookEvents,
 	)
 	return i, err
 }
@@ -227,7 +230,7 @@ func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) (
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at FROM tenants
+SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events FROM tenants
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -262,6 +265,7 @@ func (q *Queries) ListTenants(ctx context.Context, arg ListTenantsParams) ([]Ten
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WebhookEvents,
 		); err != nil {
 			return nil, err
 		}

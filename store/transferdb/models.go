@@ -5,11 +5,192 @@
 package transferdb
 
 import (
+	"database/sql/driver"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type CompensationStrategyEnum string
+
+const (
+	CompensationStrategyEnumSIMPLEREFUND     CompensationStrategyEnum = "SIMPLE_REFUND"
+	CompensationStrategyEnumREVERSEONRAMP    CompensationStrategyEnum = "REVERSE_ONRAMP"
+	CompensationStrategyEnumCREDITSTABLECOIN CompensationStrategyEnum = "CREDIT_STABLECOIN"
+	CompensationStrategyEnumMANUALREVIEW     CompensationStrategyEnum = "MANUAL_REVIEW"
+)
+
+func (e *CompensationStrategyEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = CompensationStrategyEnum(s)
+	case string:
+		*e = CompensationStrategyEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for CompensationStrategyEnum: %T", src)
+	}
+	return nil
+}
+
+type NullCompensationStrategyEnum struct {
+	CompensationStrategyEnum CompensationStrategyEnum `json:"compensation_strategy_enum"`
+	Valid                    bool                     `json:"valid"` // Valid is true if CompensationStrategyEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullCompensationStrategyEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.CompensationStrategyEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.CompensationStrategyEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullCompensationStrategyEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.CompensationStrategyEnum), nil
+}
+
+type ProviderTxTypeEnum string
+
+const (
+	ProviderTxTypeEnumONRAMP     ProviderTxTypeEnum = "ON_RAMP"
+	ProviderTxTypeEnumOFFRAMP    ProviderTxTypeEnum = "OFF_RAMP"
+	ProviderTxTypeEnumBLOCKCHAIN ProviderTxTypeEnum = "BLOCKCHAIN"
+)
+
+func (e *ProviderTxTypeEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ProviderTxTypeEnum(s)
+	case string:
+		*e = ProviderTxTypeEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ProviderTxTypeEnum: %T", src)
+	}
+	return nil
+}
+
+type NullProviderTxTypeEnum struct {
+	ProviderTxTypeEnum ProviderTxTypeEnum `json:"provider_tx_type_enum"`
+	Valid              bool               `json:"valid"` // Valid is true if ProviderTxTypeEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullProviderTxTypeEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.ProviderTxTypeEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ProviderTxTypeEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullProviderTxTypeEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ProviderTxTypeEnum), nil
+}
+
+type ReviewStatusEnum string
+
+const (
+	ReviewStatusEnumPending       ReviewStatusEnum = "pending"
+	ReviewStatusEnumInvestigating ReviewStatusEnum = "investigating"
+	ReviewStatusEnumResolved      ReviewStatusEnum = "resolved"
+)
+
+func (e *ReviewStatusEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ReviewStatusEnum(s)
+	case string:
+		*e = ReviewStatusEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ReviewStatusEnum: %T", src)
+	}
+	return nil
+}
+
+type NullReviewStatusEnum struct {
+	ReviewStatusEnum ReviewStatusEnum `json:"review_status_enum"`
+	Valid            bool             `json:"valid"` // Valid is true if ReviewStatusEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullReviewStatusEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.ReviewStatusEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ReviewStatusEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullReviewStatusEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ReviewStatusEnum), nil
+}
+
+type TransferStatusEnum string
+
+const (
+	TransferStatusEnumCREATED    TransferStatusEnum = "CREATED"
+	TransferStatusEnumFUNDED     TransferStatusEnum = "FUNDED"
+	TransferStatusEnumONRAMPING  TransferStatusEnum = "ON_RAMPING"
+	TransferStatusEnumSETTLING   TransferStatusEnum = "SETTLING"
+	TransferStatusEnumOFFRAMPING TransferStatusEnum = "OFF_RAMPING"
+	TransferStatusEnumCOMPLETED  TransferStatusEnum = "COMPLETED"
+	TransferStatusEnumFAILED     TransferStatusEnum = "FAILED"
+	TransferStatusEnumREFUNDING  TransferStatusEnum = "REFUNDING"
+	TransferStatusEnumREFUNDED   TransferStatusEnum = "REFUNDED"
+)
+
+func (e *TransferStatusEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TransferStatusEnum(s)
+	case string:
+		*e = TransferStatusEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TransferStatusEnum: %T", src)
+	}
+	return nil
+}
+
+type NullTransferStatusEnum struct {
+	TransferStatusEnum TransferStatusEnum `json:"transfer_status_enum"`
+	Valid              bool               `json:"valid"` // Valid is true if TransferStatusEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTransferStatusEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.TransferStatusEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TransferStatusEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTransferStatusEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TransferStatusEnum), nil
+}
 
 type ApiKey struct {
 	ID          uuid.UUID          `json:"id"`
@@ -24,21 +205,155 @@ type ApiKey struct {
 	CreatedAt   time.Time          `json:"created_at"`
 }
 
+type CompensationRecord struct {
+	ID             uuid.UUID                `json:"id"`
+	TransferID     uuid.UUID                `json:"transfer_id"`
+	TenantID       uuid.UUID                `json:"tenant_id"`
+	Strategy       CompensationStrategyEnum `json:"strategy"`
+	StepsCompleted []byte                   `json:"steps_completed"`
+	StepsFailed    []byte                   `json:"steps_failed"`
+	RefundAmount   pgtype.Numeric           `json:"refund_amount"`
+	RefundCurrency pgtype.Text              `json:"refund_currency"`
+	FxLoss         pgtype.Numeric           `json:"fx_loss"`
+	Status         string                   `json:"status"`
+	CreatedAt      time.Time                `json:"created_at"`
+	CompletedAt    pgtype.Timestamptz       `json:"completed_at"`
+}
+
+type ManualReview struct {
+	ID                  uuid.UUID          `json:"id"`
+	TransferID          uuid.UUID          `json:"transfer_id"`
+	TenantID            uuid.UUID          `json:"tenant_id"`
+	Status              ReviewStatusEnum   `json:"status"`
+	TransferStatus      string             `json:"transfer_status"`
+	StuckSince          time.Time          `json:"stuck_since"`
+	AttemptedRecoveries int32              `json:"attempted_recoveries"`
+	Resolution          pgtype.Text        `json:"resolution"`
+	ResolvedBy          pgtype.Text        `json:"resolved_by"`
+	ResolvedAt          pgtype.Timestamptz `json:"resolved_at"`
+	CreatedAt           time.Time          `json:"created_at"`
+}
+
+type NetSettlement struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type Outbox struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type OutboxDefault struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type OutboxY2026m03d09 struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type OutboxY2026m03d10 struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type OutboxY2026m03d11 struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type OutboxY2026m03d12 struct {
+	ID            uuid.UUID          `json:"id"`
+	AggregateType string             `json:"aggregate_type"`
+	AggregateID   uuid.UUID          `json:"aggregate_id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	EventType     string             `json:"event_type"`
+	Payload       []byte             `json:"payload"`
+	IsIntent      bool               `json:"is_intent"`
+	Published     bool               `json:"published"`
+	PublishedAt   pgtype.Timestamptz `json:"published_at"`
+	RetryCount    int32              `json:"retry_count"`
+	MaxRetries    int32              `json:"max_retries"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
 type ProviderTransaction struct {
-	ID         uuid.UUID      `json:"id"`
-	TenantID   uuid.UUID      `json:"tenant_id"`
-	Provider   string         `json:"provider"`
-	TxType     string         `json:"tx_type"`
-	ExternalID pgtype.Text    `json:"external_id"`
-	TransferID uuid.UUID      `json:"transfer_id"`
-	Status     string         `json:"status"`
-	Amount     pgtype.Numeric `json:"amount"`
-	Currency   string         `json:"currency"`
-	Chain      pgtype.Text    `json:"chain"`
-	TxHash     pgtype.Text    `json:"tx_hash"`
-	Metadata   []byte         `json:"metadata"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	Provider   string             `json:"provider"`
+	TxType     ProviderTxTypeEnum `json:"tx_type"`
+	ExternalID pgtype.Text        `json:"external_id"`
+	TransferID uuid.UUID          `json:"transfer_id"`
+	Status     string             `json:"status"`
+	Amount     pgtype.Numeric     `json:"amount"`
+	Currency   string             `json:"currency"`
+	Chain      pgtype.Text        `json:"chain"`
+	TxHash     pgtype.Text        `json:"tx_hash"`
+	Metadata   []byte             `json:"metadata"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }
 
 type Quote struct {
@@ -54,6 +369,19 @@ type Quote struct {
 	ExpiresAt      time.Time      `json:"expires_at"`
 	CreatedAt      time.Time      `json:"created_at"`
 	StableAmount   pgtype.Numeric `json:"stable_amount"`
+}
+
+type ReconciliationReport struct {
+	ID            uuid.UUID `json:"id"`
+	JobName       string    `json:"job_name"`
+	RunAt         time.Time `json:"run_at"`
+	DurationMs    int32     `json:"duration_ms"`
+	ChecksRun     int32     `json:"checks_run"`
+	ChecksPassed  int32     `json:"checks_passed"`
+	Discrepancies []byte    `json:"discrepancies"`
+	AutoCorrected int32     `json:"auto_corrected"`
+	NeedsReview   bool      `json:"needs_review"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Tenant struct {
@@ -72,6 +400,7 @@ type Tenant struct {
 	Metadata         []byte             `json:"metadata"`
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
+	WebhookEvents    []string           `json:"webhook_events"`
 }
 
 type Transfer struct {
@@ -79,7 +408,7 @@ type Transfer struct {
 	TenantID          uuid.UUID          `json:"tenant_id"`
 	ExternalRef       pgtype.Text        `json:"external_ref"`
 	IdempotencyKey    pgtype.Text        `json:"idempotency_key"`
-	Status            string             `json:"status"`
+	Status            TransferStatusEnum `json:"status"`
 	Version           int64              `json:"version"`
 	SourceCurrency    string             `json:"source_currency"`
 	SourceAmount      pgtype.Numeric     `json:"source_amount"`
@@ -205,7 +534,7 @@ type TransfersDefault struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -233,7 +562,7 @@ type TransfersY2026m03 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -261,7 +590,7 @@ type TransfersY2026m04 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -289,7 +618,7 @@ type TransfersY2026m05 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -317,7 +646,7 @@ type TransfersY2026m06 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -345,7 +674,7 @@ type TransfersY2026m07 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -373,7 +702,7 @@ type TransfersY2026m08 struct {
 	TenantID       uuid.UUID          `json:"tenant_id"`
 	ExternalRef    pgtype.Text        `json:"external_ref"`
 	IdempotencyKey pgtype.Text        `json:"idempotency_key"`
-	Status         string             `json:"status"`
+	Status         TransferStatusEnum `json:"status"`
 	Version        int64              `json:"version"`
 	SourceCurrency string             `json:"source_currency"`
 	SourceAmount   pgtype.Numeric     `json:"source_amount"`
@@ -394,4 +723,49 @@ type TransfersY2026m08 struct {
 	FailedAt       pgtype.Timestamptz `json:"failed_at"`
 	FailureReason  pgtype.Text        `json:"failure_reason"`
 	FailureCode    pgtype.Text        `json:"failure_code"`
+}
+
+type WebhookDeliveriesDefault struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	EventType    string             `json:"event_type"`
+	TransferID   pgtype.UUID        `json:"transfer_id"`
+	DeliveryID   string             `json:"delivery_id"`
+	WebhookUrl   string             `json:"webhook_url"`
+	Status       string             `json:"status"`
+	StatusCode   pgtype.Int4        `json:"status_code"`
+	Attempt      int32              `json:"attempt"`
+	MaxAttempts  int32              `json:"max_attempts"`
+	ErrorMessage pgtype.Text        `json:"error_message"`
+	RequestBody  []byte             `json:"request_body"`
+	DurationMs   pgtype.Int4        `json:"duration_ms"`
+	CreatedAt    time.Time          `json:"created_at"`
+	DeliveredAt  pgtype.Timestamptz `json:"delivered_at"`
+	NextRetryAt  pgtype.Timestamptz `json:"next_retry_at"`
+}
+
+type WebhookDelivery struct {
+	ID           uuid.UUID          `json:"id"`
+	TenantID     uuid.UUID          `json:"tenant_id"`
+	EventType    string             `json:"event_type"`
+	TransferID   pgtype.UUID        `json:"transfer_id"`
+	DeliveryID   string             `json:"delivery_id"`
+	WebhookUrl   string             `json:"webhook_url"`
+	Status       string             `json:"status"`
+	StatusCode   pgtype.Int4        `json:"status_code"`
+	Attempt      int32              `json:"attempt"`
+	MaxAttempts  int32              `json:"max_attempts"`
+	ErrorMessage pgtype.Text        `json:"error_message"`
+	RequestBody  []byte             `json:"request_body"`
+	DurationMs   pgtype.Int4        `json:"duration_ms"`
+	CreatedAt    time.Time          `json:"created_at"`
+	DeliveredAt  pgtype.Timestamptz `json:"delivered_at"`
+	NextRetryAt  pgtype.Timestamptz `json:"next_retry_at"`
+}
+
+type WebhookEventSubscription struct {
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	EventType string    `json:"event_type"`
+	CreatedAt time.Time `json:"created_at"`
 }
