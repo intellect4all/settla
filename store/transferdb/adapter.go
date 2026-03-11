@@ -4,15 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/intellect4all/settla/core"
 	"github.com/intellect4all/settla/domain"
+	"github.com/intellect4all/settla/store/rls"
 )
+
+// TxBeginner abstracts the ability to begin a pgx transaction.
+// *pgxpool.Pool satisfies this interface.
+type TxBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// TxBeginnerWithOptions extends TxBeginner with the ability to begin a
+// transaction with explicit isolation options. *pgxpool.Pool satisfies this
+// interface. Used by outbox operations to request REPEATABLE READ isolation,
+// which prevents phantom reads during the concurrent UPDATE + INSERT pattern
+// used by TransitionWithOutbox and CreateTransferWithOutbox.
+type TxBeginnerWithOptions interface {
+	TxBeginner
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
 
 // Compile-time interface checks.
 var (
@@ -23,12 +43,58 @@ var (
 // TransferStoreAdapter implements core.TransferStore using SQLC-generated queries
 // against the Transfer DB.
 type TransferStoreAdapter struct {
-	q *Queries
+	q         *Queries
+	pool      TxBeginner           // for transactional operations (TransitionWithOutbox, CreateTransferWithOutbox)
+	appPool   *pgxpool.Pool        // optional: RLS-enforced pool (settla_app role) for tenant-scoped reads
+	piiCrypto *domain.PIIEncryptor // optional: encrypts PII before INSERT, decrypts after SELECT
+}
+
+// TransferStoreOption configures optional features of the TransferStoreAdapter.
+type TransferStoreOption func(*TransferStoreAdapter)
+
+// WithPIIEncryptor configures the adapter to encrypt/decrypt PII fields
+// (sender_name, sender_account, recipient_name, recipient_account, recipient_bank)
+// using per-tenant DEKs via AES-256-GCM.
+func WithPIIEncryptor(enc *domain.PIIEncryptor) TransferStoreOption {
+	return func(a *TransferStoreAdapter) {
+		a.piiCrypto = enc
+	}
+}
+
+// WithTxPool configures the adapter with a transaction pool for outbox operations.
+func WithTxPool(pool TxBeginner) TransferStoreOption {
+	return func(a *TransferStoreAdapter) {
+		a.pool = pool
+	}
+}
+
+// WithAppPool configures the adapter with an RLS-enforced pool (settla_app role)
+// for tenant-scoped read operations. When set, tenant-scoped reads use this pool
+// with SET LOCAL app.current_tenant_id for RLS enforcement.
+// When nil, falls back to the owner pool (no RLS).
+func WithAppPool(pool *pgxpool.Pool) TransferStoreOption {
+	return func(a *TransferStoreAdapter) {
+		a.appPool = pool
+	}
 }
 
 // NewTransferStoreAdapter creates a new TransferStoreAdapter.
-func NewTransferStoreAdapter(q *Queries) *TransferStoreAdapter {
-	return &TransferStoreAdapter{q: q}
+// The pool parameter is optional — pass nil if transactional outbox methods are not needed.
+func NewTransferStoreAdapter(q *Queries, pool ...TxBeginner) *TransferStoreAdapter {
+	a := &TransferStoreAdapter{q: q}
+	if len(pool) > 0 && pool[0] != nil {
+		a.pool = pool[0]
+	}
+	return a
+}
+
+// NewTransferStoreAdapterWithOptions creates a TransferStoreAdapter with functional options.
+func NewTransferStoreAdapterWithOptions(q *Queries, opts ...TransferStoreOption) *TransferStoreAdapter {
+	a := &TransferStoreAdapter{q: q}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *domain.Transfer) error {
@@ -36,20 +102,44 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 	if err != nil {
 		return fmt.Errorf("settla-core: marshalling fees: %w", err)
 	}
-	senderJSON, err := json.Marshal(transfer.Sender)
-	if err != nil {
-		return fmt.Errorf("settla-core: marshalling sender: %w", err)
-	}
-	recipientJSON, err := json.Marshal(transfer.Recipient)
-	if err != nil {
-		return fmt.Errorf("settla-core: marshalling recipient: %w", err)
+
+	var senderJSON, recipientJSON []byte
+
+	if s.piiCrypto != nil {
+		// Encrypt PII fields before storage.
+		encSender, err := s.piiCrypto.EncryptSender(transfer.TenantID, transfer.Sender)
+		if err != nil {
+			return fmt.Errorf("settla-core: encrypting sender PII: %w", err)
+		}
+		senderJSON, err = json.Marshal(encSender)
+		if err != nil {
+			return fmt.Errorf("settla-core: marshalling encrypted sender: %w", err)
+		}
+		encRecipient, err := s.piiCrypto.EncryptRecipient(transfer.TenantID, transfer.Recipient)
+		if err != nil {
+			return fmt.Errorf("settla-core: encrypting recipient PII: %w", err)
+		}
+		recipientJSON, err = json.Marshal(encRecipient)
+		if err != nil {
+			return fmt.Errorf("settla-core: marshalling encrypted recipient: %w", err)
+		}
+	} else {
+		// No encryption configured — store plaintext (development/test only).
+		senderJSON, err = json.Marshal(transfer.Sender)
+		if err != nil {
+			return fmt.Errorf("settla-core: marshalling sender: %w", err)
+		}
+		recipientJSON, err = json.Marshal(transfer.Recipient)
+		if err != nil {
+			return fmt.Errorf("settla-core: marshalling recipient: %w", err)
+		}
 	}
 
 	row, err := s.q.CreateTransfer(ctx, CreateTransferParams{
 		TenantID:          transfer.TenantID,
 		ExternalRef:       textFromString(transfer.ExternalRef),
 		IdempotencyKey:    textFromString(transfer.IdempotencyKey),
-		Status:            string(transfer.Status),
+		Status:            TransferStatusEnum(transfer.Status),
 		SourceCurrency:    string(transfer.SourceCurrency),
 		SourceAmount:      numericFromDecimal(transfer.SourceAmount),
 		DestCurrency:      string(transfer.DestCurrency),
@@ -83,8 +173,29 @@ func (s *TransferStoreAdapter) GetTransfer(ctx context.Context, tenantID, transf
 		if err != nil {
 			return nil, fmt.Errorf("settla-core: getting transfer %s: %w", transferID, err)
 		}
-		return transferFromRow(row)
+		return s.transferFromRowWithDecrypt(row)
 	}
+
+	// Use RLS-enforced pool when available.
+	if s.appPool != nil {
+		var result *domain.Transfer
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetTransfer(ctx, GetTransferParams{
+				ID:       transferID,
+				TenantID: tenantID,
+			})
+			if err != nil {
+				return err
+			}
+			result, err = s.transferFromRowWithDecrypt(row)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: getting transfer %s: %w", transferID, err)
+		}
+		return result, nil
+	}
+
 	row, err := s.q.GetTransfer(ctx, GetTransferParams{
 		ID:       transferID,
 		TenantID: tenantID,
@@ -92,10 +203,29 @@ func (s *TransferStoreAdapter) GetTransfer(ctx context.Context, tenantID, transf
 	if err != nil {
 		return nil, fmt.Errorf("settla-core: getting transfer %s: %w", transferID, err)
 	}
-	return transferFromRow(row)
+	return s.transferFromRowWithDecrypt(row)
 }
 
 func (s *TransferStoreAdapter) GetTransferByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.Transfer, error) {
+	if s.appPool != nil {
+		var result *domain.Transfer
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetTransferByIdempotencyKey(ctx, GetTransferByIdempotencyKeyParams{
+				TenantID:       tenantID,
+				IdempotencyKey: textFromString(key),
+			})
+			if err != nil {
+				return err
+			}
+			result, err = s.transferFromRowWithDecrypt(row)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: getting transfer by idempotency key: %w", err)
+		}
+		return result, nil
+	}
+
 	row, err := s.q.GetTransferByIdempotencyKey(ctx, GetTransferByIdempotencyKeyParams{
 		TenantID:       tenantID,
 		IdempotencyKey: textFromString(key),
@@ -103,7 +233,7 @@ func (s *TransferStoreAdapter) GetTransferByIdempotencyKey(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("settla-core: getting transfer by idempotency key: %w", err)
 	}
-	return transferFromRow(row)
+	return s.transferFromRowWithDecrypt(row)
 }
 
 func (s *TransferStoreAdapter) UpdateTransfer(ctx context.Context, transfer *domain.Transfer) error {
@@ -111,7 +241,7 @@ func (s *TransferStoreAdapter) UpdateTransfer(ctx context.Context, transfer *dom
 	err := s.q.UpdateTransferStatusWithVersion(ctx, UpdateTransferStatusWithVersionParams{
 		ID:       transfer.ID,
 		TenantID: transfer.TenantID,
-		Status:   string(transfer.Status),
+		Status:   TransferStatusEnum(transfer.Status),
 		Version:  transfer.Version - 1, // TransitionTo already incremented Version
 	})
 	if err != nil {
@@ -121,8 +251,11 @@ func (s *TransferStoreAdapter) UpdateTransfer(ctx context.Context, transfer *dom
 }
 
 func (s *TransferStoreAdapter) CreateTransferEvent(ctx context.Context, event *domain.TransferEvent) error {
-	metadataJSON, _ := json.Marshal(event.Metadata)
-	_, err := s.q.CreateTransferEvent(ctx, CreateTransferEventParams{
+	metadataJSON, err := json.Marshal(event.Metadata)
+	if err != nil {
+		slog.Warn("settla-store: failed to marshal event metadata", "transfer_id", event.TransferID, "error", err)
+	}
+	_, err = s.q.CreateTransferEvent(ctx, CreateTransferEventParams{
 		TransferID:  event.TransferID,
 		TenantID:    event.TenantID,
 		FromStatus:  textFromString(string(event.FromStatus)),
@@ -137,6 +270,46 @@ func (s *TransferStoreAdapter) CreateTransferEvent(ctx context.Context, event *d
 }
 
 func (s *TransferStoreAdapter) GetTransferEvents(ctx context.Context, tenantID, transferID uuid.UUID) ([]domain.TransferEvent, error) {
+	parseEvents := func(rows []TransferEvent) []domain.TransferEvent {
+		events := make([]domain.TransferEvent, len(rows))
+		for i, row := range rows {
+			events[i] = domain.TransferEvent{
+				ID:          row.ID,
+				TransferID:  row.TransferID,
+				TenantID:    row.TenantID,
+				FromStatus:  domain.TransferStatus(row.FromStatus.String),
+				ToStatus:    domain.TransferStatus(row.ToStatus),
+				OccurredAt:  row.OccurredAt,
+				ProviderRef: row.ProviderRef.String,
+			}
+			if row.Metadata != nil {
+				if err := json.Unmarshal(row.Metadata, &events[i].Metadata); err != nil {
+					slog.Warn("settla-store: failed to unmarshal event metadata", "event_id", row.ID, "error", err)
+				}
+			}
+		}
+		return events
+	}
+
+	if s.appPool != nil {
+		var events []domain.TransferEvent
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).ListTransferEvents(ctx, ListTransferEventsParams{
+				TenantID:   tenantID,
+				TransferID: transferID,
+			})
+			if err != nil {
+				return err
+			}
+			events = parseEvents(rows)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: getting transfer events: %w", err)
+		}
+		return events, nil
+	}
+
 	rows, err := s.q.ListTransferEvents(ctx, ListTransferEventsParams{
 		TenantID:   tenantID,
 		TransferID: transferID,
@@ -144,27 +317,32 @@ func (s *TransferStoreAdapter) GetTransferEvents(ctx context.Context, tenantID, 
 	if err != nil {
 		return nil, fmt.Errorf("settla-core: getting transfer events: %w", err)
 	}
-	events := make([]domain.TransferEvent, len(rows))
-	for i, row := range rows {
-		events[i] = domain.TransferEvent{
-			ID:          row.ID,
-			TransferID:  row.TransferID,
-			TenantID:    row.TenantID,
-			FromStatus:  domain.TransferStatus(row.FromStatus.String),
-			ToStatus:    domain.TransferStatus(row.ToStatus),
-			OccurredAt:  row.OccurredAt,
-			ProviderRef: row.ProviderRef.String,
-		}
-		if row.Metadata != nil {
-			_ = json.Unmarshal(row.Metadata, &events[i].Metadata)
-		}
-	}
-	return events, nil
+	return parseEvents(rows), nil
 }
 
 func (s *TransferStoreAdapter) GetDailyVolume(ctx context.Context, tenantID uuid.UUID, date time.Time) (decimal.Decimal, error) {
 	startOfDay := date.Truncate(24 * time.Hour)
 	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	if s.appPool != nil {
+		var result decimal.Decimal
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			r, err := s.q.WithTx(tx).SumDailyVolumeByTenant(ctx, SumDailyVolumeByTenantParams{
+				TenantID:    tenantID,
+				CreatedAt:   startOfDay,
+				CreatedAt_2: endOfDay,
+			})
+			if err != nil {
+				return err
+			}
+			result = decimalFromNumeric(r)
+			return nil
+		})
+		if err != nil {
+			return decimal.Zero, fmt.Errorf("settla-core: getting daily volume: %w", err)
+		}
+		return result, nil
+	}
 
 	result, err := s.q.SumDailyVolumeByTenant(ctx, SumDailyVolumeByTenantParams{
 		TenantID:    tenantID,
@@ -178,8 +356,14 @@ func (s *TransferStoreAdapter) GetDailyVolume(ctx context.Context, tenantID uuid
 }
 
 func (s *TransferStoreAdapter) CreateQuote(ctx context.Context, quote *domain.Quote) error {
-	feesJSON, _ := json.Marshal(quote.Fees)
-	routeJSON, _ := json.Marshal(quote.Route)
+	feesJSON, err := json.Marshal(quote.Fees)
+	if err != nil {
+		slog.Warn("settla-store: failed to marshal quote fees", "error", err)
+	}
+	routeJSON, err := json.Marshal(quote.Route)
+	if err != nil {
+		slog.Warn("settla-store: failed to marshal quote route", "error", err)
+	}
 
 	row, err := s.q.CreateQuote(ctx, CreateQuoteParams{
 		TenantID:       quote.TenantID,
@@ -202,6 +386,25 @@ func (s *TransferStoreAdapter) CreateQuote(ctx context.Context, quote *domain.Qu
 }
 
 func (s *TransferStoreAdapter) GetQuote(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error) {
+	if s.appPool != nil {
+		var result *domain.Quote
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetQuote(ctx, GetQuoteParams{
+				ID:       quoteID,
+				TenantID: tenantID,
+			})
+			if err != nil {
+				return err
+			}
+			result, err = quoteFromRow(row)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: getting quote %s: %w", quoteID, err)
+		}
+		return result, nil
+	}
+
 	row, err := s.q.GetQuote(ctx, GetQuoteParams{
 		ID:       quoteID,
 		TenantID: tenantID,
@@ -213,6 +416,33 @@ func (s *TransferStoreAdapter) GetQuote(ctx context.Context, tenantID, quoteID u
 }
 
 func (s *TransferStoreAdapter) ListTransfers(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Transfer, error) {
+	if s.appPool != nil {
+		var transfers []domain.Transfer
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).ListTransfersByTenant(ctx, ListTransfersByTenantParams{
+				TenantID: tenantID,
+				Limit:    int32(limit),
+				Offset:   int32(offset),
+			})
+			if err != nil {
+				return err
+			}
+			transfers = make([]domain.Transfer, len(rows))
+			for i, row := range rows {
+				t, err := s.transferFromRowWithDecrypt(row)
+				if err != nil {
+					return err
+				}
+				transfers[i] = *t
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: listing transfers for tenant %s: %w", tenantID, err)
+		}
+		return transfers, nil
+	}
+
 	rows, err := s.q.ListTransfersByTenant(ctx, ListTransfersByTenantParams{
 		TenantID: tenantID,
 		Limit:    int32(limit),
@@ -223,7 +453,7 @@ func (s *TransferStoreAdapter) ListTransfers(ctx context.Context, tenantID uuid.
 	}
 	transfers := make([]domain.Transfer, len(rows))
 	for i, row := range rows {
-		t, err := transferFromRow(row)
+		t, err := s.transferFromRowWithDecrypt(row)
 		if err != nil {
 			return nil, err
 		}
@@ -256,6 +486,51 @@ func (s *TenantStoreAdapter) GetTenantBySlug(ctx context.Context, slug string) (
 		return nil, fmt.Errorf("settla-core: getting tenant by slug %s: %w", slug, err)
 	}
 	return tenantFromRow(row)
+}
+
+// transferFromRowWithDecrypt converts a database row to a domain.Transfer and
+// decrypts PII fields if a PIIEncryptor is configured. When encrypted, the
+// sender/recipient JSON contains EncryptedSender/EncryptedRecipient structures
+// (with base64-encoded ciphertext). This method first tries to decrypt; if the
+// JSON doesn't match the encrypted shape (e.g. pre-migration plaintext data),
+// it falls back to the normal plaintext unmarshal.
+func (s *TransferStoreAdapter) transferFromRowWithDecrypt(row Transfer) (*domain.Transfer, error) {
+	t, err := transferFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.piiCrypto == nil {
+		return t, nil
+	}
+
+	// Try to decrypt sender PII from the raw JSON.
+	if len(row.Sender) > 0 {
+		var encSender domain.EncryptedSender
+		if err := json.Unmarshal(row.Sender, &encSender); err == nil && len(encSender.EncryptedName) > 0 {
+			sender, err := s.piiCrypto.DecryptSender(t.TenantID, &encSender)
+			if err != nil {
+				return nil, fmt.Errorf("settla-core: decrypting sender PII: %w", err)
+			}
+			t.Sender = sender
+		}
+		// If EncryptedName is empty, the data is plaintext (pre-encryption migration).
+		// transferFromRow already handled it correctly.
+	}
+
+	// Try to decrypt recipient PII from the raw JSON.
+	if len(row.Recipient) > 0 {
+		var encRecipient domain.EncryptedRecipient
+		if err := json.Unmarshal(row.Recipient, &encRecipient); err == nil && len(encRecipient.EncryptedName) > 0 {
+			recipient, err := s.piiCrypto.DecryptRecipient(t.TenantID, &encRecipient)
+			if err != nil {
+				return nil, fmt.Errorf("settla-core: decrypting recipient PII: %w", err)
+			}
+			t.Recipient = recipient
+		}
+	}
+
+	return t, nil
 }
 
 // --- Conversion helpers ---
@@ -297,13 +572,19 @@ func transferFromRow(row Transfer) (*domain.Transfer, error) {
 		t.FailedAt = &row.FailedAt.Time
 	}
 	if row.Fees != nil {
-		_ = json.Unmarshal(row.Fees, &t.Fees)
+		if err := json.Unmarshal(row.Fees, &t.Fees); err != nil {
+			slog.Warn("settla-store: failed to unmarshal fees", "transfer_id", row.ID, "error", err)
+		}
 	}
 	if row.Sender != nil {
-		_ = json.Unmarshal(row.Sender, &t.Sender)
+		if err := json.Unmarshal(row.Sender, &t.Sender); err != nil {
+			slog.Warn("settla-store: failed to unmarshal sender", "transfer_id", row.ID, "error", err)
+		}
 	}
 	if row.Recipient != nil {
-		_ = json.Unmarshal(row.Recipient, &t.Recipient)
+		if err := json.Unmarshal(row.Recipient, &t.Recipient); err != nil {
+			slog.Warn("settla-store: failed to unmarshal recipient", "transfer_id", row.ID, "error", err)
+		}
 	}
 	return t, nil
 }
@@ -327,10 +608,14 @@ func tenantFromRow(row Tenant) (*domain.Tenant, error) {
 		t.KYBVerifiedAt = &row.KybVerifiedAt.Time
 	}
 	if row.FeeSchedule != nil {
-		_ = json.Unmarshal(row.FeeSchedule, &t.FeeSchedule)
+		if err := json.Unmarshal(row.FeeSchedule, &t.FeeSchedule); err != nil {
+			slog.Warn("settla-store: failed to unmarshal fee_schedule", "tenant_id", row.ID, "error", err)
+		}
 	}
 	if row.Metadata != nil {
-		_ = json.Unmarshal(row.Metadata, &t.Metadata)
+		if err := json.Unmarshal(row.Metadata, &t.Metadata); err != nil {
+			slog.Warn("settla-store: failed to unmarshal metadata", "tenant_id", row.ID, "error", err)
+		}
 	}
 	return t, nil
 }
@@ -349,10 +634,14 @@ func quoteFromRow(row Quote) (*domain.Quote, error) {
 		CreatedAt:      row.CreatedAt,
 	}
 	if row.Fees != nil {
-		_ = json.Unmarshal(row.Fees, &q.Fees)
+		if err := json.Unmarshal(row.Fees, &q.Fees); err != nil {
+			slog.Warn("settla-store: failed to unmarshal fees", "quote_id", row.ID, "error", err)
+		}
 	}
 	if row.Route != nil {
-		_ = json.Unmarshal(row.Route, &q.Route)
+		if err := json.Unmarshal(row.Route, &q.Route); err != nil {
+			slog.Warn("settla-store: failed to unmarshal route", "quote_id", row.ID, "error", err)
+		}
 	}
 	return q, nil
 }
