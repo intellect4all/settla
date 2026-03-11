@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
 	"github.com/intellect4all/settla/domain"
 )
 
@@ -115,7 +116,27 @@ func (s *benchTransferStore) ListTransfers(_ context.Context, tenantID uuid.UUID
 	return result[offset:end], nil
 }
 
+func (s *benchTransferStore) TransitionWithOutbox(_ context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, _ []domain.OutboxEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.transfers[transferID]
+	if !ok {
+		return domain.ErrTransferNotFound(transferID.String())
+	}
+	if t.Version != expectedVersion {
+		return domain.ErrOptimisticLock("transfer", transferID.String())
+	}
+	t.Status = newStatus
+	t.Version++
+	return nil
+}
+
+func (s *benchTransferStore) CreateTransferWithOutbox(_ context.Context, t *domain.Transfer, _ []domain.OutboxEntry) error {
+	return s.CreateTransfer(context.Background(), t)
+}
+
 // setupBenchmarkEngine creates an engine with mock dependencies for benchmarking.
+// The engine only needs transferStore, tenantStore, router, logger, and metrics.
 func setupBenchmarkEngine(b *testing.B) *Engine {
 	b.Helper()
 
@@ -129,21 +150,10 @@ func setupBenchmarkEngine(b *testing.B) *Engine {
 			return nil, domain.ErrTenantNotFound(tenantID.String())
 		},
 	}
-	ledger := &mockLedger{}
-	treasury := &mockTreasury{}
 	router := &mockRouter{}
-	onRamp := &mockOnRampProvider{}
-	offRamp := &mockOffRampProvider{}
-	blockchain := &mockBlockchainClient{}
-	providers := &mockProviderRegistry{
-		onRamp:     onRamp,
-		offRamp:    offRamp,
-		blockchain: blockchain,
-	}
-	publisher := &mockPublisher{}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	engine := NewEngine(transfers, tenants, ledger, treasury, router, providers, publisher, logger, nil)
+	engine := NewEngine(transfers, tenants, router, logger, nil)
 
 	return engine
 }
@@ -168,7 +178,7 @@ func setupBenchmarkEngineWithTransfer(b *testing.B) (*Engine, uuid.UUID) {
 // BenchmarkCreateTransfer measures transfer creation performance.
 // Includes: tenant lookup, validation, quote fetch, persistence.
 //
-// Target: <100μs per creation
+// Target: <100us per creation
 func BenchmarkCreateTransfer(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
@@ -179,7 +189,6 @@ func BenchmarkCreateTransfer(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		// Use unique idempotency keys
 		req.IdempotencyKey = fmt.Sprintf("idem-bench-%d", i)
 		_, _ = engine.CreateTransfer(ctx, tenant.ID, req)
 	}
@@ -209,15 +218,14 @@ func BenchmarkCreateTransferConcurrent(b *testing.B) {
 }
 
 // BenchmarkFundTransfer measures funding step performance.
-// Includes: transfer lookup, treasury reserve, ledger post, state transition.
+// Now just validation + store call (no network).
 //
-// Target: <50μs per fund operation
+// Target: <50us per fund operation
 func BenchmarkFundTransfer(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-create transfers
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
 		req := validRequest()
@@ -234,20 +242,19 @@ func BenchmarkFundTransfer(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		transferID := transferIDs[i%100]
-		_ = engine.FundTransfer(ctx, transferID)
+		_ = engine.FundTransfer(ctx, tenant.ID, transferID)
 	}
 }
 
 // BenchmarkInitiateOnRamp measures on-ramp initiation performance.
-// Includes: transfer lookup, provider execute, ledger post, state transitions.
+// Now just validation + outbox write (no provider call).
 //
-// Target: <100μs per on-ramp
+// Target: <100us per on-ramp
 func BenchmarkInitiateOnRamp(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-create and fund transfers
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
 		req := validRequest()
@@ -256,7 +263,7 @@ func BenchmarkInitiateOnRamp(b *testing.B) {
 		if err != nil {
 			b.Fatalf("CreateTransfer: %v", err)
 		}
-		if err := engine.FundTransfer(ctx, transfer.ID); err != nil {
+		if err := engine.FundTransfer(ctx, tenant.ID, transfer.ID); err != nil {
 			b.Fatalf("FundTransfer: %v", err)
 		}
 		transferIDs[i] = transfer.ID
@@ -267,56 +274,19 @@ func BenchmarkInitiateOnRamp(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		transferID := transferIDs[i%100]
-		_ = engine.InitiateOnRamp(ctx, transferID)
-	}
-}
-
-// BenchmarkSettleOnChain measures on-chain settlement performance.
-// Includes: transfer lookup, gas estimation, transaction send, ledger post.
-//
-// Target: <100μs per settlement
-func BenchmarkSettleOnChain(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	// Pre-create transfers through SETTLING state
-	transferIDs := make([]uuid.UUID, 100)
-	for i := 0; i < 100; i++ {
-		req := validRequest()
-		req.IdempotencyKey = fmt.Sprintf("idem-settle-%d", i)
-		transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
-		if err != nil {
-			b.Fatalf("CreateTransfer: %v", err)
-		}
-		if err := engine.FundTransfer(ctx, transfer.ID); err != nil {
-			b.Fatalf("FundTransfer: %v", err)
-		}
-		if err := engine.InitiateOnRamp(ctx, transfer.ID); err != nil {
-			b.Fatalf("InitiateOnRamp: %v", err)
-		}
-		transferIDs[i] = transfer.ID
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		transferID := transferIDs[i%100]
-		_ = engine.SettleOnChain(ctx, transferID)
+		_ = engine.InitiateOnRamp(ctx, tenant.ID, transferID)
 	}
 }
 
 // BenchmarkProcessTransfer_FullPipeline measures complete synchronous pipeline.
-// Create → Fund → OnRamp → Settle → OffRamp → Complete
+// Create -> Fund -> OnRamp -> HandleOnRampResult -> HandleSettlementResult -> HandleOffRampResult
 //
-// Target: <500μs per full pipeline (excludes real provider delays)
+// Target: <500us per full pipeline (excludes real provider delays)
 func BenchmarkProcessTransfer_FullPipeline(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-create transfers
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
 		req := validRequest()
@@ -333,7 +303,7 @@ func BenchmarkProcessTransfer_FullPipeline(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		transferID := transferIDs[i%100]
-		_ = engine.ProcessTransfer(ctx, transferID)
+		_ = engine.ProcessTransfer(ctx, tenant.ID, transferID)
 	}
 }
 
@@ -345,7 +315,6 @@ func BenchmarkProcessTransferConcurrent(b *testing.B) {
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-create many transfers
 	transferIDs := make([]uuid.UUID, 1000)
 	for i := 0; i < 1000; i++ {
 		req := validRequest()
@@ -364,7 +333,7 @@ func BenchmarkProcessTransferConcurrent(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			transferID := transferIDs[i%1000]
-			_ = engine.ProcessTransfer(ctx, transferID)
+			_ = engine.ProcessTransfer(ctx, tenant.ID, transferID)
 			i++
 		}
 	})
@@ -372,13 +341,12 @@ func BenchmarkProcessTransferConcurrent(b *testing.B) {
 
 // BenchmarkGetTransfer measures transfer retrieval performance.
 //
-// Target: <10μs per lookup
+// Target: <10us per lookup
 func BenchmarkGetTransfer(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-create a transfer
 	req := validRequest()
 	transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
 	if err != nil {
@@ -395,7 +363,7 @@ func BenchmarkGetTransfer(b *testing.B) {
 
 // BenchmarkGetQuote measures quote generation performance.
 //
-// Target: <100μs per quote
+// Target: <100us per quote
 func BenchmarkGetQuote(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
@@ -418,13 +386,13 @@ func BenchmarkGetQuote(b *testing.B) {
 
 // BenchmarkCompleteTransfer measures transfer completion performance.
 //
-// Target: <100μs per completion
+// Target: <100us per completion
 func BenchmarkCompleteTransfer(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Pre-process transfers through OFF_RAMPING state
+	// Pre-process transfers through the pipeline
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
 		req := validRequest()
@@ -433,32 +401,26 @@ func BenchmarkCompleteTransfer(b *testing.B) {
 		if err != nil {
 			b.Fatalf("CreateTransfer: %v", err)
 		}
-		if err := engine.ProcessTransfer(ctx, transfer.ID); err != nil {
+		if err := engine.ProcessTransfer(ctx, tenant.ID, transfer.ID); err != nil {
 			b.Fatalf("ProcessTransfer: %v", err)
 		}
-		// Manually transition to OFF_RAMPING since ProcessTransfer completes fully
-		// We need to re-create transfers for each iteration
 		transferIDs[i] = transfer.ID
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	// Note: CompleteTransfer expects OFF_RAMPING or COMPLETING status
-	// Since we ran full ProcessTransfer, transfers are already COMPLETED
-	// This benchmark is more about the complete operation
 	for i := 0; i < b.N; i++ {
-		// Create fresh transfer for each iteration
 		req := validRequest()
 		req.IdempotencyKey = fmt.Sprintf("idem-bench-complete-%d-%d", i, time.Now().UnixNano())
 		transfer, _ := engine.CreateTransfer(ctx, tenant.ID, req)
-		_ = engine.ProcessTransfer(ctx, transfer.ID)
+		_ = engine.ProcessTransfer(ctx, tenant.ID, transfer.ID)
 	}
 }
 
 // BenchmarkTransferStateTransition measures state transition performance.
 //
-// Target: <1μs per transition
+// Target: <1us per transition
 func BenchmarkTransferStateTransition(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -477,33 +439,29 @@ func BenchmarkTransferStateTransition(b *testing.B) {
 			UpdatedAt:      time.Now().UTC(),
 		}
 
-		// Run through full lifecycle
 		_, _ = transfer.TransitionTo(domain.TransferStatusFunded)
 		_, _ = transfer.TransitionTo(domain.TransferStatusOnRamping)
 		_, _ = transfer.TransitionTo(domain.TransferStatusSettling)
 		_, _ = transfer.TransitionTo(domain.TransferStatusOffRamping)
-		_, _ = transfer.TransitionTo(domain.TransferStatusCompleting)
 		_, _ = transfer.TransitionTo(domain.TransferStatusCompleted)
 	}
 }
 
 // BenchmarkEngineWithIdempotency measures engine with idempotency checking.
 //
-// Target: <150μs (includes cache lookup)
+// Target: <150us (includes cache lookup)
 func BenchmarkEngineWithIdempotency(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
 	ctx := context.Background()
 	tenant := activeTenant()
 	req := validRequest()
 
-	// Create transfer once
 	_, _ = engine.CreateTransfer(ctx, tenant.ID, req)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		// Same idempotency key - should return cached result
 		_, _ = engine.CreateTransfer(ctx, tenant.ID, req)
 	}
 }
@@ -516,7 +474,6 @@ func BenchmarkListTransfers(b *testing.B) {
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	// Create transfers
 	for i := 0; i < 100; i++ {
 		req := validRequest()
 		req.IdempotencyKey = fmt.Sprintf("idem-list-%d", i)

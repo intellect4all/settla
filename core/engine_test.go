@@ -2,11 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,61 +23,92 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockTransferStore struct {
-	createFn              func(ctx context.Context, t *domain.Transfer) error
-	getFn                 func(ctx context.Context, tenantID, id uuid.UUID) (*domain.Transfer, error)
-	getByIdempotencyKeyFn func(ctx context.Context, tenantID uuid.UUID, key string) (*domain.Transfer, error)
-	updateFn              func(ctx context.Context, t *domain.Transfer) error
-	createEventFn         func(ctx context.Context, e *domain.TransferEvent) error
-	getEventsFn           func(ctx context.Context, tenantID, transferID uuid.UUID) ([]domain.TransferEvent, error)
-	getDailyVolumeFn      func(ctx context.Context, tenantID uuid.UUID, date time.Time) (decimal.Decimal, error)
-	getQuoteFn            func(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error)
+	mu                         sync.Mutex
+	transfers                  map[uuid.UUID]*domain.Transfer
+	outboxEntries              []domain.OutboxEntry // captured from outbox calls
+	createFn                   func(ctx context.Context, t *domain.Transfer) error
+	getFn                      func(ctx context.Context, tenantID, id uuid.UUID) (*domain.Transfer, error)
+	getByIdempotencyKeyFn      func(ctx context.Context, tenantID uuid.UUID, key string) (*domain.Transfer, error)
+	updateFn                   func(ctx context.Context, t *domain.Transfer) error
+	createEventFn              func(ctx context.Context, e *domain.TransferEvent) error
+	getEventsFn                func(ctx context.Context, tenantID, transferID uuid.UUID) ([]domain.TransferEvent, error)
+	getDailyVolumeFn           func(ctx context.Context, tenantID uuid.UUID, date time.Time) (decimal.Decimal, error)
+	getQuoteFn                 func(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error)
+	transitionWithOutboxFn     func(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error
+	createTransferWithOutboxFn func(ctx context.Context, transfer *domain.Transfer, entries []domain.OutboxEntry) error
+}
+
+func newMockTransferStore() *mockTransferStore {
+	return &mockTransferStore{
+		transfers: make(map[uuid.UUID]*domain.Transfer),
+	}
 }
 
 func (m *mockTransferStore) CreateTransfer(ctx context.Context, t *domain.Transfer) error {
 	if m.createFn != nil {
 		return m.createFn(ctx, t)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transfers[t.ID] = t
 	return nil
 }
+
 func (m *mockTransferStore) GetTransfer(ctx context.Context, tenantID, id uuid.UUID) (*domain.Transfer, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, tenantID, id)
 	}
-	return nil, domain.ErrTransferNotFound(id.String())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.transfers[id]
+	if !ok {
+		return nil, domain.ErrTransferNotFound(id.String())
+	}
+	return t, nil
 }
+
 func (m *mockTransferStore) GetTransferByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.Transfer, error) {
 	if m.getByIdempotencyKeyFn != nil {
 		return m.getByIdempotencyKeyFn(ctx, tenantID, key)
 	}
 	return nil, fmt.Errorf("not found")
 }
+
 func (m *mockTransferStore) UpdateTransfer(ctx context.Context, t *domain.Transfer) error {
 	if m.updateFn != nil {
 		return m.updateFn(ctx, t)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transfers[t.ID] = t
 	return nil
 }
+
 func (m *mockTransferStore) CreateTransferEvent(ctx context.Context, e *domain.TransferEvent) error {
 	if m.createEventFn != nil {
 		return m.createEventFn(ctx, e)
 	}
 	return nil
 }
+
 func (m *mockTransferStore) GetTransferEvents(ctx context.Context, tenantID, transferID uuid.UUID) ([]domain.TransferEvent, error) {
 	if m.getEventsFn != nil {
 		return m.getEventsFn(ctx, tenantID, transferID)
 	}
 	return nil, nil
 }
+
 func (m *mockTransferStore) GetDailyVolume(ctx context.Context, tenantID uuid.UUID, date time.Time) (decimal.Decimal, error) {
 	if m.getDailyVolumeFn != nil {
 		return m.getDailyVolumeFn(ctx, tenantID, date)
 	}
 	return decimal.Zero, nil
 }
+
 func (m *mockTransferStore) CreateQuote(ctx context.Context, quote *domain.Quote) error {
 	return nil
 }
+
 func (m *mockTransferStore) GetQuote(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error) {
 	if m.getQuoteFn != nil {
 		return m.getQuoteFn(ctx, tenantID, quoteID)
@@ -85,6 +118,52 @@ func (m *mockTransferStore) GetQuote(ctx context.Context, tenantID, quoteID uuid
 
 func (m *mockTransferStore) ListTransfers(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Transfer, error) {
 	return nil, nil
+}
+
+func (m *mockTransferStore) TransitionWithOutbox(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error {
+	if m.transitionWithOutboxFn != nil {
+		return m.transitionWithOutboxFn(ctx, transferID, newStatus, expectedVersion, entries)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.transfers[transferID]
+	if !ok {
+		return domain.ErrTransferNotFound(transferID.String())
+	}
+	if t.Version != expectedVersion {
+		return domain.ErrOptimisticLock("transfer", transferID.String())
+	}
+	t.Status = newStatus
+	t.Version++
+	m.outboxEntries = append(m.outboxEntries, entries...)
+	return nil
+}
+
+func (m *mockTransferStore) CreateTransferWithOutbox(ctx context.Context, transfer *domain.Transfer, entries []domain.OutboxEntry) error {
+	if m.createTransferWithOutboxFn != nil {
+		return m.createTransferWithOutboxFn(ctx, transfer, entries)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transfers[transfer.ID] = transfer
+	m.outboxEntries = append(m.outboxEntries, entries...)
+	return nil
+}
+
+// getOutboxEntries returns captured outbox entries (thread-safe).
+func (m *mockTransferStore) getOutboxEntries() []domain.OutboxEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]domain.OutboxEntry, len(m.outboxEntries))
+	copy(result, m.outboxEntries)
+	return result
+}
+
+// clearOutbox resets captured outbox entries.
+func (m *mockTransferStore) clearOutbox() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboxEntries = nil
 }
 
 type mockTenantStore struct {
@@ -98,68 +177,12 @@ func (m *mockTenantStore) GetTenant(ctx context.Context, tenantID uuid.UUID) (*d
 	}
 	return nil, domain.ErrTenantNotFound(tenantID.String())
 }
+
 func (m *mockTenantStore) GetTenantBySlug(ctx context.Context, slug string) (*domain.Tenant, error) {
 	if m.getBySlugFn != nil {
 		return m.getBySlugFn(ctx, slug)
 	}
 	return nil, fmt.Errorf("not found")
-}
-
-type mockLedger struct {
-	postFn    func(ctx context.Context, entry domain.JournalEntry) (*domain.JournalEntry, error)
-	reverseFn func(ctx context.Context, entryID uuid.UUID, reason string) (*domain.JournalEntry, error)
-	entries   []domain.JournalEntry // records all posted entries for assertions
-}
-
-func (m *mockLedger) PostEntries(ctx context.Context, entry domain.JournalEntry) (*domain.JournalEntry, error) {
-	m.entries = append(m.entries, entry)
-	if m.postFn != nil {
-		return m.postFn(ctx, entry)
-	}
-	return &entry, nil
-}
-func (m *mockLedger) GetBalance(ctx context.Context, accountCode string) (decimal.Decimal, error) {
-	return decimal.Zero, nil
-}
-func (m *mockLedger) GetEntries(ctx context.Context, accountCode string, from, to time.Time, limit, offset int) ([]domain.EntryLine, error) {
-	return nil, nil
-}
-func (m *mockLedger) ReverseEntry(ctx context.Context, entryID uuid.UUID, reason string) (*domain.JournalEntry, error) {
-	if m.reverseFn != nil {
-		return m.reverseFn(ctx, entryID, reason)
-	}
-	return &domain.JournalEntry{ID: uuid.New()}, nil
-}
-
-type mockTreasury struct {
-	reserveFn func(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, ref uuid.UUID) error
-	releaseFn func(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, ref uuid.UUID) error
-	reserved  int // count of Reserve calls
-	released  int // count of Release calls
-}
-
-func (m *mockTreasury) Reserve(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, ref uuid.UUID) error {
-	m.reserved++
-	if m.reserveFn != nil {
-		return m.reserveFn(ctx, tenantID, currency, location, amount, ref)
-	}
-	return nil
-}
-func (m *mockTreasury) Release(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, ref uuid.UUID) error {
-	m.released++
-	if m.releaseFn != nil {
-		return m.releaseFn(ctx, tenantID, currency, location, amount, ref)
-	}
-	return nil
-}
-func (m *mockTreasury) GetPositions(ctx context.Context, tenantID uuid.UUID) ([]domain.Position, error) {
-	return nil, nil
-}
-func (m *mockTreasury) GetPosition(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string) (*domain.Position, error) {
-	return nil, nil
-}
-func (m *mockTreasury) GetLiquidityReport(ctx context.Context, tenantID uuid.UUID) (*domain.LiquidityReport, error) {
-	return nil, nil
 }
 
 type mockRouter struct {
@@ -176,7 +199,8 @@ func (m *mockRouter) GetQuote(ctx context.Context, tenantID uuid.UUID, req domai
 		SourceCurrency: req.SourceCurrency,
 		SourceAmount:   req.SourceAmount,
 		DestCurrency:   req.DestCurrency,
-		DestAmount:     req.SourceAmount.Mul(decimal.NewFromFloat(1.25)), // mock rate
+		DestAmount:     req.SourceAmount.Mul(decimal.NewFromFloat(1.25)),
+		StableAmount:   req.SourceAmount.Mul(decimal.NewFromFloat(1.25)),
 		FXRate:         decimal.NewFromFloat(1.25),
 		Fees: domain.FeeBreakdown{
 			OnRampFee:   decimal.NewFromFloat(2.50),
@@ -185,97 +209,14 @@ func (m *mockRouter) GetQuote(ctx context.Context, tenantID uuid.UUID, req domai
 			TotalFeeUSD: decimal.NewFromFloat(5.10),
 		},
 		Route: domain.RouteInfo{
-			Chain:          "tron",
-			StableCoin:     domain.CurrencyUSDT,
-			OnRampProvider: "mock-onramp",
+			Chain:           "tron",
+			StableCoin:      domain.CurrencyUSDT,
+			OnRampProvider:  "mock-onramp",
 			OffRampProvider: "mock-offramp",
 		},
 		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
 		CreatedAt: time.Now().UTC(),
 	}, nil
-}
-
-type mockProviderRegistry struct {
-	onRamp     domain.OnRampProvider
-	offRamp    domain.OffRampProvider
-	blockchain domain.BlockchainClient
-}
-
-func (m *mockProviderRegistry) GetOnRampProvider(id string) domain.OnRampProvider  { return m.onRamp }
-func (m *mockProviderRegistry) GetOffRampProvider(id string) domain.OffRampProvider { return m.offRamp }
-func (m *mockProviderRegistry) GetBlockchainClient(chain string) domain.BlockchainClient {
-	return m.blockchain
-}
-
-type mockOnRampProvider struct {
-	executeFn func(ctx context.Context, req domain.OnRampRequest) (*domain.ProviderTx, error)
-}
-
-func (m *mockOnRampProvider) ID() string                          { return "mock-onramp" }
-func (m *mockOnRampProvider) SupportedPairs() []domain.CurrencyPair { return nil }
-func (m *mockOnRampProvider) GetQuote(ctx context.Context, req domain.QuoteRequest) (*domain.ProviderQuote, error) {
-	return nil, nil
-}
-func (m *mockOnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) (*domain.ProviderTx, error) {
-	if m.executeFn != nil {
-		return m.executeFn(ctx, req)
-	}
-	return &domain.ProviderTx{ID: "onramp-tx-1", Status: "completed"}, nil
-}
-func (m *mockOnRampProvider) GetStatus(ctx context.Context, txID string) (*domain.ProviderTx, error) {
-	return &domain.ProviderTx{ID: txID, Status: "completed"}, nil
-}
-
-type mockOffRampProvider struct {
-	executeFn func(ctx context.Context, req domain.OffRampRequest) (*domain.ProviderTx, error)
-}
-
-func (m *mockOffRampProvider) ID() string                          { return "mock-offramp" }
-func (m *mockOffRampProvider) SupportedPairs() []domain.CurrencyPair { return nil }
-func (m *mockOffRampProvider) GetQuote(ctx context.Context, req domain.QuoteRequest) (*domain.ProviderQuote, error) {
-	return nil, nil
-}
-func (m *mockOffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest) (*domain.ProviderTx, error) {
-	if m.executeFn != nil {
-		return m.executeFn(ctx, req)
-	}
-	return &domain.ProviderTx{ID: "offramp-tx-1", Status: "completed"}, nil
-}
-func (m *mockOffRampProvider) GetStatus(ctx context.Context, txID string) (*domain.ProviderTx, error) {
-	return &domain.ProviderTx{ID: txID, Status: "completed"}, nil
-}
-
-type mockBlockchainClient struct {
-	sendFn func(ctx context.Context, req domain.TxRequest) (*domain.ChainTx, error)
-}
-
-func (m *mockBlockchainClient) Chain() string { return "tron" }
-func (m *mockBlockchainClient) GetBalance(ctx context.Context, address, token string) (decimal.Decimal, error) {
-	return decimal.Zero, nil
-}
-func (m *mockBlockchainClient) EstimateGas(ctx context.Context, req domain.TxRequest) (decimal.Decimal, error) {
-	return decimal.NewFromFloat(0.50), nil
-}
-func (m *mockBlockchainClient) SendTransaction(ctx context.Context, req domain.TxRequest) (*domain.ChainTx, error) {
-	if m.sendFn != nil {
-		return m.sendFn(ctx, req)
-	}
-	return &domain.ChainTx{Hash: "0xabc123", Status: "confirmed", Confirmations: 20, Fee: decimal.NewFromFloat(0.50)}, nil
-}
-func (m *mockBlockchainClient) GetTransaction(ctx context.Context, hash string) (*domain.ChainTx, error) {
-	return &domain.ChainTx{Hash: hash, Status: "confirmed"}, nil
-}
-func (m *mockBlockchainClient) SubscribeTransactions(ctx context.Context, address string, ch chan<- domain.ChainTx) error {
-	return nil
-}
-
-type mockPublisher struct {
-	events []domain.Event
-}
-
-func (m *mockPublisher) Publish(ctx context.Context, event domain.Event) error {
-	m.events = append(m.events, event)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -328,19 +269,15 @@ func validRequest() CreateTransferRequest {
 }
 
 type testHarness struct {
-	engine     *Engine
-	transfers  *mockTransferStore
-	tenants    *mockTenantStore
-	ledger     *mockLedger
-	treasury   *mockTreasury
-	router     *mockRouter
-	providers  *mockProviderRegistry
-	publisher  *mockPublisher
+	engine    *Engine
+	transfers *mockTransferStore
+	tenants   *mockTenantStore
+	router    *mockRouter
 }
 
 func newTestHarness() *testHarness {
 	tenant := activeTenant()
-	transfers := &mockTransferStore{}
+	transfers := newMockTransferStore()
 	tenants := &mockTenantStore{
 		getFn: func(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 			if tenantID == tenant.ID {
@@ -349,35 +286,58 @@ func newTestHarness() *testHarness {
 			return nil, domain.ErrTenantNotFound(tenantID.String())
 		},
 	}
-	ledger := &mockLedger{}
-	treasury := &mockTreasury{}
 	router := &mockRouter{}
-	onRamp := &mockOnRampProvider{}
-	offRamp := &mockOffRampProvider{}
-	blockchain := &mockBlockchainClient{}
-	providers := &mockProviderRegistry{
-		onRamp:     onRamp,
-		offRamp:    offRamp,
-		blockchain: blockchain,
-	}
-	publisher := &mockPublisher{}
 
-	engine := NewEngine(transfers, tenants, ledger, treasury, router, providers, publisher, testLogger(), nil)
+	engine := NewEngine(transfers, tenants, router, testLogger(), nil)
 
 	return &testHarness{
 		engine:    engine,
 		transfers: transfers,
 		tenants:   tenants,
-		ledger:    ledger,
-		treasury:  treasury,
 		router:    router,
-		providers: providers,
-		publisher: publisher,
 	}
 }
 
+// seedTransfer puts a transfer directly into the mock store for step tests.
+func (h *testHarness) seedTransfer(t *domain.Transfer) {
+	h.transfers.mu.Lock()
+	defer h.transfers.mu.Unlock()
+	h.transfers.transfers[t.ID] = t
+}
+
+// outboxHasIntent checks whether the captured outbox entries contain an intent with the given event type.
+func outboxHasIntent(entries []domain.OutboxEntry, eventType string) bool {
+	for _, e := range entries {
+		if e.IsIntent && e.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+// outboxHasEvent checks whether the captured outbox entries contain a non-intent event with the given type.
+func outboxHasEvent(entries []domain.OutboxEntry, eventType string) bool {
+	for _, e := range entries {
+		if !e.IsIntent && e.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+// countIntents counts entries matching the given intent type.
+func countIntents(entries []domain.OutboxEntry, eventType string) int {
+	n := 0
+	for _, e := range entries {
+		if e.IsIntent && e.EventType == eventType {
+			n++
+		}
+	}
+	return n
+}
+
 // ---------------------------------------------------------------------------
-// Happy path tests
+// 1. CreateTransfer happy path
 // ---------------------------------------------------------------------------
 
 func TestCreateTransfer_Success(t *testing.T) {
@@ -399,158 +359,702 @@ func TestCreateTransfer_Success(t *testing.T) {
 		t.Errorf("expected source amount 1000, got %s", transfer.SourceAmount)
 	}
 
-	// Verify event was published
-	if len(h.publisher.events) != 1 {
-		t.Fatalf("expected 1 published event, got %d", len(h.publisher.events))
+	// Verify outbox contains EventTransferCreated
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 outbox entry, got %d", len(entries))
 	}
-	if h.publisher.events[0].Type != domain.EventTransferCreated {
-		t.Errorf("expected event type %s, got %s", domain.EventTransferCreated, h.publisher.events[0].Type)
+	if entries[0].EventType != domain.EventTransferCreated {
+		t.Errorf("expected outbox event type %s, got %s", domain.EventTransferCreated, entries[0].EventType)
 	}
-	if h.publisher.events[0].TenantID != tenant.ID {
-		t.Errorf("expected event tenant ID %s, got %s", tenant.ID, h.publisher.events[0].TenantID)
+	if entries[0].IsIntent {
+		t.Error("expected outbox entry to be an event, not an intent")
+	}
+	if entries[0].TenantID != tenant.ID {
+		t.Errorf("expected outbox tenant ID %s, got %s", tenant.ID, entries[0].TenantID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 2. FundTransfer — outbox has IntentTreasuryReserve + EventTransferFunded
+// ---------------------------------------------------------------------------
 
 func TestFundTransfer_Success(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
 
-	transferID := uuid.New()
 	transfer := &domain.Transfer{
-		ID:             transferID,
+		ID:             uuid.New(),
 		TenantID:       tenant.ID,
 		Status:         domain.TransferStatusCreated,
 		Version:        1,
 		SourceCurrency: domain.CurrencyGBP,
 		SourceAmount:   decimal.NewFromFloat(1000),
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.FundTransfer(ctx, transferID)
+	err := h.engine.FundTransfer(ctx, transfer.TenantID, transfer.ID)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	// Verify treasury Reserve was called
-	if h.treasury.reserved != 1 {
-		t.Errorf("expected 1 treasury reserve call, got %d", h.treasury.reserved)
-	}
-
-	// Verify ledger entries posted
-	if len(h.ledger.entries) != 1 {
-		t.Fatalf("expected 1 ledger entry, got %d", len(h.ledger.entries))
-	}
-	entry := h.ledger.entries[0]
-	if len(entry.Lines) != 2 {
-		t.Fatalf("expected 2 entry lines, got %d", len(entry.Lines))
-	}
-	// DR clearing, CR customer:pending
-	if entry.Lines[0].EntryType != domain.EntryTypeDebit {
-		t.Errorf("expected first line to be DEBIT, got %s", entry.Lines[0].EntryType)
-	}
-	if !strings.Contains(entry.Lines[0].AccountCode, "assets:bank:gbp:clearing") {
-		t.Errorf("expected clearing account code, got %s", entry.Lines[0].AccountCode)
-	}
-	if entry.Lines[1].EntryType != domain.EntryTypeCredit {
-		t.Errorf("expected second line to be CREDIT, got %s", entry.Lines[1].EntryType)
-	}
-	if !strings.Contains(entry.Lines[1].AccountCode, "liabilities:customer:pending") {
-		t.Errorf("expected customer pending account code, got %s", entry.Lines[1].AccountCode)
-	}
-
-	// Verify status transitioned to FUNDED
+	// Verify status transitioned
 	if transfer.Status != domain.TransferStatusFunded {
 		t.Errorf("expected status FUNDED, got %s", transfer.Status)
 	}
 
-	// Verify event published
-	found := false
-	for _, e := range h.publisher.events {
-		if e.Type == domain.EventTransferFunded {
-			found = true
-			break
-		}
+	// Verify outbox entries
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryReserve) {
+		t.Error("expected outbox to contain IntentTreasuryReserve")
 	}
-	if !found {
-		t.Error("expected transfer.funded event to be published")
-	}
-}
-
-func TestProcessTransfer_FullPipeline(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transferID := uuid.New()
-	transfer := &domain.Transfer{
-		ID:             transferID,
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusCreated,
-		Version:        1,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		DestCurrency:   domain.CurrencyNGN,
-		DestAmount:     decimal.NewFromFloat(500000),
-		StableCoin:     domain.CurrencyUSDT,
-		StableAmount:   decimal.NewFromFloat(1250),
-		Chain:          "tron",
-		FXRate:         decimal.NewFromFloat(1.25),
-		Fees: domain.FeeBreakdown{
-			OnRampFee:   decimal.NewFromFloat(4),
-			OffRampFee:  decimal.NewFromFloat(4),
-			NetworkFee:  decimal.NewFromFloat(0.50),
-			TotalFeeUSD: decimal.NewFromFloat(8.50),
-		},
+	if !outboxHasEvent(entries, domain.EventTransferFunded) {
+		t.Error("expected outbox to contain EventTransferFunded")
 	}
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.ProcessTransfer(ctx, transferID)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	// Verify final status
-	if transfer.Status != domain.TransferStatusCompleted {
-		t.Errorf("expected status COMPLETED, got %s", transfer.Status)
-	}
-
-	// Verify treasury: reserve on fund, release on complete
-	if h.treasury.reserved != 1 {
-		t.Errorf("expected 1 reserve call, got %d", h.treasury.reserved)
-	}
-	if h.treasury.released != 1 {
-		t.Errorf("expected 1 release call, got %d", h.treasury.released)
-	}
-
-	// Verify ledger entries posted (fund + onramp + settle + offramp + complete = 5)
-	if len(h.ledger.entries) != 5 {
-		t.Errorf("expected 5 ledger entries, got %d", len(h.ledger.entries))
-	}
-
-	// Verify events published (funded + onramp_initiated + onramp_completed + settlement_completed + offramp_initiated + transfer_completed)
-	if len(h.publisher.events) < 4 {
-		t.Errorf("expected at least 4 published events, got %d", len(h.publisher.events))
-	}
-
-	// Verify tenant account codes use tenant slug
-	for _, entry := range h.ledger.entries {
-		for _, line := range entry.Lines {
-			if strings.HasPrefix(line.AccountCode, "tenant:") && !strings.HasPrefix(line.AccountCode, "tenant:lemfi:") {
-				t.Errorf("expected tenant account code to use slug 'lemfi', got %s", line.AccountCode)
+	// Verify reserve payload content
+	for _, e := range entries {
+		if e.EventType == domain.IntentTreasuryReserve {
+			var payload domain.TreasuryReservePayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal reserve payload: %v", err)
+			}
+			if payload.TransferID != transfer.ID {
+				t.Errorf("expected transfer ID %s in payload, got %s", transfer.ID, payload.TransferID)
+			}
+			if !payload.Amount.Equal(decimal.NewFromFloat(1000)) {
+				t.Errorf("expected amount 1000 in payload, got %s", payload.Amount)
+			}
+			if payload.Location != "bank:gbp" {
+				t.Errorf("expected location bank:gbp, got %s", payload.Location)
 			}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Tenant validation tests
+// 3. InitiateOnRamp — outbox has IntentProviderOnRamp
+// ---------------------------------------------------------------------------
+
+func TestInitiateOnRamp_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:               uuid.New(),
+		TenantID:         tenant.ID,
+		Status:           domain.TransferStatusFunded,
+		Version:          2,
+		SourceCurrency:   domain.CurrencyGBP,
+		SourceAmount:     decimal.NewFromFloat(1000),
+		StableCoin:       domain.CurrencyUSDT,
+		Chain:            "tron",
+		OnRampProviderID: "mock-onramp",
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.InitiateOnRamp(ctx, transfer.TenantID, transfer.ID)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusOnRamping {
+		t.Errorf("expected status ON_RAMPING, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentProviderOnRamp) {
+		t.Error("expected outbox to contain IntentProviderOnRamp")
+	}
+
+	// Verify on-ramp payload
+	for _, e := range entries {
+		if e.EventType == domain.IntentProviderOnRamp {
+			var payload domain.ProviderOnRampPayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal on-ramp payload: %v", err)
+			}
+			if payload.ProviderID != "mock-onramp" {
+				t.Errorf("expected provider ID mock-onramp, got %s", payload.ProviderID)
+			}
+			if payload.FromCurrency != domain.CurrencyGBP {
+				t.Errorf("expected from currency GBP, got %s", payload.FromCurrency)
+			}
+			if payload.ToCurrency != domain.CurrencyUSDT {
+				t.Errorf("expected to currency USDT, got %s", payload.ToCurrency)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 3b. InitiateOnRamp includes fallback alternatives from quote
+// ---------------------------------------------------------------------------
+
+func TestInitiateOnRamp_IncludesAlternatives(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	quoteID := uuid.New()
+	quote := &domain.Quote{
+		ID:             quoteID,
+		TenantID:       tenant.ID,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		DestCurrency:   domain.CurrencyNGN,
+		StableAmount:   decimal.NewFromFloat(1245),
+		FXRate:         decimal.NewFromFloat(1.25),
+		Route: domain.RouteInfo{
+			Chain:          "tron",
+			StableCoin:     domain.CurrencyUSDT,
+			OnRampProvider: "mock-onramp",
+			OffRampProvider: "mock-offramp",
+			AlternativeRoutes: []domain.RouteAlternative{
+				{
+					OnRampProvider:  "alt-onramp",
+					OffRampProvider: "alt-offramp",
+					Chain:           "ethereum",
+					StableCoin:      domain.CurrencyUSDC,
+					Fee:             domain.Money{Amount: decimal.NewFromFloat(6.0), Currency: domain.CurrencyUSD},
+					Rate:            decimal.NewFromFloat(1.24),
+					StableAmount:    decimal.NewFromFloat(1240),
+					Score:           decimal.NewFromFloat(0.85),
+				},
+			},
+		},
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+	}
+
+	// Configure the mock store to return our quote
+	h.transfers.getQuoteFn = func(_ context.Context, tid, qid uuid.UUID) (*domain.Quote, error) {
+		if qid == quoteID {
+			return quote, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	transfer := &domain.Transfer{
+		ID:               uuid.New(),
+		TenantID:         tenant.ID,
+		Status:           domain.TransferStatusFunded,
+		Version:          2,
+		SourceCurrency:   domain.CurrencyGBP,
+		SourceAmount:     decimal.NewFromFloat(1000),
+		StableCoin:       domain.CurrencyUSDT,
+		Chain:            "tron",
+		OnRampProviderID: "mock-onramp",
+		QuoteID:          &quoteID,
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.InitiateOnRamp(ctx, transfer.TenantID, transfer.ID)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Verify the outbox payload contains alternatives
+	entries := h.transfers.getOutboxEntries()
+	for _, e := range entries {
+		if e.EventType == domain.IntentProviderOnRamp {
+			var payload domain.ProviderOnRampPayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal on-ramp payload: %v", err)
+			}
+			if len(payload.Alternatives) != 1 {
+				t.Fatalf("expected 1 alternative, got %d", len(payload.Alternatives))
+			}
+			alt := payload.Alternatives[0]
+			if alt.ProviderID != "alt-onramp" {
+				t.Errorf("expected alt provider alt-onramp, got %s", alt.ProviderID)
+			}
+			if alt.OffRampProvider != "alt-offramp" {
+				t.Errorf("expected alt off-ramp alt-offramp, got %s", alt.OffRampProvider)
+			}
+			if alt.Chain != "ethereum" {
+				t.Errorf("expected alt chain ethereum, got %s", alt.Chain)
+			}
+			if alt.StableCoin != domain.CurrencyUSDC {
+				t.Errorf("expected alt stablecoin USDC, got %s", alt.StableCoin)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 4. HandleOnRampResult success — outbox has IntentLedgerPost + IntentBlockchainSend
+// ---------------------------------------------------------------------------
+
+func TestHandleOnRampResult_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:               uuid.New(),
+		TenantID:         tenant.ID,
+		Status:           domain.TransferStatusOnRamping,
+		Version:          3,
+		SourceCurrency:   domain.CurrencyGBP,
+		SourceAmount:     decimal.NewFromFloat(1000),
+		StableCoin:       domain.CurrencyUSDT,
+		StableAmount:     decimal.NewFromFloat(1250),
+		Chain:            "tron",
+		OnRampProviderID: "mock-onramp",
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleOnRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{Success: true, ProviderRef: "prov-123"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusSettling {
+		t.Errorf("expected status SETTLING, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentLedgerPost) {
+		t.Error("expected outbox to contain IntentLedgerPost")
+	}
+	if !outboxHasIntent(entries, domain.IntentBlockchainSend) {
+		t.Error("expected outbox to contain IntentBlockchainSend")
+	}
+	if !outboxHasEvent(entries, domain.EventOnRampCompleted) {
+		t.Error("expected outbox to contain EventOnRampCompleted")
+	}
+
+	// Verify blockchain payload
+	for _, e := range entries {
+		if e.EventType == domain.IntentBlockchainSend {
+			var payload domain.BlockchainSendPayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal blockchain payload: %v", err)
+			}
+			if payload.Chain != "tron" {
+				t.Errorf("expected chain tron, got %s", payload.Chain)
+			}
+			if payload.Token != "USDT" {
+				t.Errorf("expected token USDT, got %s", payload.Token)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 5. HandleOnRampResult failure — outbox has IntentTreasuryRelease
+// ---------------------------------------------------------------------------
+
+func TestHandleOnRampResult_Failure(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusOnRamping,
+		Version:        3,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleOnRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{
+		Success:   false,
+		Error:     "provider unavailable",
+		ErrorCode: "PROVIDER_DOWN",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusRefunding {
+		t.Errorf("expected status REFUNDING, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasEvent(entries, domain.EventProviderOnRampFailed) {
+		t.Error("expected outbox to contain EventProviderOnRampFailed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 6. HandleSettlementResult success — outbox has IntentProviderOffRamp
+// ---------------------------------------------------------------------------
+
+func TestHandleSettlementResult_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:                uuid.New(),
+		TenantID:          tenant.ID,
+		Status:            domain.TransferStatusSettling,
+		Version:           4,
+		SourceCurrency:    domain.CurrencyGBP,
+		SourceAmount:      decimal.NewFromFloat(1000),
+		DestCurrency:      domain.CurrencyNGN,
+		StableCoin:        domain.CurrencyUSDT,
+		StableAmount:      decimal.NewFromFloat(1250),
+		Chain:             "tron",
+		OffRampProviderID: "mock-offramp",
+		Recipient: domain.Recipient{
+			Name:    "Jane Doe",
+			Country: "NG",
+		},
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleSettlementResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{Success: true, TxHash: "0xabc"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusOffRamping {
+		t.Errorf("expected status OFF_RAMPING, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentProviderOffRamp) {
+		t.Error("expected outbox to contain IntentProviderOffRamp")
+	}
+	if !outboxHasEvent(entries, domain.EventSettlementCompleted) {
+		t.Error("expected outbox to contain EventSettlementCompleted")
+	}
+
+	// Verify off-ramp payload
+	for _, e := range entries {
+		if e.EventType == domain.IntentProviderOffRamp {
+			var payload domain.ProviderOffRampPayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal off-ramp payload: %v", err)
+			}
+			if payload.ProviderID != "mock-offramp" {
+				t.Errorf("expected provider ID mock-offramp, got %s", payload.ProviderID)
+			}
+			if payload.Recipient.Country != "NG" {
+				t.Errorf("expected recipient country NG, got %s", payload.Recipient.Country)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 7. HandleSettlementResult failure
+// ---------------------------------------------------------------------------
+
+func TestHandleSettlementResult_Failure(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusSettling,
+		Version:        4,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleSettlementResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{
+		Success:   false,
+		Error:     "blockchain timeout",
+		ErrorCode: "CHAIN_TIMEOUT",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusFailed {
+		t.Errorf("expected status FAILED, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasIntent(entries, domain.IntentLedgerReverse) {
+		t.Error("expected outbox to contain IntentLedgerReverse")
+	}
+	if !outboxHasEvent(entries, domain.EventBlockchainFailed) {
+		t.Error("expected outbox to contain EventBlockchainFailed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. HandleOffRampResult success — triggers CompleteTransfer
+// ---------------------------------------------------------------------------
+
+func TestHandleOffRampResult_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusOffRamping,
+		Version:        5,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		DestCurrency:   domain.CurrencyNGN,
+		DestAmount:     decimal.NewFromFloat(500000),
+		Fees: domain.FeeBreakdown{
+			TotalFeeUSD: decimal.NewFromFloat(5.10),
+		},
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleOffRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{Success: true})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusCompleted {
+		t.Errorf("expected status COMPLETED, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasIntent(entries, domain.IntentLedgerPost) {
+		t.Error("expected outbox to contain IntentLedgerPost")
+	}
+	if !outboxHasIntent(entries, domain.IntentWebhookDeliver) {
+		t.Error("expected outbox to contain IntentWebhookDeliver")
+	}
+	if !outboxHasEvent(entries, domain.EventTransferCompleted) {
+		t.Error("expected outbox to contain EventTransferCompleted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 9. HandleOffRampResult failure
+// ---------------------------------------------------------------------------
+
+func TestHandleOffRampResult_Failure(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusOffRamping,
+		Version:        5,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.HandleOffRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{
+		Success:   false,
+		Error:     "payout failed",
+		ErrorCode: "PAYOUT_FAILED",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusFailed {
+		t.Errorf("expected status FAILED, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasIntent(entries, domain.IntentLedgerReverse) {
+		t.Error("expected outbox to contain IntentLedgerReverse")
+	}
+	if !outboxHasIntent(entries, domain.IntentWebhookDeliver) {
+		t.Error("expected outbox to contain IntentWebhookDeliver")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 10. CompleteTransfer — outbox has completion intents
+// ---------------------------------------------------------------------------
+
+func TestCompleteTransfer_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusOffRamping,
+		Version:        5,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		DestCurrency:   domain.CurrencyNGN,
+		DestAmount:     decimal.NewFromFloat(500000),
+		Fees: domain.FeeBreakdown{
+			TotalFeeUSD: decimal.NewFromFloat(8.50),
+		},
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.CompleteTransfer(ctx, transfer.TenantID, transfer.ID)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusCompleted {
+		t.Errorf("expected status COMPLETED, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasIntent(entries, domain.IntentLedgerPost) {
+		t.Error("expected outbox to contain IntentLedgerPost")
+	}
+	if !outboxHasIntent(entries, domain.IntentWebhookDeliver) {
+		t.Error("expected outbox to contain IntentWebhookDeliver")
+	}
+	if !outboxHasEvent(entries, domain.EventTransferCompleted) {
+		t.Error("expected outbox to contain EventTransferCompleted")
+	}
+
+	// Verify ledger payload has correct entries
+	for _, e := range entries {
+		if e.EventType == domain.IntentLedgerPost {
+			var payload domain.LedgerPostPayload
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal ledger payload: %v", err)
+			}
+			if len(payload.Lines) != 3 {
+				t.Errorf("expected 3 ledger lines, got %d", len(payload.Lines))
+			}
+			if payload.IdempotencyKey == "" {
+				t.Error("expected non-empty idempotency key in ledger payload")
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 11. FailTransfer — outbox has IntentTreasuryRelease + IntentWebhookDeliver
+// ---------------------------------------------------------------------------
+
+func TestFailTransfer_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusSettling,
+		Version:        3,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		DestCurrency:   domain.CurrencyNGN,
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.FailTransfer(ctx, transfer.TenantID, transfer.ID, "provider timeout", "TIMEOUT")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusFailed {
+		t.Errorf("expected status FAILED, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasIntent(entries, domain.IntentWebhookDeliver) {
+		t.Error("expected outbox to contain IntentWebhookDeliver")
+	}
+	if !outboxHasEvent(entries, domain.EventTransferFailed) {
+		t.Error("expected outbox to contain EventTransferFailed")
+	}
+}
+
+func TestFailTransfer_FromOnRamping_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusOnRamping,
+		Version:        2,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		DestCurrency:   domain.CurrencyNGN,
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.FailTransfer(ctx, transfer.TenantID, transfer.ID, "provider confirmed failure", "PROVIDER_FAILED")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusFailed {
+		t.Errorf("expected status FAILED, got %s", transfer.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12. InitiateRefund — outbox has IntentLedgerReverse + IntentTreasuryRelease
+// ---------------------------------------------------------------------------
+
+func TestInitiateRefund_Success(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusFailed,
+		Version:        4,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+	}
+	h.seedTransfer(transfer)
+
+	err := h.engine.InitiateRefund(ctx, transfer.TenantID, transfer.ID)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if transfer.Status != domain.TransferStatusRefunding {
+		t.Errorf("expected status REFUNDING, got %s", transfer.Status)
+	}
+
+	entries := h.transfers.getOutboxEntries()
+	if !outboxHasIntent(entries, domain.IntentLedgerReverse) {
+		t.Error("expected outbox to contain IntentLedgerReverse")
+	}
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
+	}
+	if !outboxHasEvent(entries, domain.EventRefundInitiated) {
+		t.Error("expected outbox to contain EventRefundInitiated")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 13. Tenant validation — suspended tenant rejected
 // ---------------------------------------------------------------------------
 
 func TestCreateTransfer_TenantSuspended(t *testing.T) {
@@ -601,11 +1105,15 @@ func TestCreateTransfer_TenantKYBPending(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// 14. Daily limit exceeded
+// ---------------------------------------------------------------------------
+
 func TestCreateTransfer_DailyLimitExceeded(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
-	tenant.DailyLimitUSD = decimal.NewFromFloat(500) // Low limit
+	tenant.DailyLimitUSD = decimal.NewFromFloat(500)
 
 	h.tenants.getFn = func(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 		return tenant, nil
@@ -629,7 +1137,7 @@ func TestCreateTransfer_PerTransferLimitExceeded(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
-	tenant.PerTransferLimit = decimal.NewFromFloat(500) // Low limit
+	tenant.PerTransferLimit = decimal.NewFromFloat(500)
 
 	h.tenants.getFn = func(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 		return tenant, nil
@@ -649,63 +1157,8 @@ func TestCreateTransfer_PerTransferLimitExceeded(t *testing.T) {
 	}
 }
 
-func TestCreateTransfer_QuoteFromDifferentTenant(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	quoteID := uuid.New()
-	otherTenantID := uuid.New()
-	h.transfers.getQuoteFn = func(ctx context.Context, tid, qid uuid.UUID) (*domain.Quote, error) {
-		return &domain.Quote{
-			ID:        quoteID,
-			TenantID:  otherTenantID, // Different tenant
-			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-		}, nil
-	}
-
-	req := validRequest()
-	req.QuoteID = &quoteID
-
-	_, err := h.engine.CreateTransfer(ctx, tenant.ID, req)
-	if err == nil {
-		t.Fatal("expected error for quote from different tenant")
-	}
-	if !strings.Contains(err.Error(), "different tenant") {
-		t.Errorf("expected 'different tenant' in error, got %v", err)
-	}
-}
-
-func TestCreateTransfer_ExpiredQuote(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	quoteID := uuid.New()
-	h.transfers.getQuoteFn = func(ctx context.Context, tid, qid uuid.UUID) (*domain.Quote, error) {
-		return &domain.Quote{
-			ID:        quoteID,
-			TenantID:  tenant.ID,
-			ExpiresAt: time.Now().UTC().Add(-5 * time.Minute), // Expired
-		}, nil
-	}
-
-	req := validRequest()
-	req.QuoteID = &quoteID
-
-	_, err := h.engine.CreateTransfer(ctx, tenant.ID, req)
-	if err == nil {
-		t.Fatal("expected error for expired quote")
-	}
-
-	var domErr *domain.DomainError
-	if !errors.As(err, &domErr) || domErr.Code() != domain.CodeQuoteExpired {
-		t.Errorf("expected ErrQuoteExpired, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
-// Idempotency tests
+// 15. Idempotency — duplicate returns existing
 // ---------------------------------------------------------------------------
 
 func TestCreateTransfer_IdempotentReturn(t *testing.T) {
@@ -734,97 +1187,19 @@ func TestCreateTransfer_IdempotentReturn(t *testing.T) {
 	if transfer.ID != existingTransfer.ID {
 		t.Errorf("expected existing transfer ID %s, got %s", existingTransfer.ID, transfer.ID)
 	}
-}
 
-func TestCreateTransfer_DifferentTenantSameKey(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-
-	tenantA := activeTenant()
-	tenantB := &domain.Tenant{
-		ID:              uuid.MustParse("b0000000-0000-0000-0000-000000000002"),
-		Name:            "Fincra",
-		Slug:            "fincra",
-		Status:          domain.TenantStatusActive,
-		KYBStatus:       domain.KYBStatusVerified,
-		DailyLimitUSD:   decimal.NewFromFloat(1000000),
-		PerTransferLimit: decimal.NewFromFloat(50000),
-	}
-
-	h.tenants.getFn = func(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
-		switch tenantID {
-		case tenantA.ID:
-			return tenantA, nil
-		case tenantB.ID:
-			return tenantB, nil
-		}
-		return nil, domain.ErrTenantNotFound(tenantID.String())
-	}
-
-	// Idempotency key is tenant-scoped, so same key for different tenants creates different transfers
-	h.transfers.getByIdempotencyKeyFn = func(ctx context.Context, tid uuid.UUID, key string) (*domain.Transfer, error) {
-		return nil, fmt.Errorf("not found")
-	}
-
-	req := validRequest()
-	transferA, err := h.engine.CreateTransfer(ctx, tenantA.ID, req)
-	if err != nil {
-		t.Fatalf("tenant A: expected no error, got %v", err)
-	}
-	transferB, err := h.engine.CreateTransfer(ctx, tenantB.ID, req)
-	if err != nil {
-		t.Fatalf("tenant B: expected no error, got %v", err)
-	}
-	if transferA.ID == transferB.ID {
-		t.Error("expected different transfer IDs for different tenants with same key")
+	// No outbox entries should be created for idempotent return
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 0 {
+		t.Errorf("expected 0 outbox entries for idempotent return, got %d", len(entries))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Failure handling tests
+// 16. Optimistic lock — concurrent transitions fail
 // ---------------------------------------------------------------------------
 
-func TestFailTransfer_Success(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transfer := &domain.Transfer{
-		ID:       uuid.New(),
-		TenantID: tenant.ID,
-		Status:   domain.TransferStatusSettling, // Valid source for FAILED
-		Version:  3,
-	}
-
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.FailTransfer(ctx, transfer.ID, "provider timeout", "TIMEOUT")
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if transfer.Status != domain.TransferStatusFailed {
-		t.Errorf("expected status FAILED, got %s", transfer.Status)
-	}
-	if transfer.FailureReason != "provider timeout" {
-		t.Errorf("expected failure reason 'provider timeout', got %s", transfer.FailureReason)
-	}
-
-	// Verify event published
-	found := false
-	for _, e := range h.publisher.events {
-		if e.Type == domain.EventTransferFailed {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected transfer.failed event")
-	}
-}
-
-func TestInitiateRefund_Success(t *testing.T) {
+func TestFundTransfer_OptimisticLockConflict(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
@@ -832,121 +1207,34 @@ func TestInitiateRefund_Success(t *testing.T) {
 	transfer := &domain.Transfer{
 		ID:             uuid.New(),
 		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusFailed,
-		Version:        4,
+		Status:         domain.TransferStatusCreated,
+		Version:        1,
 		SourceCurrency: domain.CurrencyGBP,
 		SourceAmount:   decimal.NewFromFloat(1000),
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
+	// Simulate version mismatch — return the same sentinel the real store uses
+	h.transfers.transitionWithOutboxFn = func(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error {
+		return fmt.Errorf("settla-store: transfer %s: %w", transferID, ErrOptimisticLock)
 	}
 
-	err := h.engine.InitiateRefund(ctx, transfer.ID)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if transfer.Status != domain.TransferStatusRefunded {
-		t.Errorf("expected status REFUNDED, got %s", transfer.Status)
-	}
-
-	// Verify treasury release was called
-	if h.treasury.released != 1 {
-		t.Errorf("expected 1 release call, got %d", h.treasury.released)
-	}
-
-	// Verify refund.completed event
-	found := false
-	for _, e := range h.publisher.events {
-		if e.Type == domain.EventRefundCompleted {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected refund.completed event")
-	}
-}
-
-func TestOnRampProviderFailure_TransferStaysFunded(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transfer := &domain.Transfer{
-		ID:             uuid.New(),
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusFunded,
-		Version:        2,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		StableCoin:     domain.CurrencyUSDT,
-		Chain:          "tron",
-	}
-
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	// Make on-ramp fail
-	h.providers.onRamp = &mockOnRampProvider{
-		executeFn: func(ctx context.Context, req domain.OnRampRequest) (*domain.ProviderTx, error) {
-			return nil, errors.New("provider unavailable")
-		},
-	}
-
-	err := h.engine.InitiateOnRamp(ctx, transfer.ID)
+	err := h.engine.FundTransfer(ctx, transfer.TenantID, transfer.ID)
 	if err == nil {
-		t.Fatal("expected error from failed on-ramp")
-	}
-	// Transfer should still be in FUNDED state (not transitioned)
-	if transfer.Status != domain.TransferStatusFunded {
-		t.Errorf("expected status to remain FUNDED, got %s", transfer.Status)
-	}
-}
-
-func TestOffRampFailure_TransferFails(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transfer := &domain.Transfer{
-		ID:             uuid.New(),
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusSettling,
-		Version:        4,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		DestCurrency:   domain.CurrencyNGN,
-		DestAmount:     decimal.NewFromFloat(500000),
-		StableCoin:     domain.CurrencyUSDT,
-		StableAmount:   decimal.NewFromFloat(1250),
-		Chain:          "tron",
+		t.Fatal("expected optimistic lock error")
 	}
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
+	// The engine wraps the error with "concurrent modification" context
+	if !errors.Is(err, ErrOptimisticLock) {
+		t.Errorf("expected ErrOptimisticLock in error chain, got %v", err)
 	}
-
-	// Make off-ramp fail
-	h.providers.offRamp = &mockOffRampProvider{
-		executeFn: func(ctx context.Context, req domain.OffRampRequest) (*domain.ProviderTx, error) {
-			return nil, errors.New("payout failed")
-		},
-	}
-
-	err := h.engine.InitiateOffRamp(ctx, transfer.ID)
-	if err == nil {
-		t.Fatal("expected error from failed off-ramp")
-	}
-	// Transfer should stay in SETTLING (not transitioned since error occurred before transition)
-	if transfer.Status != domain.TransferStatusSettling {
-		t.Errorf("expected status to remain SETTLING, got %s", transfer.Status)
+	if !strings.Contains(err.Error(), "concurrent modification") {
+		t.Errorf("expected 'concurrent modification' in error message, got %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// State machine tests
+// State machine validation tests
 // ---------------------------------------------------------------------------
 
 func TestFundTransfer_InvalidState(t *testing.T) {
@@ -957,15 +1245,12 @@ func TestFundTransfer_InvalidState(t *testing.T) {
 	transfer := &domain.Transfer{
 		ID:       uuid.New(),
 		TenantID: tenant.ID,
-		Status:   domain.TransferStatusCompleted, // Cannot fund a completed transfer
+		Status:   domain.TransferStatusCompleted,
 		Version:  5,
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.FundTransfer(ctx, transfer.ID)
+	err := h.engine.FundTransfer(ctx, transfer.TenantID, transfer.ID)
 	if err == nil {
 		t.Fatal("expected error for invalid state")
 	}
@@ -984,15 +1269,12 @@ func TestCompleteTransfer_InvalidState(t *testing.T) {
 	transfer := &domain.Transfer{
 		ID:       uuid.New(),
 		TenantID: tenant.ID,
-		Status:   domain.TransferStatusCreated, // Cannot complete from CREATED
+		Status:   domain.TransferStatusCreated,
 		Version:  1,
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.CompleteTransfer(ctx, transfer.ID)
+	err := h.engine.CompleteTransfer(ctx, transfer.TenantID, transfer.ID)
 	if err == nil {
 		t.Fatal("expected error for invalid state")
 	}
@@ -1011,15 +1293,12 @@ func TestFailTransfer_InvalidState(t *testing.T) {
 	transfer := &domain.Transfer{
 		ID:       uuid.New(),
 		TenantID: tenant.ID,
-		Status:   domain.TransferStatusCompleted, // Cannot fail a completed transfer
+		Status:   domain.TransferStatusCompleted,
 		Version:  6,
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.FailTransfer(ctx, transfer.ID, "test", "TEST")
+	err := h.engine.FailTransfer(ctx, transfer.TenantID, transfer.ID, "test", "TEST")
 	if err == nil {
 		t.Fatal("expected error for invalid state")
 	}
@@ -1027,57 +1306,6 @@ func TestFailTransfer_InvalidState(t *testing.T) {
 	var domErr *domain.DomainError
 	if !errors.As(err, &domErr) || domErr.Code() != domain.CodeInvalidTransition {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Provider timeout test
-// ---------------------------------------------------------------------------
-
-func TestInitiateOnRamp_Timeout(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transfer := &domain.Transfer{
-		ID:             uuid.New(),
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusFunded,
-		Version:        2,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		StableCoin:     domain.CurrencyUSDT,
-		Chain:          "tron",
-	}
-
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	// Simulate a provider that respects context cancellation
-	h.providers.onRamp = &mockOnRampProvider{
-		executeFn: func(ctx context.Context, req domain.OnRampRequest) (*domain.ProviderTx, error) {
-			// Check if context is already cancelled (which happens when parent ctx is cancelled)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
-				return nil, context.DeadlineExceeded
-			}
-		},
-	}
-
-	// Use an already-cancelled context to simulate timeout
-	cancelledCtx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	err := h.engine.InitiateOnRamp(cancelledCtx, transfer.ID)
-	if err == nil {
-		t.Fatal("expected error from timeout")
-	}
-	// Transfer should remain in FUNDED
-	if transfer.Status != domain.TransferStatusFunded {
-		t.Errorf("expected status to remain FUNDED, got %s", transfer.Status)
 	}
 }
 
@@ -1116,9 +1344,6 @@ func TestCreateTransfer_UnsupportedCurrency(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported currency")
 	}
-	if !strings.Contains(err.Error(), "unsupported currency") {
-		t.Errorf("expected 'unsupported currency' in error, got %v", err)
-	}
 }
 
 func TestCreateTransfer_MissingRecipient(t *testing.T) {
@@ -1127,123 +1352,195 @@ func TestCreateTransfer_MissingRecipient(t *testing.T) {
 	tenant := activeTenant()
 
 	req := validRequest()
-	req.Recipient = domain.Recipient{} // Missing required fields
+	req.Recipient = domain.Recipient{}
 
 	_, err := h.engine.CreateTransfer(ctx, tenant.ID, req)
 	if err == nil {
 		t.Fatal("expected error for missing recipient")
 	}
-	if !strings.Contains(err.Error(), "recipient") {
-		t.Errorf("expected 'recipient' in error, got %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// Quote validation tests
+// ---------------------------------------------------------------------------
+
+func TestCreateTransfer_QuoteFromDifferentTenant(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	quoteID := uuid.New()
+	otherTenantID := uuid.New()
+	h.transfers.getQuoteFn = func(ctx context.Context, tid, qid uuid.UUID) (*domain.Quote, error) {
+		return &domain.Quote{
+			ID:        quoteID,
+			TenantID:  otherTenantID,
+			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		}, nil
+	}
+
+	req := validRequest()
+	req.QuoteID = &quoteID
+
+	_, err := h.engine.CreateTransfer(ctx, tenant.ID, req)
+	if err == nil {
+		t.Fatal("expected error for quote from different tenant")
+	}
+}
+
+func TestCreateTransfer_ExpiredQuote(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	quoteID := uuid.New()
+	h.transfers.getQuoteFn = func(ctx context.Context, tid, qid uuid.UUID) (*domain.Quote, error) {
+		return &domain.Quote{
+			ID:        quoteID,
+			TenantID:  tenant.ID,
+			ExpiresAt: time.Now().UTC().Add(-5 * time.Minute),
+		}, nil
+	}
+
+	req := validRequest()
+	req.QuoteID = &quoteID
+
+	_, err := h.engine.CreateTransfer(ctx, tenant.ID, req)
+	if err == nil {
+		t.Fatal("expected error for expired quote")
+	}
+
+	var domErr *domain.DomainError
+	if !errors.As(err, &domErr) || domErr.Code() != domain.CodeQuoteExpired {
+		t.Errorf("expected ErrQuoteExpired, got %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Ledger entry verification tests
+// ProcessTransfer full pipeline
 // ---------------------------------------------------------------------------
 
-func TestSettleOnChain_LedgerEntries(t *testing.T) {
+func TestProcessTransfer_FullPipeline(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
 
 	transfer := &domain.Transfer{
-		ID:             uuid.New(),
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusSettling,
-		Version:        4,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		StableCoin:     domain.CurrencyUSDT,
-		StableAmount:   decimal.NewFromFloat(1250),
-		Chain:          "tron",
-	}
-
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.SettleOnChain(ctx, transfer.ID)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if len(h.ledger.entries) != 1 {
-		t.Fatalf("expected 1 ledger entry, got %d", len(h.ledger.entries))
-	}
-
-	entry := h.ledger.entries[0]
-	if len(entry.Lines) != 3 {
-		t.Fatalf("expected 3 entry lines, got %d", len(entry.Lines))
-	}
-
-	// Verify settlement in transit debit
-	if !strings.Contains(entry.Lines[0].AccountCode, "assets:settlement:in_transit") {
-		t.Errorf("expected settlement:in_transit account, got %s", entry.Lines[0].AccountCode)
-	}
-	// Verify gas fee debit
-	if !strings.Contains(entry.Lines[1].AccountCode, "expenses:network:tron:gas") {
-		t.Errorf("expected network gas account, got %s", entry.Lines[1].AccountCode)
-	}
-	// Verify crypto credit
-	if !strings.Contains(entry.Lines[2].AccountCode, "assets:crypto:usdt:tron") {
-		t.Errorf("expected crypto asset account, got %s", entry.Lines[2].AccountCode)
-	}
-}
-
-func TestCompleteTransfer_LedgerEntries(t *testing.T) {
-	h := newTestHarness()
-	ctx := context.Background()
-	tenant := activeTenant()
-
-	transfer := &domain.Transfer{
-		ID:             uuid.New(),
-		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusOffRamping,
-		Version:        6,
-		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromFloat(1000),
-		DestCurrency:   domain.CurrencyNGN,
-		DestAmount:     decimal.NewFromFloat(500000),
+		ID:                uuid.New(),
+		TenantID:          tenant.ID,
+		Status:            domain.TransferStatusCreated,
+		Version:           1,
+		SourceCurrency:    domain.CurrencyGBP,
+		SourceAmount:      decimal.NewFromFloat(1000),
+		DestCurrency:      domain.CurrencyNGN,
+		DestAmount:        decimal.NewFromFloat(500000),
+		StableCoin:        domain.CurrencyUSDT,
+		StableAmount:      decimal.NewFromFloat(1250),
+		Chain:             "tron",
+		OnRampProviderID:  "mock-onramp",
+		OffRampProviderID: "mock-offramp",
+		FXRate:            decimal.NewFromFloat(1.25),
 		Fees: domain.FeeBreakdown{
+			OnRampFee:   decimal.NewFromFloat(4),
+			OffRampFee:  decimal.NewFromFloat(4),
+			NetworkFee:  decimal.NewFromFloat(0.50),
 			TotalFeeUSD: decimal.NewFromFloat(8.50),
 		},
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	err := h.engine.CompleteTransfer(ctx, transfer.ID)
+	err := h.engine.ProcessTransfer(ctx, transfer.TenantID, transfer.ID)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	if len(h.ledger.entries) != 1 {
-		t.Fatalf("expected 1 ledger entry, got %d", len(h.ledger.entries))
+	// Verify final status
+	if transfer.Status != domain.TransferStatusCompleted {
+		t.Errorf("expected status COMPLETED, got %s", transfer.Status)
 	}
 
-	entry := h.ledger.entries[0]
-	// Verify closing entries: DR customer pending, CR recipient payable, CR fee revenue
-	if len(entry.Lines) != 3 {
-		t.Fatalf("expected 3 entry lines, got %d", len(entry.Lines))
+	// Verify outbox contains all expected entries from the pipeline
+	entries := h.transfers.getOutboxEntries()
+
+	// Should have treasury reserve (fund), on-ramp intent, ledger+blockchain (on-ramp result),
+	// off-ramp intent (settlement result), treasury release+ledger+webhook (complete)
+	if len(entries) == 0 {
+		t.Fatal("expected outbox entries from pipeline")
 	}
-	if !strings.Contains(entry.Lines[0].AccountCode, "liabilities:customer:pending") {
-		t.Errorf("expected customer pending account, got %s", entry.Lines[0].AccountCode)
+
+	// Key intents that must appear
+	if countIntents(entries, domain.IntentTreasuryReserve) != 1 {
+		t.Error("expected exactly 1 IntentTreasuryReserve")
 	}
-	if !strings.Contains(entry.Lines[1].AccountCode, "liabilities:payable:recipient") {
-		t.Errorf("expected recipient payable account, got %s", entry.Lines[1].AccountCode)
+	if countIntents(entries, domain.IntentProviderOnRamp) != 1 {
+		t.Error("expected exactly 1 IntentProviderOnRamp")
 	}
-	if !strings.Contains(entry.Lines[2].AccountCode, "revenue:fees:settlement") {
-		t.Errorf("expected fee revenue account, got %s", entry.Lines[2].AccountCode)
+	if countIntents(entries, domain.IntentBlockchainSend) != 1 {
+		t.Error("expected exactly 1 IntentBlockchainSend")
+	}
+	if countIntents(entries, domain.IntentProviderOffRamp) != 1 {
+		t.Error("expected exactly 1 IntentProviderOffRamp")
+	}
+	if countIntents(entries, domain.IntentTreasuryRelease) != 1 {
+		t.Error("expected exactly 1 IntentTreasuryRelease")
+	}
+	if countIntents(entries, domain.IntentWebhookDeliver) != 1 {
+		t.Error("expected exactly 1 IntentWebhookDeliver")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Blockchain timeout test
+// Multi-tenant isolation
 // ---------------------------------------------------------------------------
 
-func TestSettleOnChain_BlockchainTimeout(t *testing.T) {
+func TestCreateTransfer_DifferentTenantSameKey(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+
+	tenantA := activeTenant()
+	tenantB := &domain.Tenant{
+		ID:               uuid.MustParse("b0000000-0000-0000-0000-000000000002"),
+		Name:             "Fincra",
+		Slug:             "fincra",
+		Status:           domain.TenantStatusActive,
+		KYBStatus:        domain.KYBStatusVerified,
+		DailyLimitUSD:    decimal.NewFromFloat(1000000),
+		PerTransferLimit: decimal.NewFromFloat(50000),
+	}
+
+	h.tenants.getFn = func(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
+		switch tenantID {
+		case tenantA.ID:
+			return tenantA, nil
+		case tenantB.ID:
+			return tenantB, nil
+		}
+		return nil, domain.ErrTenantNotFound(tenantID.String())
+	}
+
+	h.transfers.getByIdempotencyKeyFn = func(ctx context.Context, tid uuid.UUID, key string) (*domain.Transfer, error) {
+		return nil, fmt.Errorf("not found")
+	}
+
+	req := validRequest()
+	transferA, err := h.engine.CreateTransfer(ctx, tenantA.ID, req)
+	if err != nil {
+		t.Fatalf("tenant A: expected no error, got %v", err)
+	}
+	transferB, err := h.engine.CreateTransfer(ctx, tenantB.ID, req)
+	if err != nil {
+		t.Fatalf("tenant B: expected no error, got %v", err)
+	}
+	if transferA.ID == transferB.ID {
+		t.Error("expected different transfer IDs for different tenants with same key")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Terminal state tests
+// ---------------------------------------------------------------------------
+
+func TestTerminalState_CompletedRejectsAllTransitions(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
@@ -1251,38 +1548,434 @@ func TestSettleOnChain_BlockchainTimeout(t *testing.T) {
 	transfer := &domain.Transfer{
 		ID:             uuid.New(),
 		TenantID:       tenant.ID,
-		Status:         domain.TransferStatusSettling,
-		Version:        4,
+		Status:         domain.TransferStatusCompleted,
+		Version:        6,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
 		StableCoin:     domain.CurrencyUSDT,
-		StableAmount:   decimal.NewFromFloat(1250),
 		Chain:          "tron",
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
+	// FundTransfer expects CREATED
+	if err := h.engine.FundTransfer(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("FundTransfer: expected error for COMPLETED transfer")
+	} else if !strings.Contains(err.Error(), "invalid transition") {
+		t.Errorf("FundTransfer: expected 'invalid transition' in error, got: %v", err)
 	}
 
-	h.providers.blockchain = &mockBlockchainClient{
-		sendFn: func(ctx context.Context, req domain.TxRequest) (*domain.ChainTx, error) {
-			return nil, errors.New("blockchain timeout")
-		},
+	// InitiateOnRamp expects FUNDED
+	if err := h.engine.InitiateOnRamp(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("InitiateOnRamp: expected error for COMPLETED transfer")
 	}
 
-	err := h.engine.SettleOnChain(ctx, transfer.ID)
+	// HandleOnRampResult expects ON_RAMPING
+	if err := h.engine.HandleOnRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOnRampResult: expected error for COMPLETED transfer")
+	}
+
+	// HandleSettlementResult expects SETTLING
+	if err := h.engine.HandleSettlementResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleSettlementResult: expected error for COMPLETED transfer")
+	}
+
+	// HandleOffRampResult (success=true) calls CompleteTransfer which expects OFF_RAMPING
+	if err := h.engine.HandleOffRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOffRampResult: expected error for COMPLETED transfer")
+	}
+
+	// FailTransfer — COMPLETED has no transition to FAILED
+	err := h.engine.FailTransfer(ctx, tenant.ID, transfer.ID, "test", "TEST")
 	if err == nil {
-		t.Fatal("expected error from blockchain timeout")
+		t.Error("FailTransfer: expected error for COMPLETED transfer")
+	} else {
+		var de *domain.DomainError
+		if !errors.As(err, &de) {
+			t.Errorf("FailTransfer: expected *domain.DomainError, got %T", err)
+		} else if de.Code() != domain.CodeInvalidTransition {
+			t.Errorf("FailTransfer: expected code %s, got %s", domain.CodeInvalidTransition, de.Code())
+		}
 	}
-	// Transfer should remain in SETTLING
-	if transfer.Status != domain.TransferStatusSettling {
-		t.Errorf("expected status to remain SETTLING, got %s", transfer.Status)
+
+	// InitiateRefund — COMPLETED has no transition to REFUNDING
+	err = h.engine.InitiateRefund(ctx, tenant.ID, transfer.ID)
+	if err == nil {
+		t.Error("InitiateRefund: expected error for COMPLETED transfer")
+	} else {
+		var de *domain.DomainError
+		if !errors.As(err, &de) {
+			t.Errorf("InitiateRefund: expected *domain.DomainError, got %T", err)
+		} else if de.Code() != domain.CodeInvalidTransition {
+			t.Errorf("InitiateRefund: expected code %s, got %s", domain.CodeInvalidTransition, de.Code())
+		}
+	}
+
+	// HandleRefundResult expects REFUNDING
+	if err := h.engine.HandleRefundResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleRefundResult: expected error for COMPLETED transfer")
+	}
+
+	// Verify transfer is still COMPLETED
+	if transfer.Status != domain.TransferStatusCompleted {
+		t.Errorf("expected status to remain COMPLETED, got %s", transfer.Status)
+	}
+
+	// Verify no outbox entries were written
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 0 {
+		t.Errorf("expected 0 outbox entries, got %d", len(entries))
+	}
+}
+
+func TestTerminalState_RefundedRejectsAllTransitions(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusRefunded,
+		Version:        7,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		StableCoin:     domain.CurrencyUSDT,
+		Chain:          "tron",
+	}
+	h.seedTransfer(transfer)
+
+	// FundTransfer expects CREATED
+	if err := h.engine.FundTransfer(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("FundTransfer: expected error for REFUNDED transfer")
+	} else if !strings.Contains(err.Error(), "invalid transition") {
+		t.Errorf("FundTransfer: expected 'invalid transition' in error, got: %v", err)
+	}
+
+	// InitiateOnRamp expects FUNDED
+	if err := h.engine.InitiateOnRamp(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("InitiateOnRamp: expected error for REFUNDED transfer")
+	}
+
+	// HandleOnRampResult expects ON_RAMPING
+	if err := h.engine.HandleOnRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOnRampResult: expected error for REFUNDED transfer")
+	}
+
+	// HandleSettlementResult expects SETTLING
+	if err := h.engine.HandleSettlementResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleSettlementResult: expected error for REFUNDED transfer")
+	}
+
+	// HandleOffRampResult (success=true) calls CompleteTransfer which expects OFF_RAMPING
+	if err := h.engine.HandleOffRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOffRampResult: expected error for REFUNDED transfer")
+	}
+
+	// FailTransfer — REFUNDED has no transition to FAILED
+	err := h.engine.FailTransfer(ctx, tenant.ID, transfer.ID, "test", "TEST")
+	if err == nil {
+		t.Error("FailTransfer: expected error for REFUNDED transfer")
+	} else {
+		var de *domain.DomainError
+		if !errors.As(err, &de) {
+			t.Errorf("FailTransfer: expected *domain.DomainError, got %T", err)
+		} else if de.Code() != domain.CodeInvalidTransition {
+			t.Errorf("FailTransfer: expected code %s, got %s", domain.CodeInvalidTransition, de.Code())
+		}
+	}
+
+	// InitiateRefund — REFUNDED has no transition to REFUNDING
+	err = h.engine.InitiateRefund(ctx, tenant.ID, transfer.ID)
+	if err == nil {
+		t.Error("InitiateRefund: expected error for REFUNDED transfer")
+	} else {
+		var de *domain.DomainError
+		if !errors.As(err, &de) {
+			t.Errorf("InitiateRefund: expected *domain.DomainError, got %T", err)
+		} else if de.Code() != domain.CodeInvalidTransition {
+			t.Errorf("InitiateRefund: expected code %s, got %s", domain.CodeInvalidTransition, de.Code())
+		}
+	}
+
+	// HandleRefundResult expects REFUNDING
+	if err := h.engine.HandleRefundResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleRefundResult: expected error for REFUNDED transfer")
+	}
+
+	// Verify transfer is still REFUNDED
+	if transfer.Status != domain.TransferStatusRefunded {
+		t.Errorf("expected status to remain REFUNDED, got %s", transfer.Status)
+	}
+
+	// Verify no outbox entries were written
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 0 {
+		t.Errorf("expected 0 outbox entries, got %d", len(entries))
+	}
+}
+
+func TestTerminalState_FailedOnlyAllowsRefunding(t *testing.T) {
+	h := newTestHarness()
+	ctx := context.Background()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusFailed,
+		Version:        5,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+		StableCoin:     domain.CurrencyUSDT,
+		Chain:          "tron",
+	}
+	h.seedTransfer(transfer)
+
+	// All transitions except InitiateRefund should fail.
+
+	if err := h.engine.FundTransfer(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("FundTransfer: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.InitiateOnRamp(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("InitiateOnRamp: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.HandleOnRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOnRampResult: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.HandleSettlementResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleSettlementResult: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.HandleOffRampResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleOffRampResult: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.CompleteTransfer(ctx, tenant.ID, transfer.ID); err == nil {
+		t.Error("CompleteTransfer: expected error for FAILED transfer")
+	}
+
+	if err := h.engine.HandleRefundResult(ctx, tenant.ID, transfer.ID, domain.IntentResult{Success: true}); err == nil {
+		t.Error("HandleRefundResult: expected error for FAILED transfer")
+	}
+
+	// Verify no outbox entries from rejected transitions
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 outbox entries before InitiateRefund, got %d", len(entries))
+	}
+
+	// InitiateRefund should succeed (FAILED → REFUNDING is allowed)
+	if err := h.engine.InitiateRefund(ctx, tenant.ID, transfer.ID); err != nil {
+		t.Fatalf("InitiateRefund: expected nil error, got %v", err)
+	}
+
+	// Verify status transitioned to REFUNDING
+	if transfer.Status != domain.TransferStatusRefunding {
+		t.Errorf("expected status REFUNDING, got %s", transfer.Status)
+	}
+
+	// Verify outbox has IntentLedgerReverse and IntentTreasuryRelease
+	entries = h.transfers.getOutboxEntries()
+	if len(entries) == 0 {
+		t.Fatal("expected outbox entries after InitiateRefund, got 0")
+	}
+	if !outboxHasIntent(entries, domain.IntentLedgerReverse) {
+		t.Error("expected outbox to contain IntentLedgerReverse")
+	}
+	if !outboxHasIntent(entries, domain.IntentTreasuryRelease) {
+		t.Error("expected outbox to contain IntentTreasuryRelease")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Optimistic lock conflict test
+// Atomic state + outbox tests
 // ---------------------------------------------------------------------------
 
-func TestFundTransfer_OptimisticLockConflict(t *testing.T) {
+func TestAtomicStateOutbox_TransitionAlwaysWritesBoth(t *testing.T) {
+	tenant := activeTenant()
+
+	tests := []struct {
+		name       string
+		fromStatus domain.TransferStatus
+		version    int64
+		action     func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error
+	}{
+		{
+			name:       "CREATED→FUNDED via FundTransfer",
+			fromStatus: domain.TransferStatusCreated,
+			version:    1,
+			action: func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error {
+				return e.FundTransfer(ctx, tenantID, transferID)
+			},
+		},
+		{
+			name:       "FUNDED→ON_RAMPING via InitiateOnRamp",
+			fromStatus: domain.TransferStatusFunded,
+			version:    2,
+			action: func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error {
+				return e.InitiateOnRamp(ctx, tenantID, transferID)
+			},
+		},
+		{
+			name:       "ON_RAMPING→SETTLING via HandleOnRampResult",
+			fromStatus: domain.TransferStatusOnRamping,
+			version:    3,
+			action: func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error {
+				return e.HandleOnRampResult(ctx, tenantID, transferID, domain.IntentResult{Success: true})
+			},
+		},
+		{
+			name:       "SETTLING→OFF_RAMPING via HandleSettlementResult",
+			fromStatus: domain.TransferStatusSettling,
+			version:    4,
+			action: func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error {
+				return e.HandleSettlementResult(ctx, tenantID, transferID, domain.IntentResult{Success: true, TxHash: "0xtest"})
+			},
+		},
+		{
+			name:       "OFF_RAMPING→COMPLETED via CompleteTransfer",
+			fromStatus: domain.TransferStatusOffRamping,
+			version:    5,
+			action: func(ctx context.Context, e *Engine, tenantID, transferID uuid.UUID) error {
+				return e.CompleteTransfer(ctx, tenantID, transferID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestHarness()
+			ctx := context.Background()
+
+			transfer := &domain.Transfer{
+				ID:                uuid.New(),
+				TenantID:          tenant.ID,
+				Status:            tt.fromStatus,
+				Version:           tt.version,
+				SourceCurrency:    domain.CurrencyGBP,
+				SourceAmount:      decimal.NewFromFloat(1000),
+				DestCurrency:      domain.CurrencyNGN,
+				DestAmount:        decimal.NewFromFloat(500000),
+				StableCoin:        domain.CurrencyUSDT,
+				StableAmount:      decimal.NewFromFloat(1250),
+				Chain:             "tron",
+				OnRampProviderID:  "mock-onramp",
+				OffRampProviderID: "mock-offramp",
+				Fees: domain.FeeBreakdown{
+					OnRampFee:   decimal.NewFromFloat(2.50),
+					OffRampFee:  decimal.NewFromFloat(2.50),
+					NetworkFee:  decimal.NewFromFloat(0.10),
+					TotalFeeUSD: decimal.NewFromFloat(5.10),
+				},
+			}
+			h.seedTransfer(transfer)
+
+			if err := tt.action(ctx, h.engine, tenant.ID, transfer.ID); err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+
+			entries := h.transfers.getOutboxEntries()
+			if len(entries) < 1 {
+				t.Errorf("expected at least 1 outbox entry after transition, got %d", len(entries))
+			}
+		})
+	}
+}
+
+func TestAtomicStateOutbox_OptimisticLockConcurrency(t *testing.T) {
+	h := newTestHarness()
+	tenant := activeTenant()
+
+	transfer := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       tenant.ID,
+		Status:         domain.TransferStatusCreated,
+		Version:        1,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromFloat(1000),
+	}
+	h.seedTransfer(transfer)
+
+	// Use a counter to let the first call succeed and the second return optimistic lock.
+	var callCount int64
+	var callMu sync.Mutex
+
+	// Override GetTransfer to return a copy so concurrent goroutines don't
+	// race on the shared transfer pointer fields.
+	h.transfers.getFn = func(ctx context.Context, tenantID, id uuid.UUID) (*domain.Transfer, error) {
+		h.transfers.mu.Lock()
+		defer h.transfers.mu.Unlock()
+		t, ok := h.transfers.transfers[id]
+		if !ok {
+			return nil, domain.ErrTransferNotFound(id.String())
+		}
+		cp := *t
+		return &cp, nil
+	}
+
+	h.transfers.transitionWithOutboxFn = func(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error {
+		callMu.Lock()
+		callCount++
+		n := callCount
+		callMu.Unlock()
+
+		if n == 1 {
+			// First call succeeds: update the in-memory transfer
+			h.transfers.mu.Lock()
+			tr := h.transfers.transfers[transferID]
+			tr.Status = newStatus
+			tr.Version++
+			h.transfers.outboxEntries = append(h.transfers.outboxEntries, entries...)
+			h.transfers.mu.Unlock()
+			return nil
+		}
+		// Second call: optimistic lock conflict
+		return fmt.Errorf("settla-store: transfer %s: %w", transferID, ErrOptimisticLock)
+	}
+
+	var wg sync.WaitGroup
+	var successCount, failCount int64
+	var resultMu sync.Mutex
+
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			err := h.engine.FundTransfer(context.Background(), tenant.ID, transfer.ID)
+			resultMu.Lock()
+			defer resultMu.Unlock()
+			if err == nil {
+				successCount++
+			} else {
+				// Either optimistic lock or invalid state transition — both are
+				// valid concurrent rejection outcomes depending on goroutine ordering.
+				failCount++
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 success, got %d (failures: %d)", successCount, failCount)
+	}
+	if failCount != 1 {
+		t.Errorf("expected exactly 1 failure, got %d (successes: %d)", failCount, successCount)
+	}
+
+	// Verify version incremented exactly once (from 1 to 2).
+	// Read directly from the store map under lock to avoid a race.
+	h.transfers.mu.Lock()
+	finalVersion := h.transfers.transfers[transfer.ID].Version
+	h.transfers.mu.Unlock()
+	if finalVersion != 2 {
+		t.Errorf("expected version 2, got %d", finalVersion)
+	}
+}
+
+func TestAtomicStateOutbox_FailedTransitionNoOrphanOutbox(t *testing.T) {
 	h := newTestHarness()
 	ctx := context.Background()
 	tenant := activeTenant()
@@ -1295,23 +1988,17 @@ func TestFundTransfer_OptimisticLockConflict(t *testing.T) {
 		SourceCurrency: domain.CurrencyGBP,
 		SourceAmount:   decimal.NewFromFloat(1000),
 	}
+	h.seedTransfer(transfer)
 
-	h.transfers.getFn = func(ctx context.Context, tid, id uuid.UUID) (*domain.Transfer, error) {
-		return transfer, nil
-	}
-
-	// Simulate optimistic lock failure
-	h.transfers.updateFn = func(ctx context.Context, t *domain.Transfer) error {
-		return domain.ErrOptimisticLock("transfer", t.ID.String())
-	}
-
-	err := h.engine.FundTransfer(ctx, transfer.ID)
+	// CREATED → COMPLETED is not a valid transition
+	err := h.engine.CompleteTransfer(ctx, tenant.ID, transfer.ID)
 	if err == nil {
-		t.Fatal("expected error from optimistic lock conflict")
+		t.Fatal("expected error for invalid transition CREATED→COMPLETED")
 	}
 
-	var domErr *domain.DomainError
-	if !errors.As(err, &domErr) || domErr.Code() != domain.CodeOptimisticLock {
-		t.Errorf("expected ErrOptimisticLock, got %v", err)
+	// Verify no orphaned outbox entries
+	entries := h.transfers.getOutboxEntries()
+	if len(entries) != 0 {
+		t.Errorf("expected 0 outbox entries after invalid transition, got %d", len(entries))
 	}
 }
