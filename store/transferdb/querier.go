@@ -12,42 +12,128 @@ import (
 )
 
 type Querier interface {
+	// Atomically claims a provider transaction slot using INSERT ON CONFLICT DO NOTHING.
+	// Returns the row id if the claim succeeded, or no row if already claimed.
+	// NOTE: executed as raw SQL in the adapter because SQLC cannot handle
+	// INSERT ON CONFLICT DO NOTHING RETURNING :one (returns no rows on conflict).
+	ClaimProviderTransaction(ctx context.Context, arg ClaimProviderTransactionParams) (uuid.UUID, error)
 	CountTransfersByTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
+	// ============================================================================
+	// compensation_records
+	// ============================================================================
+	CreateCompensationRecord(ctx context.Context, arg CreateCompensationRecordParams) (CompensationRecord, error)
+	// ============================================================================
+	// manual_reviews
+	// ============================================================================
+	CreateManualReview(ctx context.Context, arg CreateManualReviewParams) (ManualReview, error)
+	CreateNetSettlement(ctx context.Context, arg CreateNetSettlementParams) (NetSettlement, error)
+	// ============================================================================
+	// net_settlements
+	// ============================================================================
+	CreateNetSettlementOps(ctx context.Context, arg CreateNetSettlementOpsParams) (NetSettlement, error)
 	CreateProviderTransaction(ctx context.Context, arg CreateProviderTransactionParams) (ProviderTransaction, error)
 	CreateQuote(ctx context.Context, arg CreateQuoteParams) (Quote, error)
+	// ============================================================================
+	// reconciliation_reports
+	// ============================================================================
+	CreateReconciliationReport(ctx context.Context, arg CreateReconciliationReportParams) (ReconciliationReport, error)
 	CreateTenant(ctx context.Context, arg CreateTenantParams) (Tenant, error)
 	CreateTransfer(ctx context.Context, arg CreateTransferParams) (Transfer, error)
 	CreateTransferEvent(ctx context.Context, arg CreateTransferEventParams) (TransferEvent, error)
 	DeactivateAPIKey(ctx context.Context, id uuid.UUID) error
+	// Deactivate an API key, ensuring it belongs to the tenant.
+	DeactivateAPIKeyByTenant(ctx context.Context, arg DeactivateAPIKeyByTenantParams) error
+	DeleteAllWebhookEventSubscriptions(ctx context.Context, tenantID uuid.UUID) error
+	DeleteWebhookEventSubscription(ctx context.Context, arg DeleteWebhookEventSubscriptionParams) error
+	// Get a specific API key ensuring tenant ownership.
+	GetAPIKeyByIDAndTenant(ctx context.Context, arg GetAPIKeyByIDAndTenantParams) (GetAPIKeyByIDAndTenantRow, error)
 	GetActiveQuote(ctx context.Context, arg GetActiveQuoteParams) (Quote, error)
+	GetCompensationRecord(ctx context.Context, id uuid.UUID) (CompensationRecord, error)
+	// Per-corridor volume, count, success rate, and average latency.
+	GetCorridorMetrics(ctx context.Context, arg GetCorridorMetricsParams) ([]GetCorridorMetricsRow, error)
+	// Fee breakdown grouped by currency corridor for a given period.
+	GetFeeReportByCorridor(ctx context.Context, arg GetFeeReportByCorridorParams) ([]GetFeeReportByCorridorRow, error)
+	GetManualReview(ctx context.Context, id uuid.UUID) (ManualReview, error)
+	GetNetSettlement(ctx context.Context, id uuid.UUID) (NetSettlement, error)
+	GetNetSettlementOps(ctx context.Context, id uuid.UUID) (NetSettlement, error)
+	GetOutboxEntriesByAggregate(ctx context.Context, arg GetOutboxEntriesByAggregateParams) ([]Outbox, error)
+	GetProviderTransaction(ctx context.Context, arg GetProviderTransactionParams) (ProviderTransaction, error)
 	GetQuote(ctx context.Context, arg GetQuoteParams) (Quote, error)
+	// Recent transfer activity feed (latest state changes).
+	GetRecentActivity(ctx context.Context, arg GetRecentActivityParams) ([]GetRecentActivityRow, error)
+	GetReconciliationReport(ctx context.Context, id uuid.UUID) (ReconciliationReport, error)
 	GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error)
 	GetTenantBySlug(ctx context.Context, slug string) (Tenant, error)
+	// ============================================================================
+	// Tenant portal queries — self-service dashboard metrics and analytics.
+	// All queries are tenant-scoped (tenant_id filter) per the tenant isolation invariant.
+	// ============================================================================
+	// Aggregated metrics for the last N days. Runs one scan for multiple aggregation windows.
+	GetTenantDashboardMetrics(ctx context.Context, arg GetTenantDashboardMetricsParams) (GetTenantDashboardMetricsRow, error)
 	GetTransfer(ctx context.Context, arg GetTransferParams) (Transfer, error)
 	GetTransferByExternalRef(ctx context.Context, arg GetTransferByExternalRefParams) (Transfer, error)
 	GetTransferByID(ctx context.Context, id uuid.UUID) (Transfer, error)
 	GetTransferByIdempotencyKey(ctx context.Context, arg GetTransferByIdempotencyKeyParams) (Transfer, error)
+	// Transfer completion latency percentiles (p50, p90, p95, p99) for completed transfers.
+	GetTransferLatencyPercentiles(ctx context.Context, arg GetTransferLatencyPercentilesParams) (GetTransferLatencyPercentilesRow, error)
+	// Daily bucketed transfer stats for a given date range (for charts).
+	GetTransferStatsDaily(ctx context.Context, arg GetTransferStatsDailyParams) ([]GetTransferStatsDailyRow, error)
+	// Hourly bucketed transfer stats for a given date range (for charts).
+	GetTransferStatsHourly(ctx context.Context, arg GetTransferStatsHourlyParams) ([]GetTransferStatsHourlyRow, error)
+	// ============================================================================
+	// Analytics queries — enhanced metrics for the tenant portal analytics page.
+	// All queries are tenant-scoped per the tenant isolation invariant.
+	// ============================================================================
+	// Count of transfers by current status for a given period.
+	GetTransferStatusDistribution(ctx context.Context, arg GetTransferStatusDistributionParams) ([]GetTransferStatusDistributionRow, error)
+	GetUnpublishedEntries(ctx context.Context, limit int32) ([]Outbox, error)
+	// Compare current period volume/count vs. previous period (for week-over-week or month-over-month).
+	GetVolumeComparison(ctx context.Context, arg GetVolumeComparisonParams) (GetVolumeComparisonRow, error)
+	GetWebhookDelivery(ctx context.Context, arg GetWebhookDeliveryParams) (WebhookDelivery, error)
+	GetWebhookDeliveryStats(ctx context.Context, arg GetWebhookDeliveryStatsParams) (GetWebhookDeliveryStatsRow, error)
+	InsertOutboxEntries(ctx context.Context, arg []InsertOutboxEntriesParams) (int64, error)
+	InsertOutboxEntry(ctx context.Context, arg InsertOutboxEntryParams) (Outbox, error)
+	InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (InsertWebhookDeliveryRow, error)
 	ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ListAPIKeysByTenantRow, error)
+	ListCompletedTransfersByPeriod(ctx context.Context, arg ListCompletedTransfersByPeriodParams) ([]ListCompletedTransfersByPeriodRow, error)
+	ListManualReviewsByStatus(ctx context.Context, arg ListManualReviewsByStatusParams) ([]ManualReview, error)
+	ListManualReviewsByTenant(ctx context.Context, arg ListManualReviewsByTenantParams) ([]ManualReview, error)
+	ListNetSettlementsByStatus(ctx context.Context, arg ListNetSettlementsByStatusParams) ([]NetSettlement, error)
+	ListNetSettlementsByTenant(ctx context.Context, arg ListNetSettlementsByTenantParams) ([]NetSettlement, error)
+	ListPendingSettlements(ctx context.Context) ([]ListPendingSettlementsRow, error)
 	ListProviderTransactions(ctx context.Context, arg ListProviderTransactionsParams) ([]ProviderTransaction, error)
+	ListReconciliationReports(ctx context.Context, arg ListReconciliationReportsParams) ([]ReconciliationReport, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
+	ListTenantsBySettlementModel(ctx context.Context, settlementModel string) ([]Tenant, error)
 	ListTransferEvents(ctx context.Context, arg ListTransferEventsParams) ([]TransferEvent, error)
 	ListTransfersByStatus(ctx context.Context, arg ListTransfersByStatusParams) ([]Transfer, error)
 	ListTransfersByTenant(ctx context.Context, arg ListTransfersByTenantParams) ([]Transfer, error)
 	ListTransfersInDateRange(ctx context.Context, arg ListTransfersInDateRangeParams) ([]Transfer, error)
+	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
+	ListWebhookEventSubscriptions(ctx context.Context, tenantID uuid.UUID) ([]WebhookEventSubscription, error)
+	MarkFailed(ctx context.Context, arg MarkFailedParams) error
+	MarkPublished(ctx context.Context, arg MarkPublishedParams) error
 	SumDailyVolumeByTenant(ctx context.Context, arg SumDailyVolumeByTenantParams) (pgtype.Numeric, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, id uuid.UUID) error
+	UpdateCompensationRecord(ctx context.Context, arg UpdateCompensationRecordParams) error
+	UpdateManualReview(ctx context.Context, arg UpdateManualReviewParams) error
+	UpdateProviderTransactionFull(ctx context.Context, arg UpdateProviderTransactionFullParams) error
 	UpdateProviderTransactionHash(ctx context.Context, arg UpdateProviderTransactionHashParams) error
 	UpdateProviderTransactionStatus(ctx context.Context, arg UpdateProviderTransactionStatusParams) error
+	UpdateSettlementStatus(ctx context.Context, arg UpdateSettlementStatusParams) error
 	UpdateTenantFeeSchedule(ctx context.Context, arg UpdateTenantFeeScheduleParams) error
 	UpdateTenantKYB(ctx context.Context, arg UpdateTenantKYBParams) error
 	UpdateTenantLimits(ctx context.Context, arg UpdateTenantLimitsParams) error
 	UpdateTenantStatus(ctx context.Context, arg UpdateTenantStatusParams) error
 	UpdateTenantWebhook(ctx context.Context, arg UpdateTenantWebhookParams) error
+	UpdateTenantWebhookEvents(ctx context.Context, arg UpdateTenantWebhookEventsParams) error
 	UpdateTransferDestAmount(ctx context.Context, arg UpdateTransferDestAmountParams) error
 	UpdateTransferFailure(ctx context.Context, arg UpdateTransferFailureParams) error
 	UpdateTransferStatus(ctx context.Context, arg UpdateTransferStatusParams) error
 	UpdateTransferStatusWithVersion(ctx context.Context, arg UpdateTransferStatusWithVersionParams) error
+	UpsertWebhookEventSubscription(ctx context.Context, arg UpsertWebhookEventSubscriptionParams) (WebhookEventSubscription, error)
 	ValidateAPIKey(ctx context.Context, keyHash string) (ValidateAPIKeyRow, error)
 }
 
