@@ -21,6 +21,7 @@ WHERE id = $1;
 -- name: GetTransferByIdempotencyKey :one
 SELECT * FROM transfers
 WHERE tenant_id = $1 AND idempotency_key = $2
+  AND created_at >= now() - INTERVAL '24 hours'
 LIMIT 1;
 
 -- name: GetTransferByExternalRef :one
@@ -53,9 +54,9 @@ UPDATE transfers
 SET status = $3,
     version = version + 1,
     updated_at = now(),
-    funded_at = CASE WHEN $3 = 'FUNDED' THEN now() ELSE funded_at END,
-    completed_at = CASE WHEN $3 = 'COMPLETED' THEN now() ELSE completed_at END,
-    failed_at = CASE WHEN $3 = 'FAILED' THEN now() ELSE failed_at END
+    funded_at = CASE WHEN $3::text = 'FUNDED' THEN now() ELSE funded_at END,
+    completed_at = CASE WHEN $3::text = 'COMPLETED' THEN now() ELSE completed_at END,
+    failed_at = CASE WHEN $3::text = 'FAILED' THEN now() ELSE failed_at END
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: UpdateTransferStatusWithVersion :exec
@@ -146,3 +147,32 @@ WHERE id = $1;
 SELECT * FROM provider_transactions
 WHERE tenant_id = $1 AND transfer_id = $2
 ORDER BY created_at;
+
+-- name: GetProviderTransaction :one
+SELECT * FROM provider_transactions
+WHERE transfer_id = $1 AND tx_type = $2
+LIMIT 1;
+
+-- name: UpdateProviderTransactionFull :exec
+UPDATE provider_transactions
+SET status = $3,
+    external_id = $4,
+    tx_hash = $5,
+    metadata = $6,
+    updated_at = now()
+WHERE transfer_id = $1 AND tx_type = $2;
+
+-- name: ClaimProviderTransaction :one
+-- Atomically claims a provider transaction slot using INSERT ON CONFLICT DO NOTHING.
+-- Returns the row id if the claim succeeded, or no row if already claimed.
+-- NOTE: executed as raw SQL in the adapter because SQLC cannot handle
+-- INSERT ON CONFLICT DO NOTHING RETURNING :one (returns no rows on conflict).
+INSERT INTO provider_transactions (
+    tenant_id, provider, tx_type,
+    transfer_id, status, amount, currency, metadata
+) VALUES (
+    @tenant_id, @provider, @tx_type,
+    @transfer_id, 'claiming', 0, '', '{}'
+)
+ON CONFLICT (tenant_id, transfer_id, tx_type) DO NOTHING
+RETURNING id;
