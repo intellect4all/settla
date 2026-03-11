@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,55 +15,46 @@ import (
 	"github.com/intellect4all/settla/observability"
 )
 
-// providerTimeout is the maximum time allowed for provider calls (on-ramp, off-ramp).
-const providerTimeout = 30 * time.Second
-
 // Engine is the top-level settlement orchestrator. It coordinates the transfer
-// lifecycle across the ledger, treasury, rail, and provider modules.
+// lifecycle as a pure state machine: every method validates state, computes the
+// next state plus outbox entries, and persists both atomically in a single
+// database transaction. The engine makes ZERO network calls and has ZERO
+// dependencies on ledger, treasury, rail, or node modules.
 //
-// Engine depends only on domain interfaces and core-local port interfaces,
-// not concrete implementations. In a single-binary deployment these are local
-// structs; if a module is extracted to its own service, the corresponding
-// field becomes a gRPC client that satisfies the same interface.
+// Side effects (treasury reserve, ledger post, provider calls, blockchain sends,
+// webhook delivery) are expressed as outbox intents. A dedicated relay/worker
+// picks up intents from the outbox table and executes them, then calls back
+// into the engine's Handle*Result methods with the outcome.
 type Engine struct {
 	transferStore TransferStore
 	tenantStore   TenantStore
-	ledger        domain.Ledger
-	treasury      domain.TreasuryManager
-	router        Router
-	providers     ProviderRegistry
-	publisher     domain.EventPublisher
+	router        Router // used ONLY for quote generation, NOT for provider execution
 	logger        *slog.Logger
 	metrics       *observability.Metrics
 }
 
 // NewEngine creates a settlement engine wired to the given dependencies.
+// The router is used only for generating quotes in CreateTransfer and GetQuote;
+// it does not execute any provider calls.
 func NewEngine(
 	transferStore TransferStore,
 	tenantStore TenantStore,
-	ledger domain.Ledger,
-	treasury domain.TreasuryManager,
 	router Router,
-	providers ProviderRegistry,
-	publisher domain.EventPublisher,
 	logger *slog.Logger,
 	metrics *observability.Metrics,
 ) *Engine {
 	return &Engine{
 		transferStore: transferStore,
 		tenantStore:   tenantStore,
-		ledger:        ledger,
-		treasury:      treasury,
 		router:        router,
-		providers:     providers,
-		publisher:     publisher,
 		logger:        logger.With("module", "core.engine"),
 		metrics:       metrics,
 	}
 }
 
 // CreateTransfer validates a settlement request, checks tenant limits, enforces
-// idempotency, and persists the initial transfer record.
+// idempotency, and persists the initial transfer record with an outbox event
+// atomically in a single database transaction.
 func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req CreateTransferRequest) (*domain.Transfer, error) {
 	// a. Load tenant, verify active
 	tenant, err := e.tenantStore.GetTenant(ctx, tenantID)
@@ -135,6 +128,11 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		if err != nil {
 			return nil, fmt.Errorf("settla-core: create transfer: getting quote: %w", err)
 		}
+		// Persist inline quote so alternatives are retrievable during on-ramp/off-ramp
+		if err := e.transferStore.CreateQuote(ctx, quote); err != nil {
+			return nil, fmt.Errorf("settla-core: create transfer: persisting inline quote: %w", err)
+		}
+		req.QuoteID = &quote.ID
 	}
 
 	// g. Create transfer record
@@ -151,7 +149,7 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		DestCurrency:   req.DestCurrency,
 		DestAmount:     quote.DestAmount,
 		StableCoin:     quote.Route.StableCoin,
-		StableAmount:   quote.StableAmount, // intermediate stablecoin amount from router
+		StableAmount:   quote.StableAmount,
 		Chain:          quote.Route.Chain,
 		FXRate:            quote.FXRate,
 		Fees:              quote.Fees,
@@ -164,7 +162,17 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		UpdatedAt:      now,
 	}
 
-	if err := e.transferStore.CreateTransfer(ctx, transfer); err != nil {
+	// h. Build outbox event for transfer.created
+	payload, err := json.Marshal(transfer)
+	if err != nil {
+		return nil, fmt.Errorf("settla-core: create transfer: marshalling event payload: %w", err)
+	}
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxEvent("transfer", transfer.ID, tenantID, domain.EventTransferCreated, payload),
+	}
+
+	// i. Persist transfer + outbox atomically
+	if err := e.transferStore.CreateTransferWithOutbox(ctx, transfer, entries); err != nil {
 		return nil, fmt.Errorf("settla-core: create transfer: persisting: %w", err)
 	}
 
@@ -179,30 +187,6 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		"corridor", corridor,
 		"source_amount", req.SourceAmount.String(),
 	)
-
-	// h. Create initial transfer event
-	event := &domain.TransferEvent{
-		ID:         uuid.New(),
-		TransferID: transfer.ID,
-		TenantID:   tenantID,
-		FromStatus: "",
-		ToStatus:   domain.TransferStatusCreated,
-		OccurredAt: now,
-	}
-	if err := e.transferStore.CreateTransferEvent(ctx, event); err != nil {
-		return nil, fmt.Errorf("settla-core: create transfer: persisting event: %w", err)
-	}
-
-	// i. Publish EventTransferCreated
-	if err := e.publisher.Publish(ctx, domain.Event{
-		ID:        uuid.New(),
-		TenantID:  tenantID,
-		Type:      domain.EventTransferCreated,
-		Timestamp: now,
-		Data:      transfer,
-	}); err != nil {
-		e.logger.Error("settla-core: failed to publish transfer.created", "transfer_id", transfer.ID, "error", err)
-	}
 
 	return transfer, nil
 }
@@ -257,476 +241,518 @@ func (e *Engine) ListTransfers(ctx context.Context, tenantID uuid.UUID, limit, o
 	return transfers, nil
 }
 
-// ProcessTransfer runs the full settlement pipeline synchronously.
-// Used for testing/demo; in production, each step is event-driven.
-func (e *Engine) ProcessTransfer(ctx context.Context, transferID uuid.UUID) error {
-	steps := []func(context.Context, uuid.UUID) error{
-		e.FundTransfer,
-		e.InitiateOnRamp,
-		e.SettleOnChain,
-		e.InitiateOffRamp,
-		e.CompleteTransfer,
-	}
-	for _, step := range steps {
-		if err := step(ctx, transferID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// FundTransfer reserves treasury funds and posts the initial ledger entries.
-func (e *Engine) FundTransfer(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransferForStep(ctx, transferID, domain.TransferStatusCreated)
+// FundTransfer transitions CREATED → FUNDED and writes outbox intents for
+// treasury reservation and a funded event. The treasury worker will pick up the
+// IntentTreasuryReserve intent and actually reserve funds.
+func (e *Engine) FundTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusCreated)
 	if err != nil {
 		return fmt.Errorf("settla-core: fund transfer %s: %w", transferID, err)
 	}
 
-	tenant, err := e.tenantStore.GetTenant(ctx, transfer.TenantID)
-	if err != nil {
-		return fmt.Errorf("settla-core: fund transfer %s: loading tenant: %w", transferID, err)
-	}
-
-	// Reserve funds in treasury (in-memory, nanosecond latency)
 	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
-	if err := e.treasury.Reserve(ctx, transfer.TenantID, transfer.SourceCurrency, location, transfer.SourceAmount, transfer.ID); err != nil {
-		return fmt.Errorf("settla-core: fund transfer %s: reserving treasury: %w", transferID, err)
+
+	reservePayload, err := json.Marshal(domain.TreasuryReservePayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		Currency:   transfer.SourceCurrency,
+		Amount:     transfer.SourceAmount,
+		Location:   location,
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: fund transfer %s: marshalling reserve payload: %w", transferID, err)
 	}
 
-	// Post ledger entries
-	slug := tenant.Slug
-	entry := domain.JournalEntry{
-		ID:             uuid.New(),
-		TenantID:       &transfer.TenantID,
-		IdempotencyKey: fmt.Sprintf("fund:%s", transfer.ID),
-		PostedAt:       time.Now().UTC(),
-		EffectiveDate:  time.Now().UTC(),
-		Description:    fmt.Sprintf("Fund transfer %s", transfer.ID),
-		ReferenceType:  "transfer",
-		ReferenceID:    &transfer.ID,
-		Lines: []domain.EntryLine{
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, fmt.Sprintf("assets:bank:%s:clearing", strings.ToLower(string(transfer.SourceCurrency)))),
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      transfer.SourceAmount,
-				Currency:    transfer.SourceCurrency,
-				Description: "Debit clearing account",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, "liabilities:customer:pending"),
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      transfer.SourceAmount,
-				Currency:    transfer.SourceCurrency,
-				Description: "Credit customer pending",
-			},
-		},
-	}
-	if _, err := e.ledger.PostEntries(ctx, entry); err != nil {
-		return fmt.Errorf("settla-core: fund transfer %s: posting ledger entries: %w", transferID, err)
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryReserve, reservePayload),
+		domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventTransferFunded, transferEventPayload(transfer.ID, transfer.TenantID)),
 	}
 
-	// Transition to FUNDED
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusFunded); err != nil {
-		return fmt.Errorf("settla-core: fund transfer %s: %w", transferID, err)
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusFunded, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "fund transfer", transferID)
 	}
 
-	now := time.Now().UTC()
-	transfer.FundedAt = &now
-
-	// Publish event
-	e.publishEvent(ctx, transfer.TenantID, domain.EventTransferFunded, transfer)
+	e.logger.Info("settla-core: transfer funded",
+		"transfer_id", transfer.ID,
+		"tenant_id", transfer.TenantID,
+	)
 
 	return nil
 }
 
-// InitiateOnRamp converts fiat to stablecoin via the on-ramp provider.
-func (e *Engine) InitiateOnRamp(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransferForStep(ctx, transferID, domain.TransferStatusFunded)
+// InitiateOnRamp transitions FUNDED → ON_RAMPING and writes an outbox intent
+// for the on-ramp provider to convert fiat to stablecoin.
+func (e *Engine) InitiateOnRamp(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusFunded)
 	if err != nil {
 		return fmt.Errorf("settla-core: on-ramp transfer %s: %w", transferID, err)
 	}
 
-	tenant, err := e.tenantStore.GetTenant(ctx, transfer.TenantID)
-	if err != nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: loading tenant: %w", transferID, err)
+	// Load quote to get fallback alternatives
+	var alternatives []domain.OnRampFallback
+	if transfer.QuoteID != nil {
+		quote, qErr := e.transferStore.GetQuote(ctx, transfer.TenantID, *transfer.QuoteID)
+		if qErr == nil && quote != nil {
+			for _, alt := range quote.Route.AlternativeRoutes {
+				alternatives = append(alternatives, domain.OnRampFallback{
+					ProviderID:      alt.OnRampProvider,
+					OffRampProvider: alt.OffRampProvider,
+					Chain:           alt.Chain,
+					StableCoin:      alt.StableCoin,
+					Fee:             alt.Fee,
+					Rate:            alt.Rate,
+					StableAmount:    alt.StableAmount,
+				})
+			}
+		}
 	}
 
-	// Get on-ramp provider from route stored on transfer
-	onRamp := e.providers.GetOnRampProvider(transfer.OnRampProviderID)
-	if onRamp == nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: no on-ramp provider available", transferID)
-	}
-
-	// Execute with timeout
-	provCtx, cancel := context.WithTimeout(ctx, providerTimeout)
-	defer cancel()
-
-	provTx, err := onRamp.Execute(provCtx, domain.OnRampRequest{
+	onRampPayload, err := json.Marshal(domain.ProviderOnRampPayload{
+		TransferID:   transfer.ID,
+		TenantID:     transfer.TenantID,
+		ProviderID:   transfer.OnRampProviderID,
 		Amount:       transfer.SourceAmount,
 		FromCurrency: transfer.SourceCurrency,
 		ToCurrency:   transfer.StableCoin,
 		Reference:    transfer.ID.String(),
+		Alternatives: alternatives,
+		QuotedRate:   transfer.FXRate,
 	})
 	if err != nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: provider execute: %w", transferID, err)
+		return fmt.Errorf("settla-core: on-ramp transfer %s: marshalling on-ramp payload: %w", transferID, err)
 	}
 
-	// Calculate on-ramp fee
-	onRampFee := tenant.FeeSchedule.CalculateFee(transfer.SourceAmount, "onramp")
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentProviderOnRamp, onRampPayload),
+	}
 
-	// Post ledger entries
-	slug := tenant.Slug
-	entry := domain.JournalEntry{
-		ID:             uuid.New(),
-		TenantID:       &transfer.TenantID,
-		IdempotencyKey: fmt.Sprintf("onramp:%s", transfer.ID),
-		PostedAt:       time.Now().UTC(),
-		EffectiveDate:  time.Now().UTC(),
-		Description:    fmt.Sprintf("On-ramp transfer %s via %s", transfer.ID, onRamp.ID()),
-		ReferenceType:  "transfer",
-		ReferenceID:    &transfer.ID,
-		Lines: []domain.EntryLine{
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusOnRamping, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "on-ramp transfer", transferID)
+	}
+
+	e.logger.Info("settla-core: on-ramp initiated",
+		"transfer_id", transfer.ID,
+		"tenant_id", transfer.TenantID,
+		"provider_id", transfer.OnRampProviderID,
+	)
+
+	return nil
+}
+
+// HandleOnRampResult processes the result of an on-ramp provider execution.
+// On success: transitions ON_RAMPING → SETTLING with intents for ledger post
+// and blockchain send.
+// On failure: transitions ON_RAMPING → REFUNDING with intent for treasury release.
+func (e *Engine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusOnRamping)
+	if err != nil {
+		return fmt.Errorf("settla-core: handle on-ramp result %s: %w", transferID, err)
+	}
+
+	if result.Success {
+		// Build ledger post intent for on-ramp accounting
+		tenant, err := e.tenantStore.GetTenant(ctx, transfer.TenantID)
+		if err != nil {
+			return fmt.Errorf("settla-core: handle on-ramp result %s: loading tenant: %w", transferID, err)
+		}
+		slug := tenant.Slug
+		onRampFee, err := tenant.FeeSchedule.CalculateFee(transfer.SourceAmount, "onramp")
+		if err != nil {
+			return fmt.Errorf("settla-core: fee calculation for transfer %s: %w", transferID, err)
+		}
+
+		onRampLines := []domain.LedgerLineEntry{
 			{
-				ID:          uuid.New(),
 				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
-				EntryType:   domain.EntryTypeDebit,
+				EntryType:   string(domain.EntryTypeDebit),
 				Amount:      transfer.SourceAmount.Sub(onRampFee),
-				Currency:    transfer.SourceCurrency,
+				Currency:    string(transfer.SourceCurrency),
 				Description: "Debit crypto asset",
 			},
 			{
-				ID:          uuid.New(),
 				AccountCode: "expenses:provider:onramp",
-				EntryType:   domain.EntryTypeDebit,
+				EntryType:   string(domain.EntryTypeDebit),
 				Amount:      onRampFee,
-				Currency:    transfer.SourceCurrency,
+				Currency:    string(transfer.SourceCurrency),
 				Description: "Debit on-ramp fee",
 			},
 			{
-				ID:          uuid.New(),
 				AccountCode: domain.TenantAccountCode(slug, fmt.Sprintf("assets:bank:%s:clearing", strings.ToLower(string(transfer.SourceCurrency)))),
-				EntryType:   domain.EntryTypeCredit,
+				EntryType:   string(domain.EntryTypeCredit),
 				Amount:      transfer.SourceAmount,
-				Currency:    transfer.SourceCurrency,
+				Currency:    string(transfer.SourceCurrency),
 				Description: "Credit clearing account",
 			},
-		},
-	}
-	if _, err := e.ledger.PostEntries(ctx, entry); err != nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: posting ledger entries: %w", transferID, err)
-	}
+		}
 
-	// Transition ON_RAMPING → SETTLING
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusOnRamping); err != nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: %w", transferID, err)
-	}
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusSettling); err != nil {
-		return fmt.Errorf("settla-core: on-ramp transfer %s: %w", transferID, err)
-	}
+		if err := validateLedgerLines(onRampLines); err != nil {
+			return fmt.Errorf("settla-core: handle on-ramp result %s: ledger entries imbalanced: %w", transferID, err)
+		}
 
-	// Publish events
-	e.publishEvent(ctx, transfer.TenantID, domain.EventOnRampInitiated, map[string]any{
-		"transfer_id": transfer.ID,
-		"provider_id": onRamp.ID(),
-		"provider_tx": provTx.ID,
-	})
-	e.publishEvent(ctx, transfer.TenantID, domain.EventOnRampCompleted, map[string]any{
-		"transfer_id": transfer.ID,
-		"provider_id": onRamp.ID(),
-		"provider_tx": provTx.ID,
-	})
+		ledgerPayload, err := json.Marshal(domain.LedgerPostPayload{
+			TransferID:     transfer.ID,
+			TenantID:       transfer.TenantID,
+			IdempotencyKey: fmt.Sprintf("onramp:%s", transfer.ID),
+			Description:    fmt.Sprintf("On-ramp transfer %s", transfer.ID),
+			ReferenceType:  "transfer",
+			Lines:          onRampLines,
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle on-ramp result %s: marshalling ledger payload: %w", transferID, err)
+		}
+
+		// Build blockchain send intent
+		blockchainPayload, err := json.Marshal(domain.BlockchainSendPayload{
+			TransferID: transfer.ID,
+			TenantID:   transfer.TenantID,
+			Chain:      transfer.Chain,
+			Token:      string(transfer.StableCoin),
+			Amount:     transfer.StableAmount,
+			Memo:       fmt.Sprintf("settlement:%s", transfer.ID),
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle on-ramp result %s: marshalling blockchain payload: %w", transferID, err)
+		}
+
+		entries := []domain.OutboxEntry{
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerPost, ledgerPayload),
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentBlockchainSend, blockchainPayload),
+			domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventOnRampCompleted, transferEventPayload(transfer.ID, transfer.TenantID)),
+		}
+
+		if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusSettling, transfer.Version, entries); err != nil {
+			return wrapTransitionError(err, "handle on-ramp result", transferID)
+		}
+
+		e.logger.Info("settla-core: on-ramp completed, settling",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+		)
+	} else {
+		// On-ramp failed — release treasury and transition to refunding
+		location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
+		releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+			TransferID: transfer.ID,
+			TenantID:   transfer.TenantID,
+			Currency:   transfer.SourceCurrency,
+			Amount:     transfer.SourceAmount,
+			Location:   location,
+			Reason:     "onramp_failure",
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle on-ramp result %s: marshalling release payload: %w", transferID, err)
+		}
+
+		entries := []domain.OutboxEntry{
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+			domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventProviderOnRampFailed, transferEventPayload(transfer.ID, transfer.TenantID)),
+		}
+
+		if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusRefunding, transfer.Version, entries); err != nil {
+			return wrapTransitionError(err, "handle on-ramp result", transferID)
+		}
+
+		e.logger.Warn("settla-core: on-ramp failed, refunding",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+			"error", result.Error,
+		)
+	}
 
 	return nil
 }
 
-// SettleOnChain sends the stablecoin transaction on the blockchain.
-func (e *Engine) SettleOnChain(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransferForStep(ctx, transferID, domain.TransferStatusSettling)
+// HandleSettlementResult processes the result of on-chain settlement.
+// On success: transitions SETTLING → OFF_RAMPING with intent for off-ramp provider.
+// On failure: transitions SETTLING → FAILED with intents for treasury release
+// and ledger reversal.
+func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusSettling)
 	if err != nil {
-		return fmt.Errorf("settla-core: settle on-chain %s: %w", transferID, err)
+		return fmt.Errorf("settla-core: handle settlement result %s: %w", transferID, err)
 	}
 
-	// Get blockchain client
-	chain := e.providers.GetBlockchainClient(transfer.Chain)
-	if chain == nil {
-		return fmt.Errorf("settla-core: settle on-chain %s: no blockchain client for chain %s", transferID, transfer.Chain)
-	}
+	if result.Success {
+		// Load quote to get fallback alternatives for off-ramp.
+		// Only alternatives with the same chain+stablecoin qualify (on-ramp already delivered).
+		var offRampAlts []domain.OffRampFallback
+		if transfer.QuoteID != nil {
+			quote, qErr := e.transferStore.GetQuote(ctx, transfer.TenantID, *transfer.QuoteID)
+			if qErr == nil && quote != nil {
+				for _, alt := range quote.Route.AlternativeRoutes {
+					if alt.Chain == transfer.Chain && alt.StableCoin == transfer.StableCoin {
+						offRampAlts = append(offRampAlts, domain.OffRampFallback{
+							ProviderID: alt.OffRampProvider,
+							Fee:        alt.Fee,
+							Rate:       alt.Rate,
+						})
+					}
+				}
+			}
+		}
 
-	// Estimate gas
-	txReq := domain.TxRequest{
-		Token:  string(transfer.StableCoin),
-		Amount: transfer.StableAmount,
-	}
-	gasFee, err := chain.EstimateGas(ctx, txReq)
-	if err != nil {
-		return fmt.Errorf("settla-core: settle on-chain %s: estimating gas: %w", transferID, err)
-	}
+		// Build off-ramp intent
+		offRampPayload, err := json.Marshal(domain.ProviderOffRampPayload{
+			TransferID:   transfer.ID,
+			TenantID:     transfer.TenantID,
+			ProviderID:   transfer.OffRampProviderID,
+			Amount:       transfer.StableAmount,
+			FromCurrency: transfer.StableCoin,
+			ToCurrency:   transfer.DestCurrency,
+			Recipient:    transfer.Recipient,
+			Reference:    transfer.ID.String(),
+			Alternatives: offRampAlts,
+			QuotedRate:   transfer.FXRate,
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle settlement result %s: marshalling off-ramp payload: %w", transferID, err)
+		}
 
-	// Send transaction
-	chainTx, err := chain.SendTransaction(ctx, txReq)
-	if err != nil {
-		return fmt.Errorf("settla-core: settle on-chain %s: sending transaction: %w", transferID, err)
-	}
+		entries := []domain.OutboxEntry{
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentProviderOffRamp, offRampPayload),
+			domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventSettlementCompleted, transferEventPayload(transfer.ID, transfer.TenantID)),
+		}
 
-	// Post ledger entries
-	entry := domain.JournalEntry{
-		ID:             uuid.New(),
-		TenantID:       &transfer.TenantID,
-		IdempotencyKey: fmt.Sprintf("settle:%s", transfer.ID),
-		PostedAt:       time.Now().UTC(),
-		EffectiveDate:  time.Now().UTC(),
-		Description:    fmt.Sprintf("On-chain settlement %s tx %s", transfer.ID, chainTx.Hash),
-		ReferenceType:  "transfer",
-		ReferenceID:    &transfer.ID,
-		Lines: []domain.EntryLine{
-			{
-				ID:          uuid.New(),
-				AccountCode: "assets:settlement:in_transit",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      transfer.StableAmount,
-				Currency:    transfer.StableCoin,
-				Description: "Debit settlement in transit",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: fmt.Sprintf("expenses:network:%s:gas", strings.ToLower(transfer.Chain)),
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      gasFee,
-				Currency:    transfer.StableCoin,
-				Description: "Debit gas fee",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      transfer.StableAmount.Add(gasFee),
-				Currency:    transfer.StableCoin,
-				Description: "Credit crypto asset",
-			},
-		},
-	}
-	if _, err := e.ledger.PostEntries(ctx, entry); err != nil {
-		return fmt.Errorf("settla-core: settle on-chain %s: posting ledger entries: %w", transferID, err)
-	}
+		if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusOffRamping, transfer.Version, entries); err != nil {
+			return wrapTransitionError(err, "handle settlement result", transferID)
+		}
 
-	// Publish settlement completed
-	e.publishEvent(ctx, transfer.TenantID, domain.EventSettlementCompleted, map[string]any{
-		"transfer_id": transfer.ID,
-		"chain":       transfer.Chain,
-		"tx_hash":     chainTx.Hash,
-		"gas_fee":     gasFee.String(),
-	})
+		e.logger.Info("settla-core: settlement confirmed, off-ramping",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+			"tx_hash", result.TxHash,
+		)
+	} else {
+		// Settlement failed — release treasury + reverse ledger
+		location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
+
+		releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+			TransferID: transfer.ID,
+			TenantID:   transfer.TenantID,
+			Currency:   transfer.SourceCurrency,
+			Amount:     transfer.SourceAmount,
+			Location:   location,
+			Reason:     "settlement_failure",
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle settlement result %s: marshalling release payload: %w", transferID, err)
+		}
+
+		reversePayload, err := json.Marshal(domain.LedgerPostPayload{
+			TransferID:     transfer.ID,
+			TenantID:       transfer.TenantID,
+			IdempotencyKey: fmt.Sprintf("reverse-settle:%s", transfer.ID),
+			Description:    fmt.Sprintf("Reverse settlement for transfer %s: %s", transfer.ID, result.Error),
+			ReferenceType:  "reversal",
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle settlement result %s: marshalling reverse payload: %w", transferID, err)
+		}
+
+		entries := []domain.OutboxEntry{
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerReverse, reversePayload),
+			domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventBlockchainFailed, transferEventPayload(transfer.ID, transfer.TenantID)),
+		}
+
+		if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusFailed, transfer.Version, entries); err != nil {
+			return wrapTransitionError(err, "handle settlement result", transferID)
+		}
+
+		e.logger.Warn("settla-core: settlement failed",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+			"error", result.Error,
+		)
+	}
 
 	return nil
 }
 
-// InitiateOffRamp converts stablecoin to destination fiat via the off-ramp provider.
-func (e *Engine) InitiateOffRamp(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransferForStep(ctx, transferID, domain.TransferStatusSettling)
+// HandleOffRampResult processes the result of an off-ramp provider execution.
+// On success: calls CompleteTransfer to finalize.
+// On failure: transitions OFF_RAMPING → FAILED with compensation intents.
+func (e *Engine) HandleOffRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	if result.Success {
+		return e.CompleteTransfer(ctx, tenantID, transferID)
+	}
+
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusOffRamping)
 	if err != nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: %w", transferID, err)
+		return fmt.Errorf("settla-core: handle off-ramp result %s: %w", transferID, err)
 	}
 
-	tenant, err := e.tenantStore.GetTenant(ctx, transfer.TenantID)
-	if err != nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: loading tenant: %w", transferID, err)
-	}
+	// Off-ramp failed — release treasury + reverse ledger + notify tenant
+	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
 
-	// Get off-ramp provider from route stored on transfer
-	offRamp := e.providers.GetOffRampProvider(transfer.OffRampProviderID)
-	if offRamp == nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: no off-ramp provider available", transferID)
-	}
-
-	// Execute with timeout
-	provCtx, cancel := context.WithTimeout(ctx, providerTimeout)
-	defer cancel()
-
-	_, err = offRamp.Execute(provCtx, domain.OffRampRequest{
-		Amount:       transfer.StableAmount,
-		FromCurrency: transfer.StableCoin,
-		ToCurrency:   transfer.DestCurrency,
-		Recipient:    transfer.Recipient,
-		Reference:    transfer.ID.String(),
+	releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		Currency:   transfer.SourceCurrency,
+		Amount:     transfer.SourceAmount,
+		Location:   location,
+		Reason:     "offramp_failure",
 	})
 	if err != nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: provider execute: %w", transferID, err)
+		return fmt.Errorf("settla-core: handle off-ramp result %s: marshalling release payload: %w", transferID, err)
 	}
 
-	// Calculate off-ramp fee
-	offRampFee := tenant.FeeSchedule.CalculateFee(transfer.DestAmount, "offramp")
-
-	// Post ledger entries
-	slug := tenant.Slug
-	entry := domain.JournalEntry{
-		ID:             uuid.New(),
-		TenantID:       &transfer.TenantID,
-		IdempotencyKey: fmt.Sprintf("offramp:%s", transfer.ID),
-		PostedAt:       time.Now().UTC(),
-		EffectiveDate:  time.Now().UTC(),
-		Description:    fmt.Sprintf("Off-ramp transfer %s via %s", transfer.ID, offRamp.ID()),
-		ReferenceType:  "transfer",
-		ReferenceID:    &transfer.ID,
-		Lines: []domain.EntryLine{
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, "liabilities:payable:recipient"),
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      transfer.DestAmount,
-				Currency:    transfer.StableCoin,
-				Description: "Debit recipient payable",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: "expenses:provider:offramp",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      offRampFee,
-				Currency:    transfer.StableCoin,
-				Description: "Debit off-ramp fee",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: "assets:settlement:in_transit",
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      transfer.DestAmount.Add(offRampFee),
-				Currency:    transfer.StableCoin,
-				Description: "Credit settlement in transit",
-			},
-		},
-	}
-	if _, err := e.ledger.PostEntries(ctx, entry); err != nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: posting ledger entries: %w", transferID, err)
-	}
-
-	// Transition to OFF_RAMPING
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusOffRamping); err != nil {
-		return fmt.Errorf("settla-core: off-ramp transfer %s: %w", transferID, err)
-	}
-
-	e.publishEvent(ctx, transfer.TenantID, domain.EventOffRampInitiated, map[string]any{
-		"transfer_id": transfer.ID,
-		"provider_id": offRamp.ID(),
+	reversePayload, err := json.Marshal(domain.LedgerPostPayload{
+		TransferID:     transfer.ID,
+		TenantID:       transfer.TenantID,
+		IdempotencyKey: fmt.Sprintf("reverse-offramp:%s", transfer.ID),
+		Description:    fmt.Sprintf("Reverse off-ramp for transfer %s: %s", transfer.ID, result.Error),
+		ReferenceType:  "reversal",
 	})
+	if err != nil {
+		return fmt.Errorf("settla-core: handle off-ramp result %s: marshalling reverse payload: %w", transferID, err)
+	}
 
-	// Mock/synchronous providers complete immediately — publish completion event.
-	// In production with async providers, this event comes from a webhook callback.
-	e.publishEvent(ctx, transfer.TenantID, domain.EventOffRampCompleted, map[string]any{
-		"transfer_id": transfer.ID,
-		"provider_id": offRamp.ID(),
+	webhookPayload, err := json.Marshal(domain.WebhookDeliverPayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		EventType:  domain.EventTransferFailed,
 	})
+	if err != nil {
+		return fmt.Errorf("settla-core: handle off-ramp result %s: marshalling webhook payload: %w", transferID, err)
+	}
+
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerReverse, reversePayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentWebhookDeliver, webhookPayload),
+		domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventProviderOffRampFailed, transferEventPayload(transfer.ID, transfer.TenantID)),
+	}
+
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusFailed, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "handle off-ramp result", transferID)
+	}
+
+	e.logger.Warn("settla-core: off-ramp failed",
+		"transfer_id", transfer.ID,
+		"tenant_id", transfer.TenantID,
+		"error", result.Error,
+	)
 
 	return nil
 }
 
-// CompleteTransfer finalises the settlement: posts closing ledger entries,
-// releases treasury reservation, and transitions to COMPLETED.
-func (e *Engine) CompleteTransfer(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransfer(ctx, transferID)
+// CompleteTransfer transitions OFF_RAMPING → COMPLETED and writes
+// outbox intents for treasury release, final ledger posting, and webhook delivery.
+func (e *Engine) CompleteTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return fmt.Errorf("settla-core: complete transfer %s: %w", transferID, err)
 	}
 
-	if transfer.Status != domain.TransferStatusOffRamping && transfer.Status != domain.TransferStatusCompleting {
+	if transfer.Status != domain.TransferStatusOffRamping {
 		return fmt.Errorf("settla-core: complete transfer %s: %w",
 			transferID, domain.ErrInvalidTransition(string(transfer.Status), string(domain.TransferStatusCompleted)))
 	}
 
+	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
+
+	// Treasury release intent — unlock the reservation
+	releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		Currency:   transfer.SourceCurrency,
+		Amount:     transfer.SourceAmount,
+		Location:   location,
+		Reason:     "transfer_complete",
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: complete transfer %s: marshalling release payload: %w", transferID, err)
+	}
+
+	// Ledger post intent — final completion entries
 	tenant, err := e.tenantStore.GetTenant(ctx, transfer.TenantID)
 	if err != nil {
 		return fmt.Errorf("settla-core: complete transfer %s: loading tenant: %w", transferID, err)
 	}
-
-	// If OFF_RAMPING, transition to COMPLETING first
-	if transfer.Status == domain.TransferStatusOffRamping {
-		if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusCompleting); err != nil {
-			return fmt.Errorf("settla-core: complete transfer %s: %w", transferID, err)
-		}
-	}
-
-	// Post closing ledger entries (all in source currency, balanced)
 	slug := tenant.Slug
 	totalFees := transfer.Fees.TotalFeeUSD
 	netAmount := transfer.SourceAmount.Sub(totalFees)
-	entry := domain.JournalEntry{
-		ID:             uuid.New(),
-		TenantID:       &transfer.TenantID,
-		IdempotencyKey: fmt.Sprintf("complete:%s", transfer.ID),
-		PostedAt:       time.Now().UTC(),
-		EffectiveDate:  time.Now().UTC(),
-		Description:    fmt.Sprintf("Complete transfer %s", transfer.ID),
-		ReferenceType:  "transfer",
-		ReferenceID:    &transfer.ID,
-		Lines: []domain.EntryLine{
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, "liabilities:customer:pending"),
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      transfer.SourceAmount,
-				Currency:    transfer.SourceCurrency,
-				Description: "Debit customer pending",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, "liabilities:payable:recipient"),
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      netAmount,
-				Currency:    transfer.SourceCurrency,
-				Description: "Credit recipient payable (net of fees)",
-			},
-			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(slug, "revenue:fees:settlement"),
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      totalFees,
-				Currency:    transfer.SourceCurrency,
-				Description: "Credit settlement fee revenue",
-			},
+
+	completionLines := []domain.LedgerLineEntry{
+		{
+			AccountCode: domain.TenantAccountCode(slug, "liabilities:customer:pending"),
+			EntryType:   string(domain.EntryTypeDebit),
+			Amount:      transfer.SourceAmount,
+			Currency:    string(transfer.SourceCurrency),
+			Description: "Debit customer pending",
+		},
+		{
+			AccountCode: domain.TenantAccountCode(slug, "liabilities:payable:recipient"),
+			EntryType:   string(domain.EntryTypeCredit),
+			Amount:      netAmount,
+			Currency:    string(transfer.SourceCurrency),
+			Description: "Credit recipient payable (net of fees)",
+		},
+		{
+			AccountCode: domain.TenantAccountCode(slug, "revenue:fees:settlement"),
+			EntryType:   string(domain.EntryTypeCredit),
+			Amount:      totalFees,
+			Currency:    string(transfer.SourceCurrency),
+			Description: "Credit settlement fee revenue",
 		},
 	}
-	if _, err := e.ledger.PostEntries(ctx, entry); err != nil {
-		return fmt.Errorf("settla-core: complete transfer %s: posting ledger entries: %w", transferID, err)
+
+	if err := validateLedgerLines(completionLines); err != nil {
+		return fmt.Errorf("settla-core: complete transfer %s: ledger entries imbalanced: %w", transferID, err)
 	}
 
-	// Release treasury reservation
-	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
-	if err := e.treasury.Release(ctx, transfer.TenantID, transfer.SourceCurrency, location, transfer.SourceAmount, transfer.ID); err != nil {
-		e.logger.Error("settla-core: failed to release treasury reservation",
-			"transfer_id", transfer.ID, "error", err)
+	ledgerPayload, err := json.Marshal(domain.LedgerPostPayload{
+		TransferID:     transfer.ID,
+		TenantID:       transfer.TenantID,
+		IdempotencyKey: fmt.Sprintf("complete:%s", transfer.ID),
+		Description:    fmt.Sprintf("Complete transfer %s", transfer.ID),
+		ReferenceType:  "transfer",
+		Lines:          completionLines,
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: complete transfer %s: marshalling ledger payload: %w", transferID, err)
 	}
 
-	// Transition to COMPLETED
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusCompleted); err != nil {
-		return fmt.Errorf("settla-core: complete transfer %s: %w", transferID, err)
+	// Webhook delivery intent — notify tenant
+	webhookPayload, err := json.Marshal(domain.WebhookDeliverPayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		EventType:  domain.EventTransferCompleted,
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: complete transfer %s: marshalling webhook payload: %w", transferID, err)
 	}
 
-	now := time.Now().UTC()
-	transfer.CompletedAt = &now
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerPost, ledgerPayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentWebhookDeliver, webhookPayload),
+		domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventTransferCompleted, transferEventPayload(transfer.ID, transfer.TenantID)),
+	}
 
-	// Record completion metrics.
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusCompleted, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "complete transfer", transferID)
+	}
+
 	corridor := observability.FormatCorridor(string(transfer.SourceCurrency), string(transfer.DestCurrency))
 	if e.metrics != nil {
 		e.metrics.TransfersTotal.WithLabelValues(transfer.TenantID.String(), string(domain.TransferStatusCompleted), corridor).Inc()
-		duration := now.Sub(transfer.CreatedAt).Seconds()
-		e.metrics.TransferDuration.WithLabelValues(transfer.TenantID.String(), corridor, transfer.Chain).Observe(duration)
 	}
 
 	e.logger.Info("settla-core: transfer completed",
 		"transfer_id", transfer.ID,
 		"tenant_id", transfer.TenantID,
 		"corridor", corridor,
-		"duration_s", now.Sub(transfer.CreatedAt).Seconds(),
 	)
-
-	e.publishEvent(ctx, transfer.TenantID, domain.EventTransferCompleted, transfer)
 
 	return nil
 }
 
-// FailTransfer transitions a transfer to FAILED with a reason and code.
-func (e *Engine) FailTransfer(ctx context.Context, transferID uuid.UUID, reason string, code string) error {
-	transfer, err := e.loadTransfer(ctx, transferID)
+// FailTransfer transitions a transfer to FAILED with a reason and code, and writes
+// outbox intents for treasury release and webhook notification.
+func (e *Engine) FailTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, reason string, code string) error {
+	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return fmt.Errorf("settla-core: fail transfer %s: %w", transferID, err)
 	}
@@ -736,13 +762,34 @@ func (e *Engine) FailTransfer(ctx context.Context, transferID uuid.UUID, reason 
 			transferID, domain.ErrInvalidTransition(string(transfer.Status), string(domain.TransferStatusFailed)))
 	}
 
-	transfer.FailureReason = reason
-	transfer.FailureCode = code
-	now := time.Now().UTC()
-	transfer.FailedAt = &now
+	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
 
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusFailed); err != nil {
-		return fmt.Errorf("settla-core: fail transfer %s: %w", transferID, err)
+	releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		Currency:   transfer.SourceCurrency,
+		Amount:     transfer.SourceAmount,
+		Location:   location,
+		Reason:     "transfer_failed",
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: fail transfer %s: marshalling release payload: %w", transferID, err)
+	}
+
+	webhookPayload, err := json.Marshal(domain.WebhookDeliverPayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		EventType:  domain.EventTransferFailed,
+		Data:       []byte(fmt.Sprintf(`{"reason":%q,"code":%q}`, reason, code)),
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: fail transfer %s: marshalling webhook payload: %w", transferID, err)
+	}
+
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentWebhookDeliver, webhookPayload),
+		domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventTransferFailed, transferEventPayload(transfer.ID, transfer.TenantID)),
 	}
 
 	corridor := observability.FormatCorridor(string(transfer.SourceCurrency), string(transfer.DestCurrency))
@@ -750,19 +797,24 @@ func (e *Engine) FailTransfer(ctx context.Context, transferID uuid.UUID, reason 
 		e.metrics.TransfersTotal.WithLabelValues(transfer.TenantID.String(), string(domain.TransferStatusFailed), corridor).Inc()
 	}
 
-	e.publishEvent(ctx, transfer.TenantID, domain.EventTransferFailed, map[string]any{
-		"transfer_id": transfer.ID,
-		"reason":      reason,
-		"code":        code,
-	})
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusFailed, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "fail transfer", transferID)
+	}
+
+	e.logger.Warn("settla-core: transfer failed",
+		"transfer_id", transfer.ID,
+		"tenant_id", transfer.TenantID,
+		"reason", reason,
+		"code", code,
+	)
 
 	return nil
 }
 
-// InitiateRefund reverses ledger entries, releases treasury, and transitions
-// through REFUNDING → REFUNDED.
-func (e *Engine) InitiateRefund(ctx context.Context, transferID uuid.UUID) error {
-	transfer, err := e.loadTransfer(ctx, transferID)
+// InitiateRefund transitions a transfer through REFUNDING and writes outbox
+// intents for ledger reversal and treasury release.
+func (e *Engine) InitiateRefund(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return fmt.Errorf("settla-core: refund transfer %s: %w", transferID, err)
 	}
@@ -772,53 +824,128 @@ func (e *Engine) InitiateRefund(ctx context.Context, transferID uuid.UUID) error
 			transferID, domain.ErrInvalidTransition(string(transfer.Status), string(domain.TransferStatusRefunding)))
 	}
 
-	// Transition to REFUNDING
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusRefunding); err != nil {
-		return fmt.Errorf("settla-core: refund transfer %s: %w", transferID, err)
-	}
-
-	// Reverse ledger entries for this transfer
-	events, err := e.transferStore.GetTransferEvents(ctx, transfer.TenantID, transfer.ID)
-	if err != nil {
-		e.logger.Error("settla-core: failed to get transfer events for reversal",
-			"transfer_id", transfer.ID, "error", err)
-	}
-	_ = events // Events are informational; we reverse by reference ID
-
-	// Reverse all journal entries referencing this transfer
-	// The ledger.ReverseEntry handles creating mirror entries
-	_, err = e.ledger.ReverseEntry(ctx, transfer.ID, fmt.Sprintf("Refund for transfer %s", transfer.ID))
-	if err != nil {
-		e.logger.Warn("settla-core: ledger reversal may have partially failed",
-			"transfer_id", transfer.ID, "error", err)
-	}
-
-	// Release treasury reservation if still held
 	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
-	if err := e.treasury.Release(ctx, transfer.TenantID, transfer.SourceCurrency, location, transfer.SourceAmount, transfer.ID); err != nil {
-		e.logger.Warn("settla-core: treasury release during refund failed (may already be released)",
-			"transfer_id", transfer.ID, "error", err)
-	}
 
-	// Transition to REFUNDED
-	if err := e.transitionAndPersist(ctx, transfer, domain.TransferStatusRefunded); err != nil {
-		return fmt.Errorf("settla-core: refund transfer %s: %w", transferID, err)
-	}
-
-	e.publishEvent(ctx, transfer.TenantID, domain.EventRefundCompleted, map[string]any{
-		"transfer_id": transfer.ID,
+	reversePayload, err := json.Marshal(domain.LedgerPostPayload{
+		TransferID:     transfer.ID,
+		TenantID:       transfer.TenantID,
+		IdempotencyKey: fmt.Sprintf("refund:%s", transfer.ID),
+		Description:    fmt.Sprintf("Refund for transfer %s", transfer.ID),
+		ReferenceType:  "reversal",
 	})
+	if err != nil {
+		return fmt.Errorf("settla-core: refund transfer %s: marshalling reverse payload: %w", transferID, err)
+	}
+
+	releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		Currency:   transfer.SourceCurrency,
+		Amount:     transfer.SourceAmount,
+		Location:   location,
+		Reason:     "refund",
+	})
+	if err != nil {
+		return fmt.Errorf("settla-core: refund transfer %s: marshalling release payload: %w", transferID, err)
+	}
+
+	entries := []domain.OutboxEntry{
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerReverse, reversePayload),
+		domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload),
+		domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventRefundInitiated, transferEventPayload(transfer.ID, transfer.TenantID)),
+	}
+
+	if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusRefunding, transfer.Version, entries); err != nil {
+		return wrapTransitionError(err, "refund transfer", transferID)
+	}
+
+	e.logger.Info("settla-core: refund initiated",
+		"transfer_id", transfer.ID,
+		"tenant_id", transfer.TenantID,
+	)
 
 	return nil
 }
 
-// loadTransfer fetches a transfer by ID across all tenants by iterating.
-// In practice the caller should provide the tenantID, but for the step-based
-// pipeline we look up the transfer by the ID stored in the event.
-func (e *Engine) loadTransfer(ctx context.Context, transferID uuid.UUID) (*domain.Transfer, error) {
-	// The transfer store requires tenant_id for isolation. In the step pipeline,
-	// we use uuid.Nil as a sentinel that the store implementation resolves internally.
-	transfer, err := e.transferStore.GetTransfer(ctx, uuid.Nil, transferID)
+// HandleRefundResult processes the result of a refund operation.
+// On success: transitions REFUNDING → FAILED (refund completed, transfer is terminal).
+// On failure: logs the error — the recovery detector will escalate to manual review.
+func (e *Engine) HandleRefundResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusRefunding)
+	if err != nil {
+		return fmt.Errorf("settla-core: handle refund result %s: %w", transferID, err)
+	}
+
+	if result.Success {
+		webhookPayload, err := json.Marshal(domain.WebhookDeliverPayload{
+			TransferID: transfer.ID,
+			TenantID:   transfer.TenantID,
+			EventType:  domain.EventTransferFailed,
+			Data:       []byte(fmt.Sprintf(`{"reason":"refund_completed","transfer_id":"%s"}`, transfer.ID)),
+		})
+		if err != nil {
+			return fmt.Errorf("settla-core: handle refund result %s: marshalling webhook payload: %w", transferID, err)
+		}
+
+		entries := []domain.OutboxEntry{
+			domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentWebhookDeliver, webhookPayload),
+			domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventRefundCompleted, transferEventPayload(transfer.ID, transfer.TenantID)),
+		}
+
+		if err := e.transferStore.TransitionWithOutbox(ctx, transfer.ID, domain.TransferStatusFailed, transfer.Version, entries); err != nil {
+			return wrapTransitionError(err, "handle refund result", transferID)
+		}
+
+		e.logger.Info("settla-core: refund completed",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+		)
+	} else {
+		e.logger.Warn("settla-core: refund failed, awaiting recovery escalation",
+			"transfer_id", transfer.ID,
+			"tenant_id", transfer.TenantID,
+			"error", result.Error,
+		)
+	}
+
+	return nil
+}
+
+// ProcessTransfer runs the settlement pipeline for testing/demo by stepping
+// through FundTransfer → InitiateOnRamp → HandleOnRampResult(success) →
+// HandleSettlementResult(success) → HandleOffRampResult(success).
+// In production, each step is triggered by workers processing outbox intents.
+func (e *Engine) ProcessTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	if err := e.FundTransfer(ctx, tenantID, transferID); err != nil {
+		return err
+	}
+	if err := e.InitiateOnRamp(ctx, tenantID, transferID); err != nil {
+		return err
+	}
+	if err := e.HandleOnRampResult(ctx, tenantID, transferID, domain.IntentResult{Success: true}); err != nil {
+		return err
+	}
+	if err := e.HandleSettlementResult(ctx, tenantID, transferID, domain.IntentResult{Success: true, TxHash: "0xdemo"}); err != nil {
+		return err
+	}
+	return e.HandleOffRampResult(ctx, tenantID, transferID, domain.IntentResult{Success: true})
+}
+
+// transferEventPayload returns a minimal JSON payload for transfer lifecycle events.
+// This ensures all events carry the transfer_id so downstream workers can route them.
+func transferEventPayload(transferID, tenantID uuid.UUID) []byte {
+	data, _ := json.Marshal(struct {
+		TransferID uuid.UUID `json:"transfer_id"`
+		TenantID   uuid.UUID `json:"tenant_id"`
+	}{TransferID: transferID, TenantID: tenantID})
+	return data
+}
+
+// loadTransfer fetches a transfer by tenant and ID. The tenantID is passed
+// through from the outbox entry payload to enforce tenant isolation in all
+// store lookups.
+func (e *Engine) loadTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) (*domain.Transfer, error) {
+	transfer, err := e.transferStore.GetTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return nil, fmt.Errorf("loading transfer %s: %w", transferID, err)
 	}
@@ -826,8 +953,8 @@ func (e *Engine) loadTransfer(ctx context.Context, transferID uuid.UUID) (*domai
 }
 
 // loadTransferForStep loads a transfer and verifies it's in the expected status.
-func (e *Engine) loadTransferForStep(ctx context.Context, transferID uuid.UUID, expectedStatus domain.TransferStatus) (*domain.Transfer, error) {
-	transfer, err := e.loadTransfer(ctx, transferID)
+func (e *Engine) loadTransferForStep(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, expectedStatus domain.TransferStatus) (*domain.Transfer, error) {
+	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return nil, err
 	}
@@ -837,44 +964,33 @@ func (e *Engine) loadTransferForStep(ctx context.Context, transferID uuid.UUID, 
 	return transfer, nil
 }
 
-// transitionAndPersist applies a state transition and persists both the transfer and event.
-func (e *Engine) transitionAndPersist(ctx context.Context, transfer *domain.Transfer, target domain.TransferStatus) error {
-	fromStatus := transfer.Status
-	event, err := transfer.TransitionTo(target)
-	if err != nil {
-		return err
+// validateLedgerLines converts outbox LedgerLineEntry items to domain EntryLine
+// and validates that debits equal credits before the entries are queued.
+func validateLedgerLines(lines []domain.LedgerLineEntry) error {
+	entryLines := make([]domain.EntryLine, len(lines))
+	for i, l := range lines {
+		entryLines[i] = domain.EntryLine{
+			ID: uuid.New(),
+			Posting: domain.Posting{
+				AccountCode: l.AccountCode,
+				EntryType:   domain.EntryType(l.EntryType),
+				Amount:      l.Amount,
+				Currency:    domain.Currency(l.Currency),
+			},
+		}
 	}
-
-	if err := e.transferStore.UpdateTransfer(ctx, transfer); err != nil {
-		return fmt.Errorf("persisting transition to %s: %w", target, err)
-	}
-
-	if err := e.transferStore.CreateTransferEvent(ctx, event); err != nil {
-		e.logger.Error("settla-core: failed to persist transfer event",
-			"transfer_id", transfer.ID, "to_status", target, "error", err)
-	}
-
-	e.logger.Info("settla-core: state transition",
-		"transfer_id", transfer.ID,
-		"tenant_id", transfer.TenantID,
-		"from_status", fromStatus,
-		"to_status", target,
-	)
-
-	return nil
+	return domain.ValidateEntries(entryLines)
 }
 
-// publishEvent is a non-blocking event publish helper. Errors are logged but
-// do not fail the operation — events are eventually consistent via NATS replay.
-func (e *Engine) publishEvent(ctx context.Context, tenantID uuid.UUID, eventType string, data any) {
-	if err := e.publisher.Publish(ctx, domain.Event{
-		ID:        uuid.New(),
-		TenantID:  tenantID,
-		Type:      eventType,
-		Timestamp: time.Now().UTC(),
-		Data:      data,
-	}); err != nil {
-		e.logger.Error("settla-core: failed to publish event",
-			"event_type", eventType, "tenant_id", tenantID, "error", err)
+// wrapTransitionError adds context to TransitionWithOutbox errors. Optimistic lock
+// conflicts get a "concurrent modification" message so callers (workers) can
+// distinguish retryable conflicts from permanent failures via errors.Is.
+func wrapTransitionError(err error, step string, transferID uuid.UUID) error {
+	if err == nil {
+		return nil
 	}
+	if errors.Is(err, ErrOptimisticLock) {
+		return fmt.Errorf("settla-core: %s: concurrent modification of transfer %s: %w", step, transferID, ErrOptimisticLock)
+	}
+	return fmt.Errorf("settla-core: %s %s: %w", step, transferID, err)
 }
