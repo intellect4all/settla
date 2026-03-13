@@ -136,18 +136,22 @@ func balancedEntry(tenantSlug string) domain.JournalEntry {
 		ReferenceType:  "transfer",
 		Lines: []domain.EntryLine{
 			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(tenantSlug, "assets:bank:gbp:clearing"),
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      decimal.NewFromFloat(1000.00),
-				Currency:    domain.CurrencyGBP,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: domain.TenantAccountCode(tenantSlug, "assets:bank:gbp:clearing"),
+					EntryType:   domain.EntryTypeDebit,
+					Amount:      decimal.NewFromFloat(1000.00),
+					Currency:    domain.CurrencyGBP,
+				},
 			},
 			{
-				ID:          uuid.New(),
-				AccountCode: domain.TenantAccountCode(tenantSlug, "liabilities:customer:pending"),
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      decimal.NewFromFloat(1000.00),
-				Currency:    domain.CurrencyGBP,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: domain.TenantAccountCode(tenantSlug, "liabilities:customer:pending"),
+					EntryType:   domain.EntryTypeCredit,
+					Amount:      decimal.NewFromFloat(1000.00),
+					Currency:    domain.CurrencyGBP,
+				},
 			},
 		},
 	}
@@ -162,25 +166,31 @@ func multiLineEntry() domain.JournalEntry {
 		Description:    "Multi-line settlement entry",
 		Lines: []domain.EntryLine{
 			{
-				ID:          uuid.New(),
-				AccountCode: "assets:crypto:usdt:tron",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      decimal.NewFromFloat(950.00),
-				Currency:    domain.CurrencyUSDT,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: "assets:crypto:usdt:tron",
+					EntryType:   domain.EntryTypeDebit,
+					Amount:      decimal.NewFromFloat(950.00),
+					Currency:    domain.CurrencyUSDT,
+				},
 			},
 			{
-				ID:          uuid.New(),
-				AccountCode: "expenses:provider:onramp",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      decimal.NewFromFloat(50.00),
-				Currency:    domain.CurrencyUSDT,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: "expenses:provider:onramp",
+					EntryType:   domain.EntryTypeDebit,
+					Amount:      decimal.NewFromFloat(50.00),
+					Currency:    domain.CurrencyUSDT,
+				},
 			},
 			{
-				ID:          uuid.New(),
-				AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      decimal.NewFromFloat(1000.00),
-				Currency:    domain.CurrencyUSDT,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: "tenant:lemfi:assets:bank:gbp:clearing",
+					EntryType:   domain.EntryTypeCredit,
+					Amount:      decimal.NewFromFloat(1000.00),
+					Currency:    domain.CurrencyUSDT,
+				},
 			},
 		},
 	}
@@ -234,18 +244,22 @@ func TestPostEntries_Imbalanced(t *testing.T) {
 		IdempotencyKey: "test-imbalanced",
 		Lines: []domain.EntryLine{
 			{
-				ID:          uuid.New(),
-				AccountCode: "assets:bank:gbp",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      decimal.NewFromFloat(1000.00),
-				Currency:    domain.CurrencyGBP,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: "assets:bank:gbp",
+					EntryType:   domain.EntryTypeDebit,
+					Amount:      decimal.NewFromFloat(1000.00),
+					Currency:    domain.CurrencyGBP,
+				},
 			},
 			{
-				ID:          uuid.New(),
-				AccountCode: "liabilities:pending",
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      decimal.NewFromFloat(999.00),
-				Currency:    domain.CurrencyGBP,
+				ID: uuid.New(),
+				Posting: domain.Posting{
+					AccountCode: "liabilities:pending",
+					EntryType:   domain.EntryTypeCredit,
+					Amount:      decimal.NewFromFloat(999.00),
+					Currency:    domain.CurrencyGBP,
+				},
 			},
 		},
 	}
@@ -404,16 +418,20 @@ func TestPostEntries_AssignsIDs(t *testing.T) {
 		Description:    "Test auto ID assignment",
 		Lines: []domain.EntryLine{
 			{
-				AccountCode: "assets:test:a",
-				EntryType:   domain.EntryTypeDebit,
-				Amount:      decimal.NewFromFloat(100),
-				Currency:    domain.CurrencyUSD,
+				Posting: domain.Posting{
+					AccountCode: "assets:test:a",
+					EntryType:   domain.EntryTypeDebit,
+					Amount:      decimal.NewFromFloat(100),
+					Currency:    domain.CurrencyUSD,
+				},
 			},
 			{
-				AccountCode: "liabilities:test:b",
-				EntryType:   domain.EntryTypeCredit,
-				Amount:      decimal.NewFromFloat(100),
-				Currency:    domain.CurrencyUSD,
+				Posting: domain.Posting{
+					AccountCode: "liabilities:test:b",
+					EntryType:   domain.EntryTypeCredit,
+					Amount:      decimal.NewFromFloat(100),
+					Currency:    domain.CurrencyUSD,
+				},
 			},
 		},
 	}
@@ -495,18 +513,22 @@ func TestPostEntries_ConcurrentAccess(t *testing.T) {
 				Description:    fmt.Sprintf("Concurrent entry %d", idx),
 				Lines: []domain.EntryLine{
 					{
-						ID:          uuid.New(),
-						AccountCode: fmt.Sprintf("assets:concurrent:%d", idx),
-						EntryType:   domain.EntryTypeDebit,
-						Amount:      decimal.NewFromFloat(100),
-						Currency:    domain.CurrencyUSD,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: fmt.Sprintf("assets:concurrent:%d", idx),
+							EntryType:   domain.EntryTypeDebit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
 					},
 					{
-						ID:          uuid.New(),
-						AccountCode: fmt.Sprintf("liabilities:concurrent:%d", idx),
-						EntryType:   domain.EntryTypeCredit,
-						Amount:      decimal.NewFromFloat(100),
-						Currency:    domain.CurrencyUSD,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: fmt.Sprintf("liabilities:concurrent:%d", idx),
+							EntryType:   domain.EntryTypeCredit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
 					},
 				},
 			}
@@ -524,6 +546,89 @@ func TestPostEntries_ConcurrentAccess(t *testing.T) {
 	// All 100 entries should have been posted.
 	if len(tb.transfers) != 100 {
 		t.Errorf("expected 100 transfers, got %d", len(tb.transfers))
+	}
+}
+
+func TestPostEntries_HotKeyContention(t *testing.T) {
+	tb := newMockTBClient()
+	svc, _ := newTestService(tb)
+
+	// All 100 goroutines post to the SAME account pair (hot-key contention).
+	const goroutines = 100
+	debitCode := "assets:hotkey:contention:debit"
+	creditCode := "liabilities:hotkey:contention:credit"
+
+	var wg sync.WaitGroup
+	var errCount atomic.Int32
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			tenantID := uuid.New()
+			entry := domain.JournalEntry{
+				ID:             uuid.New(),
+				TenantID:       &tenantID,
+				IdempotencyKey: fmt.Sprintf("hotkey-%d", idx),
+				Description:    fmt.Sprintf("Hot key entry %d", idx),
+				Lines: []domain.EntryLine{
+					{
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: debitCode,
+							EntryType:   domain.EntryTypeDebit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
+					},
+					{
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: creditCode,
+							EntryType:   domain.EntryTypeCredit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
+					},
+				},
+			}
+			if _, err := svc.PostEntries(context.Background(), entry); err != nil {
+				errCount.Add(1)
+				t.Logf("hotkey entry %d failed: %v", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if errCount.Load() != 0 {
+		t.Errorf("expected 0 errors, got %d", errCount.Load())
+	}
+
+	// All 100 entries should have been posted (100 TB transfers to the same accounts).
+	tb.mu.Lock()
+	transferCount := len(tb.transfers)
+	tb.mu.Unlock()
+	if transferCount != goroutines {
+		t.Errorf("expected %d transfers, got %d", goroutines, transferCount)
+	}
+
+	// Check balances: 100 × $100 = $10,000 each side.
+	debitBalance, err := svc.GetBalance(context.Background(), debitCode)
+	if err != nil {
+		t.Fatalf("GetBalance debit failed: %v", err)
+	}
+	expectedDebit := decimal.NewFromFloat(-10000)
+	if !debitBalance.Equal(expectedDebit) {
+		t.Errorf("debit balance = %s, want %s", debitBalance, expectedDebit)
+	}
+
+	creditBalance, err := svc.GetBalance(context.Background(), creditCode)
+	if err != nil {
+		t.Fatalf("GetBalance credit failed: %v", err)
+	}
+	expectedCredit := decimal.NewFromFloat(10000)
+	if !creditBalance.Equal(expectedCredit) {
+		t.Errorf("credit balance = %s, want %s", creditBalance, expectedCredit)
 	}
 }
 
@@ -679,18 +784,22 @@ func TestBatcher_BatchesMultipleEntries(t *testing.T) {
 				Description:    fmt.Sprintf("Batch entry %d", idx),
 				Lines: []domain.EntryLine{
 					{
-						ID:          uuid.New(),
-						AccountCode: fmt.Sprintf("assets:batch:%d", idx),
-						EntryType:   domain.EntryTypeDebit,
-						Amount:      decimal.NewFromFloat(100),
-						Currency:    domain.CurrencyUSD,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: fmt.Sprintf("assets:batch:%d", idx),
+							EntryType:   domain.EntryTypeDebit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
 					},
 					{
-						ID:          uuid.New(),
-						AccountCode: fmt.Sprintf("liabilities:batch:%d", idx),
-						EntryType:   domain.EntryTypeCredit,
-						Amount:      decimal.NewFromFloat(100),
-						Currency:    domain.CurrencyUSD,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: fmt.Sprintf("liabilities:batch:%d", idx),
+							EntryType:   domain.EntryTypeCredit,
+							Amount:      decimal.NewFromFloat(100),
+							Currency:    domain.CurrencyUSD,
+						},
 					},
 				},
 			}
@@ -746,7 +855,7 @@ func TestBatcher_WindowFlush(t *testing.T) {
 
 func TestSyncConsumer_Enqueue(t *testing.T) {
 	// Create sync consumer without a real PG backend.
-	sc := newSyncConsumer(nil, 100, 100*time.Millisecond, slogDiscard())
+	sc := newSyncConsumer(nil, 100, 100*time.Millisecond, slogDiscard(), 10000)
 
 	entry := balancedEntry("sync-test")
 	sc.Enqueue(entry)
@@ -757,7 +866,7 @@ func TestSyncConsumer_Enqueue(t *testing.T) {
 }
 
 func TestSyncConsumer_QueueFull(t *testing.T) {
-	sc := newSyncConsumer(nil, 100, 100*time.Millisecond, slogDiscard())
+	sc := newSyncConsumer(nil, 100, 100*time.Millisecond, slogDiscard(), 10000)
 	sc.queue = make(chan domain.JournalEntry, 1) // Override with tiny buffer.
 
 	// First enqueue succeeds.

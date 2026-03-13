@@ -36,6 +36,47 @@ func setupBenchmarkServiceWithBatching(b *testing.B) (*Service, *mockTBClient) {
 	return svc, tb
 }
 
+// BenchmarkPostEntries_HotKey measures throughput under hot-key contention.
+// A single debit+credit account pair is shared across 256 goroutines to simulate
+// the worst-case hot-key scenario (e.g., a system clearing account).
+//
+// Target: >15,000 entries/sec under contention, no data races
+func BenchmarkPostEntries_HotKey(b *testing.B) {
+	svc, _ := setupBenchmarkServiceWithBatching(b)
+	defer svc.Stop()
+
+	ctx := context.Background()
+
+	// Pre-create the hot accounts.
+	hotEntry := balancedEntry("hot-key-contention")
+	_, _ = svc.PostEntries(ctx, hotEntry)
+
+	var opsCompleted atomic.Int64
+	start := time.Now()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			e := balancedEntry("hot-key-contention")
+			e.IdempotencyKey = fmt.Sprintf("idem-hotkey-%d-%d", time.Now().UnixNano(), i)
+			_, _ = svc.PostEntries(ctx, e)
+			opsCompleted.Add(1)
+			i++
+		}
+	})
+
+	b.StopTimer()
+	elapsed := time.Since(start)
+	ops := opsCompleted.Load()
+	if elapsed > 0 {
+		entriesPerSec := float64(ops) / elapsed.Seconds()
+		b.ReportMetric(entriesPerSec, "entries/s")
+	}
+}
+
 // BenchmarkPostEntries_Single measures single entry posting performance.
 // Single PostEntries call with 2-line balanced entry.
 //
@@ -135,18 +176,22 @@ func BenchmarkPostEntries_Concurrent(b *testing.B) {
 				ReferenceType:  "transfer",
 				Lines: []domain.EntryLine{
 					{
-						ID:          uuid.New(),
-						AccountCode: accounts[idx],
-						EntryType:   domain.EntryTypeDebit,
-						Amount:      decimal.NewFromInt(1),
-						Currency:    domain.CurrencyGBP,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: accounts[idx],
+							EntryType:   domain.EntryTypeDebit,
+							Amount:      decimal.NewFromInt(1),
+							Currency:    domain.CurrencyGBP,
+						},
 					},
 					{
-						ID:          uuid.New(),
-						AccountCode: "system:liabilities:pending",
-						EntryType:   domain.EntryTypeCredit,
-						Amount:      decimal.NewFromInt(1),
-						Currency:    domain.CurrencyGBP,
+						ID: uuid.New(),
+						Posting: domain.Posting{
+							AccountCode: "system:liabilities:pending",
+							EntryType:   domain.EntryTypeCredit,
+							Amount:      decimal.NewFromInt(1),
+							Currency:    domain.CurrencyGBP,
+						},
 					},
 				},
 			}
@@ -358,18 +403,22 @@ func BenchmarkTBCreateTransfers(b *testing.B) {
 			IdempotencyKey: fmt.Sprintf("idem-tb-%d", i),
 			Lines: []domain.EntryLine{
 				{
-					ID:          uuid.New(),
-					AccountCode: accounts[0],
-					EntryType:   domain.EntryTypeDebit,
-					Amount:      decimal.NewFromInt(1000),
-					Currency:    domain.CurrencyGBP,
+					ID: uuid.New(),
+					Posting: domain.Posting{
+						AccountCode: accounts[0],
+						EntryType:   domain.EntryTypeDebit,
+						Amount:      decimal.NewFromInt(1000),
+						Currency:    domain.CurrencyGBP,
+					},
 				},
 				{
-					ID:          uuid.New(),
-					AccountCode: accounts[1],
-					EntryType:   domain.EntryTypeCredit,
-					Amount:      decimal.NewFromInt(1000),
-					Currency:    domain.CurrencyGBP,
+					ID: uuid.New(),
+					Posting: domain.Posting{
+						AccountCode: accounts[1],
+						EntryType:   domain.EntryTypeCredit,
+						Amount:      decimal.NewFromInt(1000),
+						Currency:    domain.CurrencyGBP,
+					},
 				},
 			},
 		}
