@@ -4,10 +4,16 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/intellect4all/settla/domain"
 )
+
+// pgSyncer is the interface the sync consumer needs from the Postgres backend.
+type pgSyncer interface {
+	SyncJournalEntry(ctx context.Context, entry domain.JournalEntry) error
+}
 
 // SyncConsumer runs a background goroutine that syncs journal entries
 // from TigerBeetle to Postgres. Entries are queued via Enqueue() after
@@ -16,23 +22,27 @@ import (
 // This is the TB → PG sync path in the CQRS architecture. Postgres is the
 // read model; TigerBeetle is the write authority.
 type SyncConsumer struct {
-	pg        *pgBackend
+	pg        pgSyncer
 	batchSize int
 	interval  time.Duration
 	logger    *slog.Logger
 
-	queue chan domain.JournalEntry
-	done  chan struct{}
-	wg    sync.WaitGroup
+	queue        chan domain.JournalEntry
+	done         chan struct{}
+	wg           sync.WaitGroup
+	droppedTotal atomic.Int64
 }
 
-func newSyncConsumer(pg *pgBackend, batchSize int, interval time.Duration, logger *slog.Logger) *SyncConsumer {
+func newSyncConsumer(pg pgSyncer, batchSize int, interval time.Duration, logger *slog.Logger, queueSize int) *SyncConsumer {
+	if queueSize <= 0 {
+		queueSize = 10000
+	}
 	return &SyncConsumer{
 		pg:        pg,
 		batchSize: batchSize,
 		interval:  interval,
 		logger:    logger.With("component", "sync-consumer"),
-		queue:     make(chan domain.JournalEntry, 10000),
+		queue:     make(chan domain.JournalEntry, queueSize),
 		done:      make(chan struct{}),
 	}
 }
@@ -56,15 +66,22 @@ func (sc *SyncConsumer) Enqueue(entry domain.JournalEntry) {
 	select {
 	case sc.queue <- entry:
 	default:
+		sc.droppedTotal.Add(1)
 		sc.logger.Warn("sync queue full, dropping entry",
 			"entry_id", entry.ID,
-			"queue_size", len(sc.queue))
+			"queue_size", len(sc.queue),
+			"dropped_total", sc.droppedTotal.Load())
 	}
 }
 
 // Pending returns the number of entries waiting to be synced.
 func (sc *SyncConsumer) Pending() int {
 	return len(sc.queue)
+}
+
+// Dropped returns the total number of entries dropped due to a full queue.
+func (sc *SyncConsumer) Dropped() int64 {
+	return sc.droppedTotal.Load()
 }
 
 func (sc *SyncConsumer) run() {

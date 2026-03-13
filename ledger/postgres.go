@@ -54,13 +54,15 @@ func (pg *pgBackend) GetEntries(ctx context.Context, accountCode string, from, t
 	entries := make([]domain.EntryLine, len(rows))
 	for i, row := range rows {
 		entries[i] = domain.EntryLine{
-			ID:          row.ID,
-			AccountID:   row.AccountID,
-			AccountCode: accountCode,
-			EntryType:   domain.EntryType(row.EntryType),
-			Amount:      numericToDecimal(row.Amount),
-			Currency:    domain.Currency(row.Currency),
-			Description: row.Description.String,
+			ID:        row.ID,
+			AccountID: row.AccountID,
+			Posting: domain.Posting{
+				AccountCode: accountCode,
+				EntryType:   domain.EntryType(row.EntryType),
+				Amount:      numericToDecimal(row.Amount),
+				Currency:    domain.Currency(row.Currency),
+				Description: row.Description.String,
+			},
 		}
 	}
 	return entries, nil
@@ -89,13 +91,15 @@ func (pg *pgBackend) GetJournalEntryWithLines(ctx context.Context, entryID uuid.
 			return nil, fmt.Errorf("settla-ledger: resolving account %s: %w", line.AccountID, err)
 		}
 		domainLines[i] = domain.EntryLine{
-			ID:          line.ID,
-			AccountID:   line.AccountID,
-			AccountCode: account.Code,
-			EntryType:   domain.EntryType(line.EntryType),
-			Amount:      numericToDecimal(line.Amount),
-			Currency:    domain.Currency(line.Currency),
-			Description: line.Description.String,
+			ID:        line.ID,
+			AccountID: line.AccountID,
+			Posting: domain.Posting{
+				AccountCode: account.Code,
+				EntryType:   domain.EntryType(line.EntryType),
+				Amount:      numericToDecimal(line.Amount),
+				Currency:    domain.Currency(line.Currency),
+				Description: line.Description.String,
+			},
 		}
 	}
 
