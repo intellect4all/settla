@@ -74,20 +74,16 @@ func localCounterKey(tenantID uuid.UUID) string {
 func (rl *RateLimiter) Allow(ctx context.Context, tenantID uuid.UUID, limit int64) (bool, int64, error) {
 	lk := localCounterKey(tenantID)
 
-	// Hot path: check local counter.
-	rl.mu.RLock()
-	lc, exists := rl.counters[lk]
-	rl.mu.RUnlock()
-
+	// Hot path: check and increment local counter under a single write lock.
 	now := time.Now()
-	if exists && now.Before(lc.syncAt.Add(rl.syncInt)) && lc.count < lc.limit {
-		// Local counter is fresh and below limit — allow without Redis call.
-		rl.mu.Lock()
-		rl.counters[lk].count++
-		remaining := lc.limit - rl.counters[lk].count
+	rl.mu.Lock()
+	if lc, exists := rl.counters[lk]; exists && now.Before(lc.syncAt.Add(rl.syncInt)) && lc.count < lc.limit {
+		lc.count++
+		remaining := lc.limit - lc.count
 		rl.mu.Unlock()
 		return true, remaining, nil
 	}
+	rl.mu.Unlock()
 
 	// Cold path: accurate check via Redis sorted set.
 	key := rateLimitKey(tenantID)
