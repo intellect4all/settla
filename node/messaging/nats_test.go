@@ -99,9 +99,48 @@ func TestPartitionFilter(t *testing.T) {
 
 func TestConsumerName(t *testing.T) {
 	got := ConsumerName(3)
-	want := "settla-worker-partition-3"
+	want := "settla-transfer-worker-3"
 	if got != want {
 		t.Errorf("ConsumerName(3) = %q, want %q", got, want)
+	}
+}
+
+func TestStreamPartitionFilter(t *testing.T) {
+	tests := []struct {
+		prefix    string
+		partition int
+		want      string
+	}{
+		{SubjectPrefixProvider, 0, "settla.provider.command.partition.0.>"},
+		{SubjectPrefixProvider, 3, "settla.provider.command.partition.3.>"},
+		{SubjectPrefixLedger, 5, "settla.ledger.partition.5.>"},
+		{SubjectPrefixProviderInbound, 7, "settla.provider.inbound.partition.7.>"},
+	}
+
+	for _, tt := range tests {
+		got := StreamPartitionFilter(tt.prefix, tt.partition)
+		if got != tt.want {
+			t.Errorf("StreamPartitionFilter(%q, %d) = %q, want %q", tt.prefix, tt.partition, got, tt.want)
+		}
+	}
+}
+
+func TestStreamConsumerName(t *testing.T) {
+	tests := []struct {
+		baseName  string
+		partition int
+		want      string
+	}{
+		{"settla-provider-worker", 0, "settla-provider-worker-0"},
+		{"settla-ledger-worker", 3, "settla-ledger-worker-3"},
+		{"settla-inbound-webhook-worker", 7, "settla-inbound-webhook-worker-7"},
+	}
+
+	for _, tt := range tests {
+		got := StreamConsumerName(tt.baseName, tt.partition)
+		if got != tt.want {
+			t.Errorf("StreamConsumerName(%q, %d) = %q, want %q", tt.baseName, tt.partition, got, tt.want)
+		}
 	}
 }
 
