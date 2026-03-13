@@ -7,9 +7,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/observability"
+	"github.com/intellect4all/settla/resilience"
+)
+
+var (
+	syncQueueDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "settla",
+		Subsystem: "ledger",
+		Name:      "sync_queue_dropped_total",
+		Help:      "Total entries dropped because the TB→PG sync queue was full.",
+	})
+	syncQueuePending = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "settla",
+		Subsystem: "ledger",
+		Name:      "sync_queue_pending",
+		Help:      "Number of entries waiting in the TB→PG sync queue.",
+	})
 )
 
 // Compile-time check: Service implements domain.Ledger.
@@ -32,6 +50,7 @@ type Service struct {
 	pg        *pgBackend
 	sync      *SyncConsumer
 	batcher   *Batcher
+	bulkhead  *resilience.Bulkhead
 	publisher domain.EventPublisher
 	logger    *slog.Logger
 	metrics   *observability.Metrics
@@ -69,10 +88,14 @@ func NewService(
 		if cfg.batchWindow > 0 {
 			s.batcher = newBatcher(s.tb, cfg.batchWindow, cfg.batchMaxSize, svcLogger, metrics)
 		}
+
+		if cfg.bulkheadMax > 0 {
+			s.bulkhead = resilience.NewBulkhead("tigerbeetle-writes", cfg.bulkheadMax)
+		}
 	}
 
 	if pg != nil {
-		s.sync = newSyncConsumer(pg, cfg.syncBatchSize, cfg.syncInterval, svcLogger)
+		s.sync = newSyncConsumer(pg, cfg.syncBatchSize, cfg.syncInterval, svcLogger, cfg.syncQueueSize)
 	}
 
 	return s
@@ -148,15 +171,33 @@ func (s *Service) PostEntries(ctx context.Context, entry domain.JournalEntry) (*
 		return nil, fmt.Errorf("settla-ledger: ensuring accounts: %w", err)
 	}
 
-	// Post to TigerBeetle (hot write path).
+	// Post to TigerBeetle (hot write path) with retry on transient failures.
 	tbStart := time.Now()
-	if s.batcher != nil {
-		if err := s.batcher.Submit(ctx, entry); err != nil {
-			return nil, fmt.Errorf("settla-ledger: batched post: %w", err)
+	tbWrite := func(ctx context.Context) error {
+		if s.batcher != nil {
+			return s.batcher.Submit(ctx, entry)
+		}
+		_, err := s.tb.PostEntries(ctx, entry)
+		return err
+	}
+	tbRetryConfig := resilience.RetryConfig{
+		Operation:    "tigerbeetle-write",
+		MaxAttempts:  3,
+		InitialDelay: 50 * time.Millisecond,
+		MaxDelay:     500 * time.Millisecond,
+	}
+	shouldRetryTB := func(err error) bool {
+		return ctx.Err() == nil // retry on any non-context error
+	}
+	if s.bulkhead != nil {
+		if err := resilience.Retry(ctx, tbRetryConfig, shouldRetryTB, func(ctx context.Context) error {
+			return s.bulkhead.Execute(ctx, tbWrite)
+		}); err != nil {
+			return nil, fmt.Errorf("settla-ledger: TB write (bulkhead): %w", err)
 		}
 	} else {
-		if _, err := s.tb.PostEntries(ctx, entry); err != nil {
-			return nil, fmt.Errorf("settla-ledger: posting to TB: %w", err)
+		if err := resilience.Retry(ctx, tbRetryConfig, shouldRetryTB, tbWrite); err != nil {
+			return nil, fmt.Errorf("settla-ledger: TB write: %w", err)
 		}
 	}
 	if s.metrics != nil {
@@ -167,7 +208,12 @@ func (s *Service) PostEntries(ctx context.Context, entry domain.JournalEntry) (*
 
 	// Queue for async Postgres sync (non-blocking).
 	if s.sync != nil {
+		beforeDropped := s.sync.Dropped()
 		s.sync.Enqueue(entry)
+		if s.sync.Dropped() > beforeDropped {
+			syncQueueDroppedTotal.Inc()
+		}
+		syncQueuePending.Set(float64(s.sync.Pending()))
 	}
 
 	s.logger.Info("settla-ledger: entry posted",
@@ -240,13 +286,15 @@ func (s *Service) ReverseEntry(ctx context.Context, entryID uuid.UUID, reason st
 			reversedType = domain.EntryTypeCredit
 		}
 		reversalLines = append(reversalLines, domain.EntryLine{
-			ID:          uuid.New(),
-			AccountID:   line.AccountID,
-			AccountCode: line.AccountCode,
-			EntryType:   reversedType,
-			Amount:      line.Amount,
-			Currency:    line.Currency,
-			Description: fmt.Sprintf("Reversal: %s", reason),
+			ID:        uuid.New(),
+			AccountID: line.AccountID,
+			Posting: domain.Posting{
+				AccountCode: line.AccountCode,
+				EntryType:   reversedType,
+				Amount:      line.Amount,
+				Currency:    line.Currency,
+				Description: fmt.Sprintf("Reversal: %s", reason),
+			},
 		})
 	}
 
@@ -288,6 +336,8 @@ type config struct {
 	batchMaxSize  int
 	syncBatchSize int
 	syncInterval  time.Duration
+	syncQueueSize int
+	bulkheadMax   int
 }
 
 func defaultConfig() config {
@@ -297,6 +347,8 @@ func defaultConfig() config {
 		batchMaxSize:  500,
 		syncBatchSize: 1000,
 		syncInterval:  100 * time.Millisecond,
+		syncQueueSize: 10000,
+		bulkheadMax:   100,
 	}
 }
 
@@ -318,6 +370,16 @@ func WithBatchMaxSize(n int) Option {
 // WithSyncInterval sets the PG sync flush interval.
 func WithSyncInterval(d time.Duration) Option {
 	return func(c *config) { c.syncInterval = d }
+}
+
+// WithSyncQueueSize sets the sync consumer channel buffer size.
+func WithSyncQueueSize(n int) Option {
+	return func(c *config) { c.syncQueueSize = n }
+}
+
+// WithBulkhead sets the maximum concurrent TigerBeetle writes. 0 disables the bulkhead.
+func WithBulkhead(maxConcurrent int) Option {
+	return func(c *config) { c.bulkheadMax = maxConcurrent }
 }
 
 // WithNoBatching disables write-ahead batching (each PostEntries goes directly to TB).
