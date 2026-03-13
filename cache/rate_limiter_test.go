@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -144,5 +146,96 @@ func TestRateLimiter_Reset(t *testing.T) {
 	}
 	if !allowed {
 		t.Fatal("should be allowed after reset")
+	}
+}
+
+func TestRateLimiter_ConcurrentOverage(t *testing.T) {
+	rc := newTestRedis(t)
+	ctx := context.Background()
+	rl := NewRateLimiter(rc)
+
+	tenantID := uuid.MustParse("c0000000-0000-0000-0000-000000000099")
+	rl.Reset(ctx, tenantID)
+
+	const (
+		goroutines   = 100
+		callsPerG    = 20
+		limit        = int64(1000)
+		tolerance    = 150 // 15% of limit — Redis pipeline is not atomic across goroutines
+	)
+
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < callsPerG; j++ {
+				// Force cold path each time by clearing local counter.
+				rl.mu.Lock()
+				delete(rl.counters, localCounterKey(tenantID))
+				rl.mu.Unlock()
+
+				ok, _, err := rl.Allow(ctx, tenantID, limit)
+				if err != nil {
+					continue
+				}
+				if ok {
+					allowed.Add(1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	got := allowed.Load()
+	maxAllowed := limit + tolerance
+	if got > maxAllowed {
+		t.Errorf("allowed %d requests, expected at most %d (limit %d + %d tolerance)", got, maxAllowed, limit, tolerance)
+	}
+	t.Logf("concurrent rate limiter: %d/%d requests allowed (limit %d)", got, int64(goroutines)*int64(callsPerG), limit)
+}
+
+func TestRateLimiter_ExactLimit(t *testing.T) {
+	rc := newTestRedis(t)
+	ctx := context.Background()
+	rl := NewRateLimiter(rc)
+
+	tenantID := uuid.MustParse("c0000000-0000-0000-0000-000000000098")
+	rl.Reset(ctx, tenantID)
+
+	limit := int64(5)
+
+	// Issue exactly `limit` requests via cold path.
+	for i := int64(0); i < limit; i++ {
+		rl.mu.Lock()
+		delete(rl.counters, localCounterKey(tenantID))
+		rl.mu.Unlock()
+
+		allowed, _, err := rl.Allow(ctx, tenantID, limit)
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		if !allowed {
+			t.Fatalf("request %d should be allowed (within limit)", i)
+		}
+	}
+
+	// The (limit+1)th request should be denied.
+	rl.mu.Lock()
+	delete(rl.counters, localCounterKey(tenantID))
+	rl.mu.Unlock()
+
+	allowed, remaining, err := rl.Allow(ctx, tenantID, limit)
+	if err != nil {
+		t.Fatalf("over-limit request: %v", err)
+	}
+	if allowed {
+		t.Error("request at limit+1 should be denied")
+	}
+	if remaining != 0 {
+		t.Errorf("expected 0 remaining, got %d", remaining)
 	}
 }

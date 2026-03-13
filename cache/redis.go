@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -12,6 +13,23 @@ import (
 // RedisConfig holds connection parameters for the Redis client.
 type RedisConfig struct {
 	Addr     string
+	Password string
+	DB       int
+}
+
+// SentinelConfig holds connection parameters for a Redis Sentinel cluster.
+// Sentinel-aware clients query sentinels to discover the current master before
+// connecting, so failover is transparent to the application.
+type SentinelConfig struct {
+	// MasterName is the logical name of the master as configured in sentinel.conf
+	// (e.g. "settla-redis").  All sentinels in the cluster must use this same name.
+	MasterName string
+
+	// SentinelAddrs is a comma-separated list of sentinel endpoints
+	// (e.g. "sentinel-0:26379,sentinel-1:26379,sentinel-2:26379").
+	// At least 2 of the 3 sentinels must be reachable for quorum-based failover.
+	SentinelAddrs string
+
 	Password string
 	DB       int
 }
@@ -31,6 +49,32 @@ func NewRedisCache(cfg RedisConfig) *RedisCache {
 		MinIdleConns: 10,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
+	})
+	return &RedisCache{client: client}
+}
+
+// NewRedisCacheFromSentinel creates a Redis cache that connects via Sentinel
+// for automatic master discovery and failover.  The returned *RedisCache uses
+// the same interface as NewRedisCache — the Sentinel topology is transparent
+// to all callers.
+//
+// On failover, go-redis automatically re-queries the sentinels to discover the
+// new master and re-establishes the connection pool, so the application
+// continues to function without a restart.
+func NewRedisCacheFromSentinel(cfg SentinelConfig) *RedisCache {
+	addrs := strings.Split(cfg.SentinelAddrs, ",")
+	for i, a := range addrs {
+		addrs[i] = strings.TrimSpace(a)
+	}
+	client := redis.NewFailoverClient(&redis.FailoverOptions{
+		MasterName:    cfg.MasterName,
+		SentinelAddrs: addrs,
+		Password:      cfg.Password,
+		DB:            cfg.DB,
+		PoolSize:      50,
+		MinIdleConns:  10,
+		ReadTimeout:   2 * time.Second,
+		WriteTimeout:  2 * time.Second,
 	})
 	return &RedisCache{client: client}
 }
