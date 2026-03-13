@@ -18,7 +18,7 @@ import (
 type mockEngine struct {
 	mu      sync.Mutex
 	calls   []engineCall
-	failOn  string // event type to return error for
+	failOn  string // method name to return error for
 }
 
 type engineCall struct {
@@ -44,22 +44,25 @@ func (m *mockEngine) getCalls() []engineCall {
 	return cp
 }
 
-func (m *mockEngine) FundTransfer(ctx context.Context, transferID uuid.UUID) error {
+func (m *mockEngine) FundTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
 	return m.record("FundTransfer", transferID)
 }
-func (m *mockEngine) InitiateOnRamp(ctx context.Context, transferID uuid.UUID) error {
+func (m *mockEngine) InitiateOnRamp(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
 	return m.record("InitiateOnRamp", transferID)
 }
-func (m *mockEngine) SettleOnChain(ctx context.Context, transferID uuid.UUID) error {
-	return m.record("SettleOnChain", transferID)
+func (m *mockEngine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	return m.record("HandleOnRampResult", transferID)
 }
-func (m *mockEngine) InitiateOffRamp(ctx context.Context, transferID uuid.UUID) error {
-	return m.record("InitiateOffRamp", transferID)
+func (m *mockEngine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	return m.record("HandleSettlementResult", transferID)
 }
-func (m *mockEngine) CompleteTransfer(ctx context.Context, transferID uuid.UUID) error {
+func (m *mockEngine) HandleOffRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	return m.record("HandleOffRampResult", transferID)
+}
+func (m *mockEngine) CompleteTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
 	return m.record("CompleteTransfer", transferID)
 }
-func (m *mockEngine) FailTransfer(ctx context.Context, transferID uuid.UUID, reason, code string) error {
+func (m *mockEngine) FailTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, reason, code string) error {
 	return m.record("FailTransfer", transferID)
 }
 
@@ -85,9 +88,9 @@ func TestHandleEvent_RoutesToCorrectEngineMethod(t *testing.T) {
 	}{
 		{domain.EventTransferCreated, "FundTransfer"},
 		{domain.EventTransferFunded, "InitiateOnRamp"},
-		{domain.EventOnRampCompleted, "SettleOnChain"},
-		{domain.EventSettlementCompleted, "InitiateOffRamp"},
-		{domain.EventOffRampCompleted, "CompleteTransfer"},
+		{domain.EventOnRampCompleted, "HandleOnRampResult"},
+		{domain.EventSettlementCompleted, "HandleSettlementResult"},
+		{domain.EventOffRampCompleted, "HandleOffRampResult"},
 	}
 
 	for _, tt := range tests {
@@ -282,7 +285,7 @@ func TestHandleEvent_ExtractsTransferIDFromString(t *testing.T) {
 	}
 }
 
-// TestSagaOrdering verifies that a full saga (created→funded→onramp→settle→offramp→complete)
+// TestSagaOrdering verifies that a full saga (created->funded->onramp->settle->offramp->complete)
 // routes events to the correct engine methods in order.
 func TestSagaOrdering(t *testing.T) {
 	engine := &mockEngine{}
@@ -307,9 +310,9 @@ func TestSagaOrdering(t *testing.T) {
 	expectedMethods := []string{
 		"FundTransfer",
 		"InitiateOnRamp",
-		"SettleOnChain",
-		"InitiateOffRamp",
-		"CompleteTransfer",
+		"HandleOnRampResult",
+		"HandleSettlementResult",
+		"HandleOffRampResult",
 	}
 
 	for _, eventType := range sagaEvents {
@@ -374,6 +377,6 @@ func TestPartitionedRouting(t *testing.T) {
 		}
 	}
 
-	t.Logf("tenant A (%s) → partition %d", tenantA, partitionA)
-	t.Logf("tenant B (%s) → partition %d", tenantB, partitionB)
+	t.Logf("tenant A (%s) -> partition %d", tenantA, partitionA)
+	t.Logf("tenant B (%s) -> partition %d", tenantB, partitionB)
 }
