@@ -13,30 +13,32 @@ import (
 )
 
 const (
-	// StreamName is the JetStream stream for all transfer events.
-	StreamName = "SETTLA_TRANSFERS"
+	// StreamName is the JetStream stream for transfer events (kept for backward compatibility).
+	// Prefer using StreamTransfers from streams.go for new code.
+	StreamName = StreamTransfers
 
-	// SubjectPrefix is the base subject for all transfer events.
-	SubjectPrefix = "settla.transfer"
+	// SubjectPrefix is the base subject for transfer events (kept for backward compatibility).
+	SubjectPrefix = SubjectPrefixTransfer
 
 	// DefaultPartitions is the default number of partitions for tenant sharding.
 	DefaultPartitions = 8
 
 	// MaxRetries is the maximum delivery attempts before dead-lettering.
-	MaxRetries = 5
+	// Total deliveries = MaxRetries (1 initial + 5 retries = 6).
+	MaxRetries = 6
 
 	// AckWait is how long NATS waits for an ack before redelivering.
 	AckWait = 30 * time.Second
 )
 
-// BackoffSchedule is the exponential backoff between redelivery attempts.
-// 1s, 5s, 15s, 30s, 60s — then dead-lettered.
+// BackoffSchedule is the native NATS backoff between redelivery attempts.
+// 1s, 5s, 30s, 2m, 10m — then dead-lettered after MaxDeliver exhausted.
 var BackoffSchedule = []time.Duration{
 	1 * time.Second,
 	5 * time.Second,
-	15 * time.Second,
 	30 * time.Second,
-	60 * time.Second,
+	2 * time.Minute,
+	10 * time.Minute,
 }
 
 // PartitionSubject builds the NATS subject for a given partition and event type.
@@ -52,9 +54,10 @@ func PartitionFilter(partition int) string {
 	return fmt.Sprintf("%s.partition.%d.>", SubjectPrefix, partition)
 }
 
-// ConsumerName builds the durable consumer name for a partition.
+// ConsumerName builds the durable consumer name for a transfer partition.
+// Format: settla-transfer-worker-{N}
 func ConsumerName(partition int) string {
-	return fmt.Sprintf("settla-worker-partition-%d", partition)
+	return fmt.Sprintf("settla-transfer-worker-%d", partition)
 }
 
 // TenantPartition deterministically maps a tenant ID to a partition number
@@ -66,16 +69,41 @@ func TenantPartition(tenantID uuid.UUID, numPartitions int) int {
 	return int(h.Sum32() % uint32(numPartitions))
 }
 
+// StreamPartitionFilter builds the filter subject for a consumer subscribing to
+// all events on a given partition for any stream prefix.
+// Format: {subjectPrefix}.partition.{N}.>
+func StreamPartitionFilter(subjectPrefix string, partition int) string {
+	return fmt.Sprintf("%s.partition.%d.>", subjectPrefix, partition)
+}
+
+// StreamConsumerName builds the durable consumer name for a partitioned stream worker.
+// Format: {baseName}-{N}
+func StreamConsumerName(baseName string, partition int) string {
+	return fmt.Sprintf("%s-%d", baseName, partition)
+}
+
 // Client wraps a NATS connection and JetStream context for Settla messaging.
 type Client struct {
 	Conn          *nats.Conn
 	JS            jetstream.JetStream
 	Logger        *slog.Logger
 	NumPartitions int
+	// Replicas controls the number of stream replicas. 1 for dev, 3 for production.
+	Replicas int
 }
 
-// NewClient connects to NATS and initialises JetStream.
-func NewClient(url string, numPartitions int, logger *slog.Logger) (*Client, error) {
+// ClientOption configures the NATS client.
+type ClientOption func(*Client)
+
+// WithReplicas sets the number of stream replicas (1 for dev, 3 for production).
+func WithReplicas(n int) ClientOption {
+	return func(c *Client) {
+		c.Replicas = n
+	}
+}
+
+// NewClient connects to NATS, initialises JetStream, and creates all 7 streams.
+func NewClient(url string, numPartitions int, logger *slog.Logger, opts ...ClientOption) (*Client, error) {
 	nc, err := nats.Connect(url,
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1), // unlimited reconnects
@@ -99,39 +127,66 @@ func NewClient(url string, numPartitions int, logger *slog.Logger) (*Client, err
 		return nil, fmt.Errorf("settla-messaging: creating JetStream context: %w", err)
 	}
 
-	return &Client{
+	c := &Client{
 		Conn:          nc,
 		JS:            js,
 		Logger:        logger.With("module", "messaging"),
 		NumPartitions: numPartitions,
-	}, nil
+		Replicas:      1, // default: dev mode
+	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c, nil
 }
 
-// EnsureStream creates or updates the SETTLA_TRANSFERS stream.
-// The stream captures all subjects under settla.transfer.> with WorkQueue
-// retention so each message is consumed exactly once per consumer group.
-//
-// Dev: Replicas=1 (single NATS node).
-// Production: set Replicas=3 for fault tolerance across a 3-node NATS cluster.
-func (c *Client) EnsureStream(ctx context.Context) error {
-	cfg := jetstream.StreamConfig{
-		Name:     StreamName,
-		Subjects: []string{SubjectPrefix + ".>"},
-		Retention: jetstream.WorkQueuePolicy,
-		Storage:  jetstream.FileStorage,
-		MaxAge:   7 * 24 * time.Hour, // retain for 7 days
-		Duplicates: 5 * time.Minute,  // dedup window
-		// Replicas: 1 for dev, 3 for production (requires 3-node NATS cluster)
-		Replicas: 1,
+// EnsureStreams creates or updates all 7 Settla JetStream streams idempotently.
+// This should be called once on startup (NewClient does NOT call it automatically
+// so callers can control the context and timing).
+func (c *Client) EnsureStreams(ctx context.Context) error {
+	if err := CreateStreams(ctx, c.JS, c.Replicas); err != nil {
+		return err
 	}
-
-	_, err := c.JS.CreateOrUpdateStream(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("settla-messaging: ensuring stream %s: %w", StreamName, err)
-	}
-
-	c.Logger.Info("settla-messaging: stream ensured", "stream", StreamName, "partitions", c.NumPartitions)
+	c.Logger.Info("settla-messaging: all streams ensured",
+		"stream_count", len(AllStreams()),
+		"partitions", c.NumPartitions,
+		"replicas", c.Replicas,
+	)
 	return nil
+}
+
+// EnsureStream creates or updates the SETTLA_TRANSFERS stream only.
+// Deprecated: Use EnsureStreams to create all 7 streams. Kept for backward compatibility.
+func (c *Client) EnsureStream(ctx context.Context) error {
+	return c.EnsureStreams(ctx)
+}
+
+// PublishToStream publishes a message to a specific subject with dedup ID.
+// The msgID is used as the Nats-Msg-Id header for exactly-once semantics
+// within the stream's duplicate window.
+func (c *Client) PublishToStream(ctx context.Context, subject string, msgID string, data []byte) error {
+	_, err := c.JS.Publish(ctx, subject, data,
+		jetstream.WithMsgID(msgID),
+	)
+	if err != nil {
+		return fmt.Errorf("settla-messaging: publishing to %s (msgID=%s): %w", subject, msgID, err)
+	}
+	return nil
+}
+
+// PublishDLQ publishes a failed message to the dead letter queue using JetStream
+// for durable persistence. Format: settla.dlq.{streamName}.{eventType}
+func (c *Client) PublishDLQ(ctx context.Context, streamName string, eventType string, data []byte) error {
+	subject := DLQSubject(streamName, eventType)
+	msgID := fmt.Sprintf("dlq-%s-%s-%d", streamName, eventType, time.Now().UnixNano())
+	_, err := c.JS.Publish(ctx, subject, data, jetstream.WithMsgID(msgID))
+	if err != nil {
+		c.Logger.Error("settla-messaging: CRITICAL - failed to publish to DLQ",
+			"stream", streamName, "event_type", eventType, "error", err)
+	}
+	return err
 }
 
 // Close drains the NATS connection gracefully.
