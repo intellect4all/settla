@@ -28,10 +28,10 @@ export async function treasuryRoutes(
       try {
         const result = await grpc.getPositions({
           tenantId: tenantAuth.tenantId,
-        });
+        }, request.id);
         return reply.send(result);
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -45,8 +45,8 @@ export async function treasuryRoutes(
         params: {
           type: "object",
           properties: {
-            currency: { type: "string" },
-            location: { type: "string" },
+            currency: { type: "string", pattern: "^[A-Z]{3,5}$" },
+            location: { type: "string", minLength: 1 },
           },
           required: ["currency", "location"],
         },
@@ -63,10 +63,10 @@ export async function treasuryRoutes(
           tenantId: tenantAuth.tenantId,
           currency: request.params.currency,
           location: request.params.location,
-        });
+        }, request.id);
         return reply.send(result);
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -94,10 +94,10 @@ export async function treasuryRoutes(
       try {
         const result = await grpc.getLiquidityReport({
           tenantId: tenantAuth.tenantId,
-        });
+        }, request.id);
         return reply.send(result);
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
