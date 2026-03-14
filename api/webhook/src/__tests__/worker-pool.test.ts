@@ -31,6 +31,8 @@ describe("WorkerPool", () => {
       deliveryTimeoutMs: 2000,
       maxRetries: 3,
       retryDelaysMs: [0, 0, 0], // No delays for testing
+      providerSigningSecrets: {},
+      providerSignatureHeaders: {},
       ...overrides,
     };
   }

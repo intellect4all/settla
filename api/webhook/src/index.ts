@@ -4,28 +4,33 @@ import { createLogger } from "./logger.js";
 import { WebhookRegistry } from "./registry.js";
 import { WorkerPool } from "./worker-pool.js";
 import { WebhookConsumer } from "./consumer.js";
+import { registerProviderInboundRoutes } from "./provider-inbound.js";
 import type { DeadLetterEntry, WebhookRegistration } from "./types.js";
 import { getMetrics, metricsContentType } from "./metrics.js";
 
 const config = loadConfig();
 const logger = createLogger("settla-webhook");
 
-// --- Dead letter store (in-memory, future: database) ---
 const deadLetters: DeadLetterEntry[] = [];
-
-// --- Webhook registry with seed data ---
 const registry = new WebhookRegistry();
 
 function seedDefaultWebhooks(): void {
-  // Seed test webhooks for the two dev tenants (from db/seed)
-  // Lemfi: tenant_id = a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a01
-  // Fincra: tenant_id = b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a02
+  const isDev = process.env.NODE_ENV !== "production";
+
+  const lemfiSecret = process.env.LEMFI_WEBHOOK_SECRET || (isDev ? "whsec_lemfi_test_secret_key_001" : "");
+  const fincraSecret = process.env.FINCRA_WEBHOOK_SECRET || (isDev ? "whsec_fincra_test_secret_key_002" : "");
+
+  if (!isDev && (!lemfiSecret || !fincraSecret)) {
+    logger.warn("webhook secrets not configured — seed registrations skipped. Set LEMFI_WEBHOOK_SECRET and FINCRA_WEBHOOK_SECRET env vars.");
+    return;
+  }
+
   const seedRegistrations: WebhookRegistration[] = [
     {
       id: "wh_lemfi_default",
       tenantId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a01",
       url: process.env.LEMFI_WEBHOOK_URL || "http://localhost:9999/webhook/lemfi",
-      secret: process.env.LEMFI_WEBHOOK_SECRET || "whsec_lemfi_test_secret_key_001",
+      secret: lemfiSecret,
       events: [], // all events
       isActive: true,
     },
@@ -33,7 +38,7 @@ function seedDefaultWebhooks(): void {
       id: "wh_fincra_default",
       tenantId: "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a02",
       url: process.env.FINCRA_WEBHOOK_URL || "http://localhost:9999/webhook/fincra",
-      secret: process.env.FINCRA_WEBHOOK_SECRET || "whsec_fincra_test_secret_key_002",
+      secret: fincraSecret,
       events: [], // all events
       isActive: true,
     },
@@ -49,15 +54,11 @@ function seedDefaultWebhooks(): void {
   }
 }
 
-// --- Worker pool ---
 const pool = new WorkerPool(config, logger, (entry) => {
   deadLetters.push(entry);
 });
-
-// --- NATS consumer ---
 const consumer = new WebhookConsumer(config, registry, pool, logger);
-
-// --- Fastify HTTP server (health + internal admin API) ---
+let providerInboundDisconnect: (() => Promise<void>) | null = null;
 const server = Fastify({ logger: false });
 
 server.get("/metrics", async (_request, reply) => {
@@ -76,8 +77,6 @@ server.get("/health", async () => {
     deadLetters: deadLetters.length,
   };
 });
-
-// --- Internal webhook management API ---
 
 server.get<{ Querystring: { tenant_id?: string } }>(
   "/internal/webhooks",
@@ -131,8 +130,6 @@ server.get("/internal/stats", async () => {
   return pool.getStats();
 });
 
-// --- Startup ---
-
 async function start(): Promise<void> {
   seedDefaultWebhooks();
 
@@ -143,6 +140,25 @@ async function start(): Promise<void> {
     host: config.host,
   });
 
+  // Register provider inbound webhook routes
+  try {
+    const inbound = await registerProviderInboundRoutes(
+      server,
+      {
+        natsUrl: config.natsUrl,
+        signingSecrets: config.providerSigningSecrets,
+        signatureHeaders: config.providerSignatureHeaders,
+      },
+      logger
+    );
+    providerInboundDisconnect = inbound.disconnect;
+    logger.info("provider inbound webhook routes registered");
+  } catch (err) {
+    logger.warn("failed to register provider inbound routes", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Connect to NATS and subscribe
   try {
     await consumer.connect();
@@ -152,16 +168,24 @@ async function start(): Promise<void> {
       worker_pool_size: config.workerPoolSize,
     });
   } catch (err) {
+    const isProduction = process.env.NODE_ENV === "production" || process.env.SETTLA_ENV === "production";
+    if (isProduction) {
+      logger.error("NATS connection failed in production, aborting startup", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      process.exit(1);
+    }
     logger.warn("NATS connection failed, running in HTTP-only mode", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
 }
 
-// --- Graceful shutdown ---
-
 async function shutdown(): Promise<void> {
   logger.info("webhook dispatcher shutting down...");
+  if (providerInboundDisconnect) {
+    await providerInboundDisconnect();
+  }
   await consumer.disconnect();
   await pool.shutdown();
   await server.close();
