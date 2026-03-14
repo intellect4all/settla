@@ -45,8 +45,6 @@ func setupBenchmarkRouter(b *testing.B) (*Router, *mockTenantStore) {
 	bcEth := mock.NewBlockchainClient("ethereum", decimal.NewFromFloat(2.50))
 	reg.RegisterBlockchainClient(bcEth)
 
-	adapter := &registryAdapter{reg}
-
 	lemfiID := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
 
 	tenants := &mockTenantStore{
@@ -64,26 +62,9 @@ func setupBenchmarkRouter(b *testing.B) (*Router, *mockTenantStore) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	r := NewRouter(adapter, tenants, logger)
+	r := NewRouter(reg, tenants, logger)
 
 	return r, tenants
-}
-
-// registryAdapter wraps provider.Registry to satisfy ProviderRegistry interface.
-type registryAdapter struct {
-	*provider.Registry
-}
-
-func (a *registryAdapter) GetOnRamp(id string) (domain.OnRampProvider, error) {
-	return a.Registry.GetOnRamp(id)
-}
-
-func (a *registryAdapter) GetOffRamp(id string) (domain.OffRampProvider, error) {
-	return a.Registry.GetOffRamp(id)
-}
-
-func (a *registryAdapter) GetBlockchain(chain string) (domain.BlockchainClient, error) {
-	return a.Registry.GetBlockchainClient(chain)
 }
 
 // mockTenantStore implements router.TenantStore for tests.
@@ -207,7 +188,7 @@ func BenchmarkScoreRoute(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = router.scoreRoute(route, amount)
+		_ = router.scoreRoute(context.Background(), route, amount)
 	}
 }
 
@@ -250,7 +231,7 @@ func BenchmarkScoreRouteConcurrent(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = router.scoreRoute(route, amount)
+			_ = router.scoreRoute(context.Background(), route, amount)
 		}
 	})
 }
@@ -396,7 +377,7 @@ func BenchmarkScoreRouteVariations(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = router.scoreRoute(route, tc.amount)
+				_ = router.scoreRoute(context.Background(), route, tc.amount)
 			}
 		})
 	}

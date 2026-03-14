@@ -155,6 +155,17 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 		return nil, fmt.Errorf("settla-offramp: amount must be positive")
 	}
 
+	// PROV-8: Fetch a fresh rate and reject if it has moved more than the allowed slippage.
+	if req.QuotedRate.IsPositive() {
+		liveRate, err := p.fxOracle.GetRate("USD", string(req.ToCurrency))
+		if err != nil {
+			return nil, fmt.Errorf("settla-offramp: getting fx rate for slippage check: %w", err)
+		}
+		if err := domain.DefaultSlippagePolicy.Check(req.QuotedRate, liveRate); err != nil {
+			return nil, fmt.Errorf("settla-offramp: %w", err)
+		}
+	}
+
 	// Determine chain and get system hot wallet deposit address.
 	chain := preferredChainForToken(string(req.FromCurrency))
 	depositAddress, err := p.systemWalletAddress(chain)
@@ -311,29 +322,21 @@ func (p *OffRampProvider) verifyCryptoReceipt(token domain.Currency, chain strin
 
 // waitForFiatPayout polls the fiat simulator until the payout reaches a
 // terminal state (COMPLETED or FAILED). Returns nil on COMPLETED.
+// Uses exponential backoff via waitWithBackoff with a 5-minute max wait.
 func (p *OffRampProvider) waitForFiatPayout(fiatTxID string) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	deadline := time.After(120 * time.Second)
-
-	for {
-		select {
-		case <-deadline:
-			return fmt.Errorf("settla-offramp: fiat payout timed out after 120s")
-		case <-ticker.C:
-			fiatTx, err := p.fiatSim.GetStatus(fiatTxID)
-			if err != nil {
-				return fmt.Errorf("settla-offramp: polling fiat status: %w", err)
-			}
-			switch fiatTx.Status {
-			case FiatStatusCompleted:
-				return nil
-			case FiatStatusFailed:
-				return fmt.Errorf("settla-offramp: fiat payout failed: bank rejected")
-			}
+	return waitWithBackoff(context.Background(), func() (bool, error) {
+		fiatTx, err := p.fiatSim.GetStatus(fiatTxID)
+		if err != nil {
+			return false, fmt.Errorf("settla-offramp: polling fiat status: %w", err)
 		}
-	}
+		switch fiatTx.Status {
+		case FiatStatusCompleted:
+			return true, nil
+		case FiatStatusFailed:
+			return false, fmt.Errorf("settla-offramp: fiat payout failed: bank rejected")
+		}
+		return false, nil
+	}, defaultMaxWait)
 }
 
 // --- helpers ---

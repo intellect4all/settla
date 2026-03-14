@@ -39,23 +39,41 @@ type TenantStore interface {
 	GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error)
 }
 
-// ProviderRegistry lists available providers. Matches the methods the router
-// actually needs from the provider registry.
-type ProviderRegistry interface {
-	ListOnRampIDs(ctx context.Context) []string
-	ListOffRampIDs(ctx context.Context) []string
-	GetOnRamp(id string) (domain.OnRampProvider, error)
-	GetOffRamp(id string) (domain.OffRampProvider, error)
-	GetBlockchain(chain string) (domain.BlockchainClient, error)
-	ListBlockchainChains() []string
+// LiquidityScorer optionally provides a liquidity score (0–1) for a given
+// provider corridor. A score of 1.0 means ample liquidity; 0.0 means dry.
+// When nil, the router falls back to 1.0 (fully liquid assumed).
+type LiquidityScorer interface {
+	LiquidityScore(ctx context.Context, providerID string, currency domain.Currency, amount decimal.Decimal) decimal.Decimal
+}
+
+// ReliabilityScorer optionally provides a reliability score (0–1) for a
+// provider based on recent success/failure metrics. 1.0 = perfect track
+// record; 0.0 = always failing. When nil, falls back to 1.0.
+type ReliabilityScorer interface {
+	ReliabilityScore(ctx context.Context, providerID string) decimal.Decimal
+}
+
+// RouterOption configures optional Router behaviour.
+type RouterOption func(*Router)
+
+// WithLiquidityScorer attaches a real liquidity scorer to the router.
+func WithLiquidityScorer(s LiquidityScorer) RouterOption {
+	return func(r *Router) { r.liquidityScorer = s }
+}
+
+// WithReliabilityScorer attaches a real reliability scorer to the router.
+func WithReliabilityScorer(s ReliabilityScorer) RouterOption {
+	return func(r *Router) { r.reliabilityScorer = s }
 }
 
 // Router selects the optimal provider corridor for each settlement.
 // It implements domain.Router (Route method).
 type Router struct {
-	registry ProviderRegistry
-	tenants  TenantStore
-	logger   *slog.Logger
+	registry          domain.ProviderRegistry
+	tenants           TenantStore
+	logger            *slog.Logger
+	liquidityScorer   LiquidityScorer   // optional — nil = assume 1.0
+	reliabilityScorer ReliabilityScorer // optional — nil = assume 1.0
 }
 
 // Compile-time check: Router implements domain.Router.
@@ -63,15 +81,20 @@ var _ domain.Router = (*Router)(nil)
 
 // NewRouter creates a smart router.
 func NewRouter(
-	registry ProviderRegistry,
+	registry domain.ProviderRegistry,
 	tenants TenantStore,
 	logger *slog.Logger,
+	opts ...RouterOption,
 ) *Router {
-	return &Router{
+	r := &Router{
 		registry: registry,
 		tenants:  tenants,
 		logger:   logger.With("module", "rail.router"),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Route evaluates all possible on-ramp→chain→off-ramp corridors for the given
@@ -112,15 +135,38 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 	// Generate block explorer URL for the selected chain (empty for unknown chains).
 	explorerURL := blockchain.ExplorerURL(best.Chain, "")
 
+	// Build up to 2 fallback alternatives from remaining candidates.
+	var alternatives []domain.RouteAlternative
+	for i := 1; i < len(candidates) && len(alternatives) < 2; i++ {
+		alt := candidates[i]
+		altFee := alt.OnQuote.Fee.Add(alt.GasFee).Add(alt.OffQuote.Fee)
+		altStable := req.Amount.Mul(alt.OnQuote.Rate).Sub(alt.OnQuote.Fee).Round(8)
+		if !altStable.IsPositive() {
+			continue
+		}
+		alternatives = append(alternatives, domain.RouteAlternative{
+			OnRampProvider:  alt.OnRamp.ID(),
+			OffRampProvider: alt.OffRamp.ID(),
+			Chain:           alt.Chain,
+			StableCoin:      alt.Stable,
+			Fee:             domain.Money{Amount: altFee, Currency: domain.CurrencyUSD},
+			Rate:            alt.OnQuote.Rate.Mul(alt.OffQuote.Rate),
+			StableAmount:    altStable,
+			Score:           alt.Score,
+		})
+	}
+
 	return &domain.RouteResult{
-		ProviderID:      best.OnRamp.ID(),
-		OffRampProvider: best.OffRamp.ID(),
-		BlockchainChain: best.Chain,
-		Corridor:        fmt.Sprintf("%s→%s→%s", req.SourceCurrency, best.Stable, req.TargetCurrency),
-		Fee:             domain.Money{Amount: totalFee, Currency: domain.CurrencyUSD},
-		Rate:            best.OnQuote.Rate.Mul(best.OffQuote.Rate),
-		StableAmount:    stableAmount,
-		ExplorerURL:     explorerURL,
+		ProviderID:       best.OnRamp.ID(),
+		OffRampProvider:  best.OffRamp.ID(),
+		BlockchainChain:  best.Chain,
+		Corridor:         domain.NewCorridor(req.SourceCurrency, best.Stable, req.TargetCurrency).String(),
+		Fee:              domain.Money{Amount: totalFee, Currency: domain.CurrencyUSD},
+		Rate:             best.OnQuote.Rate.Mul(best.OffQuote.Rate),
+		StableAmount:     stableAmount,
+		ExplorerURL:      explorerURL,
+		EstimatedSeconds: best.OnQuote.EstimatedSeconds + best.OffQuote.EstimatedSeconds,
+		Alternatives:     alternatives,
 	}, nil
 }
 
@@ -192,7 +238,7 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 						OffQuote: offQuote,
 						GasFee:   gasFee,
 					}
-					route.Score = r.scoreRoute(route, req.Amount)
+					route.Score = r.scoreRoute(ctx, route, req.Amount)
 					candidates = append(candidates, route)
 				}
 			}
@@ -205,11 +251,11 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 // scoreRoute computes a weighted score for a candidate route.
 // Higher is better. Score components are normalized to [0, 1].
 //
-// Cost (40%):       Lower total fee → higher score
-// Speed (30%):      Lower estimated time → higher score
-// Liquidity (20%):  Always 1.0 for mock (real impl checks treasury positions)
-// Reliability (10%): Always 1.0 for mock (real impl uses provider success rates)
-func (r *Router) scoreRoute(route Route, amount decimal.Decimal) decimal.Decimal {
+// Cost (40%):        Lower total fee → higher score
+// Speed (30%):       Lower estimated time → higher score
+// Liquidity (20%):   From LiquidityScorer if wired, else 1.0
+// Reliability (10%): From ReliabilityScorer if wired, else 1.0
+func (r *Router) scoreRoute(ctx context.Context, route Route, amount decimal.Decimal) decimal.Decimal {
 	totalFee := route.OnQuote.Fee.Add(route.GasFee).Add(route.OffQuote.Fee)
 
 	// Cost score: 1 - (fee / amount), clamped to [0, 1]
@@ -231,11 +277,27 @@ func (r *Router) scoreRoute(route Route, amount decimal.Decimal) decimal.Decimal
 		speedScore = decimal.Zero
 	}
 
-	// Liquidity: 1.0 (mock; real checks treasury)
+	// Liquidity score: use real scorer when available, else assume 1.0
 	liquidityScore := decimal.NewFromInt(1)
+	if r.liquidityScorer != nil {
+		liquidityScore = r.liquidityScorer.LiquidityScore(ctx, route.OnRamp.ID(), route.Stable, amount)
+		if liquidityScore.IsNegative() {
+			liquidityScore = decimal.Zero
+		} else if liquidityScore.GreaterThan(decimal.NewFromInt(1)) {
+			liquidityScore = decimal.NewFromInt(1)
+		}
+	}
 
-	// Reliability: 1.0 (mock; real uses provider metrics)
+	// Reliability score: use real scorer when available, else assume 1.0
 	reliabilityScore := decimal.NewFromInt(1)
+	if r.reliabilityScorer != nil {
+		reliabilityScore = r.reliabilityScorer.ReliabilityScore(ctx, route.OnRamp.ID())
+		if reliabilityScore.IsNegative() {
+			reliabilityScore = decimal.Zero
+		} else if reliabilityScore.GreaterThan(decimal.NewFromInt(1)) {
+			reliabilityScore = decimal.NewFromInt(1)
+		}
+	}
 
 	return costScore.Mul(weightCost).
 		Add(speedScore.Mul(weightSpeed)).
@@ -281,8 +343,14 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 	}
 
 	// Apply tenant fee schedule (fees are in source currency)
-	onRampFee := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "onramp")
-	offRampFee := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "offramp")
+	onRampFee, err := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "onramp")
+	if err != nil {
+		return nil, fmt.Errorf("settla-rail: fee calculation for quote: %w", err)
+	}
+	offRampFee, err := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "offramp")
+	if err != nil {
+		return nil, fmt.Errorf("settla-rail: fee calculation for quote: %w", err)
+	}
 	networkFee := result.Fee.Amount
 	totalFee := onRampFee.Add(offRampFee).Add(networkFee)
 
@@ -318,13 +386,14 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 			TotalFeeUSD: totalFee,
 		},
 		Route: domain.RouteInfo{
-			Chain:           result.BlockchainChain,
-			StableCoin:      stable,
-			OnRampProvider:  result.ProviderID,
-			OffRampProvider: result.OffRampProvider,
-			ExplorerURL:     result.ExplorerURL,
+			Chain:             result.BlockchainChain,
+			StableCoin:        stable,
+			OnRampProvider:    result.ProviderID,
+			OffRampProvider:   result.OffRampProvider,
+			ExplorerURL:       result.ExplorerURL,
+			AlternativeRoutes: result.Alternatives,
 		},
-		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		ExpiresAt: time.Now().UTC().Add(quoteExpiry(result.EstimatedSeconds)),
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -351,4 +420,23 @@ func findSubstring(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// quoteExpiry computes a dynamic quote expiry based on the estimated settlement
+// time. Formula: clamp(2×estimate, 2min, 30min). Falls back to 5min when the
+// estimate is zero or negative (unknown).
+func quoteExpiry(estimatedSeconds int) time.Duration {
+	if estimatedSeconds <= 0 {
+		return 5 * time.Minute
+	}
+	d := time.Duration(estimatedSeconds*2) * time.Second
+	const minExpiry = 2 * time.Minute
+	const maxExpiry = 30 * time.Minute
+	if d < minExpiry {
+		return minExpiry
+	}
+	if d > maxExpiry {
+		return maxExpiry
+	}
+	return d
 }
