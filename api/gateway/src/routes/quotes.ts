@@ -75,10 +75,10 @@ export async function quoteRoutes(
           sourceAmount: request.body.source_amount,
           destCurrency: request.body.dest_currency,
           destCountry: request.body.dest_country,
-        });
+        }, request.id);
         return reply.status(201).send(mapQuote(result.quote));
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -106,10 +106,10 @@ export async function quoteRoutes(
         const result = await grpc.getQuote({
           tenantId: tenantAuth.tenantId,
           quoteId: request.params.quoteId,
-        });
+        }, request.id);
         return reply.send(mapQuote(result.quote));
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );

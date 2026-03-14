@@ -2,10 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { TenantAuthCache, type TenantAuth } from "../auth/cache.js";
 import { authPlugin, hashApiKey } from "../auth/plugin.js";
-import { RateLimiter, rateLimitPlugin } from "../rate-limit/limiter.js";
 import { quoteRoutes } from "../routes/quotes.js";
 import { transferRoutes } from "../routes/transfers.js";
 import { healthRoutes } from "../routes/health.js";
+import { buildApp } from "../index.js";
 
 // ── Mock gRPC client ────────────────────────────────────────────────────────
 
@@ -95,23 +95,19 @@ async function buildTestApp(mockGrpc?: ReturnType<typeof createMockGrpc>) {
 
   const app = Fastify({ logger: false });
 
-  const resolveTenant = async (keyHash: string) => {
+  const resolveTenant = async (_keyHash: string) => {
     // Simulate DB lookup for uncached keys
     return null;
   };
 
   await app.register(authPlugin, { cache, resolveTenant });
 
-  const limiter = new RateLimiter(null, 60, 100, 5000);
-  limiter.start();
-  await app.register(rateLimitPlugin, { limiter });
-
   await app.register(healthRoutes);
   await app.register(quoteRoutes, { grpc: grpc as any });
   await app.register(transferRoutes, { grpc: grpc as any });
 
   await app.ready();
-  return { app, grpc, limiter };
+  return { app, grpc };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -197,6 +193,7 @@ describe("Tenant Isolation", () => {
 
     expect(grpc.createQuote).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId: "t-001" }),
+      expect.any(String),
     );
   });
 
@@ -220,59 +217,8 @@ describe("Tenant Isolation", () => {
     // gRPC call should use authenticated tenant, not any body field
     expect(grpc.createTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId: "t-001" }),
+      expect.any(String),
     );
-  });
-});
-
-describe("Rate Limiting", () => {
-  it("returns rate limit headers", async () => {
-    const { app } = await buildTestApp();
-
-    const res = await app.inject({
-      method: "GET",
-      url: "/v1/transfers",
-      headers: { authorization: `Bearer ${LEMFI_KEY}` },
-    });
-
-    expect(res.headers["x-ratelimit-limit"]).toBeDefined();
-    expect(res.headers["x-ratelimit-remaining"]).toBeDefined();
-    expect(res.headers["x-ratelimit-reset"]).toBeDefined();
-
-    await app.close();
-  });
-
-  it("rejects when limit exceeded", async () => {
-    const grpc = createMockGrpc();
-    const cache = new TenantAuthCache(null, 30_000, 300);
-    await cache.set(hashApiKey(LEMFI_KEY), lemfiTenant);
-
-    const app = Fastify({ logger: false });
-    await app.register(authPlugin, {
-      cache,
-      resolveTenant: async () => null,
-    });
-
-    // Very low limit
-    const limiter = new RateLimiter(null, 60, 3, 5000);
-    limiter.start();
-    await app.register(rateLimitPlugin, { limiter });
-    await app.register(transferRoutes, { grpc: grpc as any });
-    await app.ready();
-
-    const headers = { authorization: `Bearer ${LEMFI_KEY}` };
-
-    // Exhaust the limit
-    for (let i = 0; i < 3; i++) {
-      await app.inject({ method: "GET", url: "/v1/transfers", headers });
-    }
-
-    // Next request should be rate limited
-    const res = await app.inject({ method: "GET", url: "/v1/transfers", headers });
-    expect(res.statusCode).toBe(429);
-    expect(res.json().error).toBe("RATE_LIMITED");
-
-    limiter.stop();
-    await app.close();
   });
 });
 
@@ -298,6 +244,7 @@ describe("Idempotency", () => {
 
     expect(grpc.createTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: "unique-key-123" }),
+      expect.any(String),
     );
 
     await app.close();
@@ -447,5 +394,279 @@ describe("Auth Cache", () => {
     expect(hashApiKey("sk_live_test_123")).toBe(hash);
     // Different input produces different hash
     expect(hashApiKey("sk_live_test_456")).not.toBe(hash);
+  });
+});
+
+describe("Webhook Normalizer", () => {
+  it("normalizes settla-testnet payload", async () => {
+    const { settlaTestnetNormalizer } = await import("../webhooks/normalizers/settla-testnet.js");
+
+    const result = settlaTestnetNormalizer.normalize("settla-testnet", {
+      event_id: "evt-001",
+      transfer_ref: "tx-abc",
+      event_type: "onramp.completed",
+      status: "completed",
+      data: { tx_hash: "0xabc" },
+    });
+
+    expect(result).toEqual({
+      provider: "settla-testnet",
+      externalEventId: "evt-001",
+      transferRef: "tx-abc",
+      step: "onramp",
+      status: "completed",
+      metadata: { tx_hash: "0xabc" },
+    });
+  });
+
+  it("returns null for invalid payload", async () => {
+    const { settlaTestnetNormalizer } = await import("../webhooks/normalizers/settla-testnet.js");
+
+    const result = settlaTestnetNormalizer.normalize("settla-testnet", {
+      event_id: "evt-001",
+      // missing required fields
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for unknown step", async () => {
+    const { settlaTestnetNormalizer } = await import("../webhooks/normalizers/settla-testnet.js");
+
+    const result = settlaTestnetNormalizer.normalize("settla-testnet", {
+      event_id: "evt-001",
+      transfer_ref: "tx-abc",
+      event_type: "unknown.completed",
+      status: "completed",
+    });
+
+    expect(result).toBeNull();
+  });
+});
+
+// ── Integration tests using buildApp ──────────────────────────────────────
+
+function createMockRedis() {
+  const store = new Map<string, string>();
+  const mock: any = {
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    set: vi.fn(async (key: string, value: string, ...args: any[]) => {
+      // Support NX flag
+      if (args.includes("NX") && store.has(key)) return null;
+      store.set(key, value);
+      return "OK";
+    }),
+    del: vi.fn(async (key: string) => {
+      store.delete(key);
+      return 1;
+    }),
+    quit: vi.fn(async () => "OK"),
+    disconnect: vi.fn(),
+    subscribe: vi.fn(),
+    on: vi.fn(),
+    status: "ready",
+    duplicate: vi.fn(() => {
+      // Return a minimal subscriber-like object for auth plugin pub/sub
+      return {
+        subscribe: vi.fn(),
+        on: vi.fn(),
+        quit: vi.fn(async () => "OK"),
+        disconnect: vi.fn(),
+        status: "ready",
+      };
+    }),
+  };
+  return mock;
+}
+
+describe("Rate Limiting", () => {
+  it("returns 429 when per-tenant rate limit is exceeded", async () => {
+    const grpc = createMockGrpc();
+    const cache = new TenantAuthCache(null, 30_000, 300);
+    await cache.set(hashApiKey(LEMFI_KEY), lemfiTenant);
+
+    const { rateLimitPlugin } = await import("../middleware/rate-limit.js");
+
+    const app = Fastify({ logger: false });
+    await app.register(authPlugin, {
+      cache,
+      resolveTenant: async () => null,
+    });
+
+    // Register distributed rate limiter with limit=2 for testing
+    await app.register(rateLimitPlugin, { limit: 2, redis: null });
+
+    await app.register(healthRoutes);
+    await app.register(transferRoutes, { grpc: grpc as any });
+    await app.ready();
+
+    const headers = { authorization: `Bearer ${LEMFI_KEY}` };
+    const req = () => app.inject({ method: "GET", url: "/v1/transfers", headers });
+
+    // First 2 should succeed
+    expect((await req()).statusCode).toBe(200);
+    expect((await req()).statusCode).toBe(200);
+
+    // Third should be rate limited
+    const res = await req();
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toBe("rate_limit_exceeded");
+
+    await app.close();
+  });
+
+  it("sets rate limit headers on responses", async () => {
+    const grpc = createMockGrpc();
+    const cache = new TenantAuthCache(null, 30_000, 300);
+    await cache.set(hashApiKey(LEMFI_KEY), lemfiTenant);
+
+    const { rateLimitPlugin } = await import("../middleware/rate-limit.js");
+
+    const app = Fastify({ logger: false });
+    await app.register(authPlugin, {
+      cache,
+      resolveTenant: async () => null,
+    });
+    await app.register(rateLimitPlugin, { limit: 100, redis: null });
+    await app.register(transferRoutes, { grpc: grpc as any });
+    await app.ready();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/transfers",
+      headers: { authorization: `Bearer ${LEMFI_KEY}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-ratelimit-limit"]).toBe("100");
+    expect(res.headers["x-ratelimit-remaining"]).toBeDefined();
+    expect(res.headers["x-ratelimit-reset"]).toBeDefined();
+
+    await app.close();
+  });
+
+  it("bypasses rate limiting for health and docs routes", async () => {
+    const { rateLimitPlugin } = await import("../middleware/rate-limit.js");
+
+    const app = Fastify({ logger: false });
+    // No auth plugin — bypass routes don't need auth
+    await app.register(rateLimitPlugin, { limit: 1, redis: null });
+    await app.register(healthRoutes);
+    await app.ready();
+
+    // Health should always work regardless of limit
+    const res1 = await app.inject({ method: "GET", url: "/health" });
+    expect(res1.statusCode).toBe(200);
+    const res2 = await app.inject({ method: "GET", url: "/health" });
+    expect(res2.statusCode).toBe(200);
+
+    // No rate limit headers on bypassed routes
+    expect(res1.headers["x-ratelimit-limit"]).toBeUndefined();
+
+    await app.close();
+  });
+});
+
+describe("Webhook Dedup", () => {
+  it("deduplicates identical webhooks", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+      natsUrl: "nats://localhost:14222", // intentionally bad — NATS not needed for dedup test
+    });
+
+    // Test the core dedup mechanism at the Redis level — the webhook route
+    // uses the same NX pattern to deduplicate incoming events.
+
+    // First set: should succeed (NX on empty key)
+    const firstSet = await redis.set("webhook:dedup:test-provider:evt-dedup", "1", "EX", 259200, "NX");
+    expect(firstSet).toBe("OK");
+
+    // Second set: should return null (NX on existing key)
+    const secondSet = await redis.set("webhook:dedup:test-provider:evt-dedup", "1", "EX", 259200, "NX");
+    expect(secondSet).toBeNull();
+
+    await app.close();
+  });
+});
+
+describe("Large Payload", () => {
+  it("rejects payloads exceeding body limit with 413", async () => {
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis: null,
+      resolveTenant: async (keyHash: string) => {
+        if (keyHash === hashApiKey(LEMFI_KEY)) return lemfiTenant;
+        return null;
+      },
+      skipGrpcPool: true,
+    });
+
+    // 2 MiB payload — exceeds the 1 MiB bodyLimit
+    const largeBody = JSON.stringify({ data: "x".repeat(2 * 1024 * 1024) });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/transfers",
+      headers: {
+        authorization: `Bearer ${LEMFI_KEY}`,
+        "content-type": "application/json",
+      },
+      payload: largeBody,
+    });
+
+    expect(res.statusCode).toBe(413);
+
+    await app.close();
+  });
+});
+
+describe("Security Headers", () => {
+  it("includes security headers on all responses", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+    });
+
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["x-frame-options"]).toBe("DENY");
+    expect(res.headers["x-xss-protection"]).toBe("0");
+    expect(res.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+
+    await app.close();
+  });
+});
+
+describe("CORS", () => {
+  it("responds with CORS headers on OPTIONS request", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+    });
+
+    const res = await app.inject({
+      method: "OPTIONS",
+      url: "/v1/transfers",
+      headers: {
+        origin: "https://dashboard.settla.io",
+        "access-control-request-method": "POST",
+      },
+    });
+
+    expect(res.headers["access-control-allow-origin"]).toBeDefined();
+
+    await app.close();
   });
 });

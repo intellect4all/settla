@@ -128,10 +128,10 @@ export async function transferRoutes(
           sender: body.sender,
           recipient: body.recipient,
           quoteId: body.quote_id,
-        });
+        }, request.id);
         return reply.status(201).send(mapTransfer(result.transfer));
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -159,10 +159,10 @@ export async function transferRoutes(
         const result = await grpc.getTransfer({
           tenantId: tenantAuth.tenantId,
           transferId: request.params.transferId,
-        });
+        }, request.id);
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -186,14 +186,14 @@ export async function transferRoutes(
           tenantId: tenantAuth.tenantId,
           pageSize: request.query.page_size,
           pageToken: request.query.page_token,
-        });
+        }, request.id);
         return reply.send({
           transfers: (result.transfers || []).map(mapTransfer),
           next_page_token: result.nextPageToken,
           total_count: result.totalCount,
         });
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
@@ -228,10 +228,10 @@ export async function transferRoutes(
           tenantId: tenantAuth.tenantId,
           transferId: request.params.transferId,
           reason: request.body.reason,
-        });
+        }, request.id);
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
-        return mapGrpcError(reply, err);
+        return mapGrpcError(request, reply, err);
       }
     },
   );
