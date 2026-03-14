@@ -3,7 +3,6 @@ import type { WebhookRegistration } from "./types.js";
 /**
  * In-memory webhook registration store.
  * Per-tenant: each tenant can have multiple webhook registrations.
- * Future: back by database (Transfer DB tenants table or dedicated webhooks table).
  */
 export class WebhookRegistry {
   /** webhookId → registration */

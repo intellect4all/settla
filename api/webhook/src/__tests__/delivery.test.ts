@@ -114,6 +114,8 @@ describe("deliverWebhook", () => {
       deliveryTimeoutMs: 5000,
       maxRetries: 5,
       retryDelaysMs: [0, 30_000, 120_000, 900_000, 3_600_000],
+      providerSigningSecrets: {},
+      providerSignatureHeaders: {},
       ...overrides,
     };
   }

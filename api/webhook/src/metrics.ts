@@ -27,6 +27,13 @@ export const activeWorkers = new client.Gauge({
   help: "Number of active webhook delivery workers.",
 });
 
+// ── Inbound webhook signature failures ──────────────────────────────────
+export const signatureFailuresTotal = new client.Counter({
+  name: "settla_webhook_signature_failures_total",
+  help: "Total inbound webhook signature verification failures by provider.",
+  labelNames: ["provider"] as const,
+});
+
 /** Returns Prometheus metrics as string. */
 export async function getMetrics(): Promise<string> {
   return client.register.metrics();
