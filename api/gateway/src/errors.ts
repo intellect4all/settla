@@ -1,16 +1,17 @@
 import * as grpc from "@grpc/grpc-js";
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
 /** Map gRPC status codes to HTTP status codes and send error response. */
-export function mapGrpcError(reply: FastifyReply, err: unknown): void {
+export function mapGrpcError(request: FastifyRequest, reply: FastifyReply, err: unknown): FastifyReply {
   const grpcErr = err as grpc.ServiceError;
+  const request_id = request.id;
 
   if (!grpcErr || !grpcErr.code) {
-    reply.status(500).send({
+    return reply.status(500).send({
       error: "INTERNAL",
       message: "An unexpected error occurred",
+      request_id,
     });
-    return;
   }
 
   const { code, details } = grpcErr;
@@ -18,33 +19,24 @@ export function mapGrpcError(reply: FastifyReply, err: unknown): void {
 
   switch (code) {
     case grpc.status.NOT_FOUND:
-      reply.status(404).send({ error: "NOT_FOUND", message });
-      break;
+      return reply.status(404).send({ error: "NOT_FOUND", message, request_id });
     case grpc.status.ALREADY_EXISTS:
-      reply.status(409).send({ error: "CONFLICT", message });
-      break;
+      return reply.status(409).send({ error: "CONFLICT", message, request_id });
     case grpc.status.INVALID_ARGUMENT:
-      reply.status(400).send({ error: "BAD_REQUEST", message });
-      break;
+      return reply.status(400).send({ error: "BAD_REQUEST", message, request_id });
     case grpc.status.FAILED_PRECONDITION:
-      reply.status(422).send({ error: "UNPROCESSABLE", message });
-      break;
+      return reply.status(422).send({ error: "UNPROCESSABLE", message, request_id });
     case grpc.status.PERMISSION_DENIED:
-      reply.status(403).send({ error: "FORBIDDEN", message });
-      break;
+      return reply.status(403).send({ error: "FORBIDDEN", message, request_id });
     case grpc.status.UNAUTHENTICATED:
-      reply.status(401).send({ error: "UNAUTHORIZED", message });
-      break;
+      return reply.status(401).send({ error: "UNAUTHORIZED", message, request_id });
     case grpc.status.RESOURCE_EXHAUSTED:
-      reply.status(429).send({ error: "RATE_LIMITED", message });
-      break;
+      return reply.status(429).send({ error: "RATE_LIMITED", message, request_id });
     case grpc.status.UNAVAILABLE:
-      reply.status(503).send({ error: "UNAVAILABLE", message });
-      break;
+      return reply.status(503).send({ error: "UNAVAILABLE", message, request_id });
     case grpc.status.DEADLINE_EXCEEDED:
-      reply.status(504).send({ error: "TIMEOUT", message });
-      break;
+      return reply.status(504).send({ error: "TIMEOUT", message, request_id });
     default:
-      reply.status(500).send({ error: "INTERNAL", message });
+      return reply.status(500).send({ error: "INTERNAL", message, request_id });
   }
 }

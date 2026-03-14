@@ -1,8 +1,13 @@
 import * as grpc from "@grpc/grpc-js";
 
+export type CircuitBreakerState = "closed" | "open" | "half-open";
+
 /**
  * GrpcPool maintains a pool of persistent gRPC channels to settla-server.
  * Round-robin selection per request. Unhealthy connections are replaced.
+ *
+ * Includes a circuit breaker: after `failureThreshold` consecutive failures,
+ * the pool rejects new requests for `cooldownMs`, then probes with 1 request.
  *
  * Why: per-request TCP connections add ~1-3ms overhead. At 5,000 TPS that's
  * unacceptable. A persistent pool of ~50 connections amortises this to near zero.
@@ -14,10 +19,19 @@ export class GrpcPool {
   private index = 0;
   private credentials: grpc.ChannelCredentials;
 
-  constructor(target: string, poolSize: number) {
+  // Circuit breaker state
+  private cbState: CircuitBreakerState = "closed";
+  private consecutiveFailures = 0;
+  private failureThreshold: number;
+  private cooldownMs: number;
+  private lastFailureTime = 0;
+
+  constructor(target: string, poolSize: number, failureThreshold = 5, cooldownMs = 10_000) {
     this.target = target;
     this.poolSize = poolSize;
     this.credentials = grpc.credentials.createInsecure();
+    this.failureThreshold = failureThreshold;
+    this.cooldownMs = cooldownMs;
   }
 
   /** Initialise all channels in the pool. */
@@ -71,6 +85,43 @@ export class GrpcPool {
 
   get size(): number {
     return this.channels.length;
+  }
+
+  /** Returns true if the circuit breaker is open (rejecting requests). */
+  isOpen(): boolean {
+    if (this.cbState === "open") {
+      // Check if cooldown has elapsed → transition to half-open
+      if (Date.now() - this.lastFailureTime >= this.cooldownMs) {
+        this.cbState = "half-open";
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /** Current circuit breaker state. */
+  get circuitState(): CircuitBreakerState {
+    // Refresh state (cooldown check)
+    if (this.cbState === "open" && Date.now() - this.lastFailureTime >= this.cooldownMs) {
+      this.cbState = "half-open";
+    }
+    return this.cbState;
+  }
+
+  /** Record a successful gRPC call. Resets the circuit breaker. */
+  recordSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.cbState = "closed";
+  }
+
+  /** Record a failed gRPC call. Opens the circuit after threshold consecutive failures. */
+  recordFailure(): void {
+    this.consecutiveFailures++;
+    this.lastFailureTime = Date.now();
+    if (this.consecutiveFailures >= this.failureThreshold) {
+      this.cbState = "open";
+    }
   }
 
   private createChannel(): grpc.Channel {

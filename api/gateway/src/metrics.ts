@@ -42,11 +42,41 @@ export const authCacheMisses = new client.Counter({
   help: "Auth cache miss count.",
 });
 
+// ── Webhook metrics ─────────────────────────────────────────────────────
+export const webhookReceivedTotal = new client.Counter({
+  name: "settla_gateway_webhook_received_total",
+  help: "Inbound webhooks received by provider.",
+  labelNames: ["provider"] as const,
+});
+
+export const webhookDedupTotal = new client.Counter({
+  name: "settla_gateway_webhook_dedup_total",
+  help: "Inbound webhooks deduplicated.",
+  labelNames: ["provider"] as const,
+});
+
+export const webhookRateLimitTotal = new client.Counter({
+  name: "settla_gateway_webhook_rate_limit_total",
+  help: "Inbound webhooks rejected by per-provider rate limit.",
+  labelNames: ["provider"] as const,
+});
+
+// ── gRPC circuit breaker metrics ────────────────────────────────────────
+export const grpcCircuitBreakerState = new client.Gauge({
+  name: "settla_gateway_grpc_circuit_breaker_state",
+  help: "gRPC circuit breaker state: 0=closed, 0.5=half-open, 1=open.",
+});
+
+export const grpcCircuitBreakerRejections = new client.Counter({
+  name: "settla_gateway_grpc_circuit_breaker_rejections_total",
+  help: "Total requests rejected by the gRPC circuit breaker.",
+});
+
 // ── Rate limit metrics ──────────────────────────────────────────────────
-export const rateLimitHits = new client.Counter({
-  name: "settla_gateway_rate_limit_hits_total",
-  help: "Rate limit rejections by tenant.",
-  labelNames: ["tenant"] as const,
+export const rateLimitTotal = new client.Counter({
+  name: "settla_gateway_rate_limit_total",
+  help: "Rate limit decisions by tenant and result (allowed/rejected).",
+  labelNames: ["tenant", "result"] as const,
 });
 
 // ── Metrics endpoint plugin ─────────────────────────────────────────────
