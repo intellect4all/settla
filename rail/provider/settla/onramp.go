@@ -231,6 +231,12 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("settla-onramp: getting fx rate: %w", err)
 	}
+
+	// PROV-8: Reject execution if the live rate has moved more than the allowed slippage.
+	if err := domain.DefaultSlippagePolicy.Check(req.QuotedRate, rate); err != nil {
+		return nil, fmt.Errorf("settla-onramp: %w", err)
+	}
+
 	hundred := decimal.NewFromInt(10000)
 	spreadMultiplier := hundred.Sub(p.spreadBPS).Div(hundred)
 	cryptoAmount := req.Amount.Mul(rate).Mul(spreadMultiplier).Round(6)
@@ -269,6 +275,7 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 
 	p.mu.Lock()
 	p.txs[txID] = tx
+	snap := *tx // snapshot under lock, before background goroutine can modify
 	p.mu.Unlock()
 
 	// Drive the on-ramp lifecycle asynchronously.
@@ -284,18 +291,20 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 		"chain", stablecoin.Chain,
 	)
 
-	return p.toProviderTx(tx), nil
+	return p.toProviderTx(&snap), nil
 }
 
 // GetStatus returns the current status of an on-ramp transaction.
 func (p *OnRampProvider) GetStatus(ctx context.Context, txID string) (*domain.ProviderTx, error) {
 	p.mu.RLock()
 	tx, ok := p.txs[txID]
-	p.mu.RUnlock()
 	if !ok {
+		p.mu.RUnlock()
 		return nil, fmt.Errorf("settla-onramp: transaction %q not found", txID)
 	}
-	return p.toProviderTx(tx), nil
+	snap := *tx // snapshot under lock to avoid data race
+	p.mu.RUnlock()
+	return p.toProviderTx(&snap), nil
 }
 
 // --- internal helpers ---
@@ -306,7 +315,6 @@ func (p *OnRampProvider) runOnRamp(txID string) {
 	tx := p.txs[txID]
 	p.mu.RUnlock()
 
-	// Phase 1: Wait for fiat collection to complete.
 	fiatTx, err := p.waitForFiatCollection(tx.fiatTxID)
 	if err != nil || fiatTx.Status == FiatStatusFailed {
 		msg := "fiat collection failed"
@@ -321,7 +329,6 @@ func (p *OnRampProvider) runOnRamp(txID string) {
 
 	p.setStatus(txID, onRampStatusFiatCollected, "")
 
-	// Phase 2: Deliver stablecoins on-chain.
 	p.mu.RLock()
 	tx = p.txs[txID]
 	p.mu.RUnlock()
@@ -367,27 +374,25 @@ func (p *OnRampProvider) runOnRamp(txID string) {
 }
 
 // waitForFiatCollection polls the fiat simulator until the collection reaches
-// a terminal status (COLLECTED or FAILED). Uses exponential backoff up to 5s.
+// a terminal status (COLLECTED or FAILED). Uses exponential backoff via waitWithBackoff.
 func (p *OnRampProvider) waitForFiatCollection(fiatTxID string) (*FiatTransaction, error) {
-	const maxWait = 5 * time.Minute
-	backoff := 200 * time.Millisecond
-	deadline := time.Now().Add(maxWait)
-
-	for time.Now().Before(deadline) {
+	var result *FiatTransaction
+	err := waitWithBackoff(context.Background(), func() (bool, error) {
 		fiatTx, err := p.fiatSim.GetStatus(fiatTxID)
 		if err != nil {
-			return nil, fmt.Errorf("settla-onramp: polling fiat status: %w", err)
+			return false, fmt.Errorf("settla-onramp: polling fiat status: %w", err)
 		}
 		switch fiatTx.Status {
 		case FiatStatusCollected, FiatStatusFailed:
-			return fiatTx, nil
+			result = fiatTx
+			return true, nil
 		}
-		time.Sleep(backoff)
-		if backoff < 5*time.Second {
-			backoff *= 2
-		}
+		return false, nil
+	}, defaultMaxWait)
+	if err != nil {
+		return nil, fmt.Errorf("settla-onramp: fiat collection timed out: %w", err)
 	}
-	return nil, fmt.Errorf("settla-onramp: fiat collection timed out after %s", maxWait)
+	return result, nil
 }
 
 // setStatus updates the tx status under the write lock.
@@ -442,10 +447,8 @@ func (p *OnRampProvider) estimatedSeconds(currency string) int {
 }
 
 // toProviderTx converts an internal onRampTx to the domain ProviderTx.
+// Caller must provide a snapshot (copy) of the tx — no lock is taken here.
 func (p *OnRampProvider) toProviderTx(tx *onRampTx) *domain.ProviderTx {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	metadata := map[string]string{
 		"fiat_tx_id":   tx.fiatTxID,
 		"fiat_ref":     tx.fiatRef,

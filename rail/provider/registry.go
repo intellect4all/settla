@@ -90,6 +90,9 @@ func NewRegistryFromMode(mode ProviderMode, deps *SettlaProviderDeps, logger *sl
 	return reg
 }
 
+// Compile-time check: Registry implements domain.ProviderRegistry.
+var _ domain.ProviderRegistry = (*Registry)(nil)
+
 // Registry manages the set of available on-ramp, off-ramp, and blockchain providers.
 type Registry struct {
 	mu          sync.RWMutex
@@ -183,7 +186,7 @@ func (r *Registry) GetBlockchainClient(chain string) (domain.BlockchainClient, e
 	return c, nil
 }
 
-// GetBlockchain is an alias for GetBlockchainClient that satisfies router.ProviderRegistry.
+// GetBlockchain is an alias for GetBlockchainClient that satisfies domain.ProviderRegistry.
 func (r *Registry) GetBlockchain(chain string) (domain.BlockchainClient, error) {
 	return r.GetBlockchainClient(chain)
 }

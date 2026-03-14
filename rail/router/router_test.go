@@ -32,23 +32,6 @@ func (m *mockTenantStore) GetTenant(_ context.Context, tenantID uuid.UUID) (*dom
 	return t, nil
 }
 
-// registryAdapter wraps provider.Registry to satisfy router.ProviderRegistry.
-type registryAdapter struct {
-	*provider.Registry
-}
-
-func (a *registryAdapter) GetOnRamp(id string) (domain.OnRampProvider, error) {
-	return a.Registry.GetOnRamp(id)
-}
-
-func (a *registryAdapter) GetOffRamp(id string) (domain.OffRampProvider, error) {
-	return a.Registry.GetOffRamp(id)
-}
-
-func (a *registryAdapter) GetBlockchain(chain string) (domain.BlockchainClient, error) {
-	return a.Registry.GetBlockchainClient(chain)
-}
-
 // GBP corridor pairs.
 var (
 	gbpToUSDT = []domain.CurrencyPair{{From: domain.CurrencyGBP, To: domain.CurrencyUSDT}}
@@ -57,7 +40,7 @@ var (
 	usdtToGBP = []domain.CurrencyPair{{From: domain.CurrencyUSDT, To: domain.CurrencyGBP}}
 )
 
-func setupTestRouter(t *testing.T) (*router.Router, *registryAdapter, *mockTenantStore) {
+func setupTestRouter(t *testing.T) (*router.Router, *provider.Registry, *mockTenantStore) {
 	t.Helper()
 
 	reg := provider.NewRegistry()
@@ -77,8 +60,6 @@ func setupTestRouter(t *testing.T) (*router.Router, *registryAdapter, *mockTenan
 	// Blockchain client
 	bc := mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.50))
 	reg.RegisterBlockchainClient(bc)
-
-	adapter := &registryAdapter{reg}
 
 	lemfiID := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
 	fincraID := uuid.MustParse("b0000000-0000-0000-0000-000000000002")
@@ -106,8 +87,8 @@ func setupTestRouter(t *testing.T) (*router.Router, *registryAdapter, *mockTenan
 		},
 	}
 
-	r := router.NewRouter(adapter, tenants, testLogger())
-	return r, adapter, tenants
+	r := router.NewRouter(reg, tenants, testLogger())
+	return r, reg, tenants
 }
 
 func TestRouteGBPtoNGN(t *testing.T) {
@@ -165,10 +146,9 @@ func TestRouteNoProviders(t *testing.T) {
 	bc := mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.50))
 	reg.RegisterBlockchainClient(bc)
 
-	adapter := &registryAdapter{reg}
 	tenants := &mockTenantStore{tenants: map[uuid.UUID]*domain.Tenant{}}
 
-	r := router.NewRouter(adapter, tenants, testLogger())
+	r := router.NewRouter(reg, tenants, testLogger())
 
 	_, err := r.Route(context.Background(), domain.RouteRequest{
 		SourceCurrency: domain.CurrencyGBP,
@@ -195,10 +175,9 @@ func TestRoutesSortedByScore(t *testing.T) {
 	bc := mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.50))
 	reg.RegisterBlockchainClient(bc)
 
-	adapter := &registryAdapter{reg}
 	tenants := &mockTenantStore{tenants: map[uuid.UUID]*domain.Tenant{}}
 
-	r := router.NewRouter(adapter, tenants, testLogger())
+	r := router.NewRouter(reg, tenants, testLogger())
 
 	result, err := r.Route(context.Background(), domain.RouteRequest{
 		SourceCurrency: domain.CurrencyGBP,
