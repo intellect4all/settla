@@ -92,45 +92,56 @@ func normalizeAddress(addr string) (common.Address, error) {
 	return common.BytesToAddress(b), nil
 }
 
-// nonceManager tracks per-address transaction nonces for sequential submission.
-// It fetches the pending nonce from the chain on first use and increments locally.
-type nonceManager struct {
+// nonceEntry holds per-address nonce state with its own mutex.
+type nonceEntry struct {
 	mu     sync.Mutex
-	cache  map[common.Address]uint64
-	loaded map[common.Address]bool
+	nonce  uint64
+	loaded bool
+}
+
+// nonceManager tracks per-address transaction nonces for sequential submission.
+// Each address gets its own mutex so different addresses can submit concurrently.
+type nonceManager struct {
+	entries sync.Map // map[common.Address]*nonceEntry
 }
 
 func newNonceManager() *nonceManager {
-	return &nonceManager{
-		cache:  make(map[common.Address]uint64),
-		loaded: make(map[common.Address]bool),
-	}
+	return &nonceManager{}
 }
 
 // Next returns the next nonce for addr, fetching from the network on first call.
 // fetchFn is called at most once per address unless Reset is called.
+// Per-address locking allows concurrent submissions from different addresses.
 func (nm *nonceManager) Next(ctx context.Context, addr common.Address, fetchFn func(ctx context.Context, addr common.Address) (uint64, error)) (uint64, error) {
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
+	v, _ := nm.entries.LoadOrStore(addr, &nonceEntry{})
+	entry := v.(*nonceEntry)
 
-	if !nm.loaded[addr] {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if !entry.loaded {
 		nonce, err := fetchFn(ctx, addr)
 		if err != nil {
 			return 0, fmt.Errorf("settla-ethereum: fetch nonce for %s: %w", addr.Hex(), err)
 		}
-		nm.cache[addr] = nonce
-		nm.loaded[addr] = true
+		entry.nonce = nonce
+		entry.loaded = true
 	}
 
-	nonce := nm.cache[addr]
-	nm.cache[addr]++
+	nonce := entry.nonce
+	entry.nonce++
 	return nonce, nil
 }
 
 // Reset invalidates the cached nonce for addr so the next call re-fetches from chain.
 // Call this when a transaction fails to avoid nonce gaps.
 func (nm *nonceManager) Reset(addr common.Address) {
-	nm.mu.Lock()
-	delete(nm.loaded, addr)
-	nm.mu.Unlock()
+	v, ok := nm.entries.Load(addr)
+	if !ok {
+		return
+	}
+	entry := v.(*nonceEntry)
+	entry.mu.Lock()
+	entry.loaded = false
+	entry.mu.Unlock()
 }

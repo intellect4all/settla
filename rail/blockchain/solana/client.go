@@ -317,11 +317,6 @@ func (c *Client) deliverNewTransactions(
 		toDeliver = append(toDeliver, info)
 	}
 
-	// Update lastSig to the newest.
-	if len(sigs) > 0 {
-		*lastSig = sigs[0].Signature
-	}
-
 	// Deliver in chronological order (oldest first).
 	for i := len(toDeliver) - 1; i >= 0; i-- {
 		info := toDeliver[i]
@@ -339,6 +334,12 @@ func (c *Client) deliverNewTransactions(
 		case <-ctx.Done():
 			return
 		}
+	}
+
+	// Update lastSig to the newest AFTER successful delivery of all transactions.
+	// If ctx.Done() fires mid-delivery, lastSig stays unchanged and next poll retries.
+	if len(sigs) > 0 {
+		*lastSig = sigs[0].Signature
 	}
 }
 

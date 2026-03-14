@@ -28,18 +28,16 @@ const (
 	// trc20TransferEnergy is the conservative energy estimate for a TRC20 transfer.
 	trc20TransferEnergy = int64(30_000)
 
-	// trxUSDRate is an approximate TRX/USD rate used for gas cost display.
-	// In production this would come from the FX oracle.
-	trxUSDRate = 0.115
 )
 
 // Client is the Tron Nile testnet blockchain client.
 // It implements domain.BlockchainClient.
 type Client struct {
-	rpc       *rpcClient
-	walletMgr *wallet.Manager
-	config    TronConfig
-	logger    *slog.Logger
+	rpc        *rpcClient
+	walletMgr  *wallet.Manager
+	config     TronConfig
+	trxUSDRate decimal.Decimal
+	logger     *slog.Logger
 }
 
 // Compile-time interface check.
@@ -51,11 +49,16 @@ func NewClient(config TronConfig, walletMgr *wallet.Manager, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+	rate := config.TRXUSDRate
+	if rate == 0 {
+		rate = 0.115
+	}
 	return &Client{
-		rpc:       newRPCClient(config.RPCURL, config.APIKey, logger),
-		walletMgr: walletMgr,
-		config:    config,
-		logger:    logger,
+		rpc:        newRPCClient(config.RPCURL, config.APIKey, logger),
+		walletMgr:  walletMgr,
+		config:     config,
+		trxUSDRate: decimal.NewFromFloat(rate),
+		logger:     logger,
 	}
 }
 
@@ -114,14 +117,14 @@ func (c *Client) GetBalance(ctx context.Context, address, token string) (decimal
 func (c *Client) EstimateGas(ctx context.Context, req domain.TxRequest) (decimal.Decimal, error) {
 	if req.Token == "" {
 		// Native TRX transfer: bandwidth-only, ~0.001 TRX
-		const bandwidthTRX = 0.001
-		return decimal.NewFromFloat(bandwidthTRX * trxUSDRate), nil
+		bandwidthTRX := decimal.NewFromFloat(0.001)
+		return bandwidthTRX.Mul(c.trxUSDRate).Round(4), nil
 	}
 
 	// TRC20 transfer: energy cost dominates
 	estimatedSUN := trc20TransferEnergy * energyPriceSUN // 8,400,000 SUN = 8.4 TRX
 	estimatedTRX := decimal.NewFromInt(estimatedSUN).Div(decimal.NewFromInt(sunPerTRX))
-	return estimatedTRX.Mul(decimal.NewFromFloat(trxUSDRate)).Round(4), nil
+	return estimatedTRX.Mul(c.trxUSDRate).Round(4), nil
 }
 
 // SendTransaction builds, signs, and broadcasts a Tron transaction.
