@@ -24,6 +24,10 @@ type TronConfig struct {
 
 	// Confirmations is the number of block confirmations required for finality.
 	Confirmations int
+
+	// TRXUSDRate is the TRX/USD exchange rate used for gas cost estimates.
+	// If zero, defaults to 0.115. In production this should come from the FX oracle.
+	TRXUSDRate float64
 }
 
 // NileConfig is the default configuration for the Tron Nile testnet.
