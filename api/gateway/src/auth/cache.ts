@@ -54,6 +54,10 @@ export class TenantAuthCache {
       this.local.delete(keyHash);
       return undefined;
     }
+    // LRU promotion: delete + re-insert moves entry to end of Map iteration order,
+    // so Map.keys().next() always returns the least-recently-used key.
+    this.local.delete(keyHash);
+    this.local.set(keyHash, entry);
     return entry.value;
   }
 
@@ -90,6 +94,14 @@ export class TenantAuthCache {
     if (this.redis) {
       await this.redis.del(`tenant:auth:${keyHash}`);
     }
+  }
+
+  /**
+   * Evict a key from L1 only (local map).
+   * Used by the pub/sub subscriber when a peer gateway has already deleted L2.
+   */
+  deleteLocal(keyHash: string): void {
+    this.local.delete(keyHash);
   }
 
   /** Current L1 cache size (for metrics). */
