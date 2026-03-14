@@ -34,18 +34,44 @@ type APIKeyResult struct {
 	PerTransferLimit string
 }
 
-// Server implements the gRPC SettlementService, TreasuryService, LedgerService, and AuthService.
+// AccountInfo is a simplified account view for the gRPC response.
+type AccountInfo struct {
+	ID       uuid.UUID
+	TenantID *uuid.UUID
+	Code     string
+	Name     string
+	Type     string
+	Currency string
+	IsActive bool
+}
+
+// AccountStore provides account enumeration from the ledger read model.
+type AccountStore interface {
+	ListAccountsByTenant(ctx context.Context, tenantID uuid.UUID) ([]AccountInfo, error)
+}
+
+// WithAccountStore sets the account store for account listing.
+func WithAccountStore(s AccountStore) ServerOption {
+	return func(srv *Server) { srv.accountStore = s }
+}
+
+// Server implements the gRPC SettlementService, TreasuryService, LedgerService, AuthService, and TenantPortalService.
 type Server struct {
 	pb.UnimplementedSettlementServiceServer
 	pb.UnimplementedTreasuryServiceServer
 	pb.UnimplementedLedgerServiceServer
 	pb.UnimplementedAuthServiceServer
+	pb.UnimplementedTenantPortalServiceServer
 
-	engine    *core.Engine
-	treasury  domain.TreasuryManager
-	ledger    domain.Ledger
-	authStore APIKeyValidator
-	logger    *slog.Logger
+	engine         *core.Engine
+	treasury       domain.TreasuryManager
+	ledger         domain.Ledger
+	authStore      APIKeyValidator
+	portalStore    TenantPortalStore
+	webhookStore   WebhookManagementStore
+	analyticsStore AnalyticsStore
+	accountStore   AccountStore
+	logger         *slog.Logger
 }
 
 // NewServer creates a gRPC server backed by the given domain services.
@@ -259,7 +285,7 @@ func (s *Server) CancelTransfer(ctx context.Context, req *pb.CancelTransferReque
 		reason = "cancelled by API"
 	}
 
-	if err := s.engine.FailTransfer(ctx, transferID, reason, "CANCELLED"); err != nil {
+	if err := s.engine.FailTransfer(ctx, tenantID, transferID, reason, "CANCELLED"); err != nil {
 		return nil, mapDomainError(err)
 	}
 
@@ -355,17 +381,41 @@ func (s *Server) GetLiquidityReport(ctx context.Context, req *pb.GetLiquidityRep
 // ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) GetAccounts(ctx context.Context, req *pb.GetAccountsRequest) (*pb.GetAccountsResponse, error) {
-	_, err := parseUUID(req.GetTenantId(), "tenant_id")
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
 	if err != nil {
 		return nil, err
 	}
 
-	// The ledger interface doesn't expose account listing yet.
-	// Returns empty; will be wired when account store is implemented.
+	if s.accountStore == nil {
+		return &pb.GetAccountsResponse{
+			Accounts:      []*pb.Account{},
+			NextPageToken: "",
+			TotalCount:    0,
+		}, nil
+	}
+
+	accounts, err := s.accountStore.ListAccountsByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+
+	pbAccounts := make([]*pb.Account, len(accounts))
+	for i, a := range accounts {
+		pbAccounts[i] = &pb.Account{
+			Id:       a.ID.String(),
+			Code:     a.Code,
+			Name:     a.Name,
+			Currency: a.Currency,
+			IsActive: a.IsActive,
+		}
+		if a.TenantID != nil {
+			pbAccounts[i].TenantId = a.TenantID.String()
+		}
+	}
+
 	return &pb.GetAccountsResponse{
-		Accounts:      []*pb.Account{},
-		NextPageToken: "",
-		TotalCount:    0,
+		Accounts:   pbAccounts,
+		TotalCount: int32(len(pbAccounts)),
 	}, nil
 }
 
@@ -628,8 +678,6 @@ func transferStatusToProto(s domain.TransferStatus) pb.TransferStatus {
 		return pb.TransferStatus_TRANSFER_STATUS_SETTLING
 	case domain.TransferStatusOffRamping:
 		return pb.TransferStatus_TRANSFER_STATUS_OFF_RAMPING
-	case domain.TransferStatusCompleting:
-		return pb.TransferStatus_TRANSFER_STATUS_COMPLETING
 	case domain.TransferStatusCompleted:
 		return pb.TransferStatus_TRANSFER_STATUS_COMPLETED
 	case domain.TransferStatusFailed:

@@ -1,0 +1,405 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TenantPortalService — self-service endpoints for tenant portal
+// ──────────────────────────────────────────────────────────────────────────────
+
+service TenantPortalService {
+  // Tenant profile
+  rpc GetMyTenant(GetMyTenantRequest) returns (GetMyTenantResponse);
+
+  // Webhook configuration
+  rpc UpdateWebhookConfig(UpdateWebhookConfigRequest) returns (UpdateWebhookConfigResponse);
+
+  // API key management
+  rpc ListAPIKeys(ListAPIKeysRequest) returns (ListAPIKeysResponse);
+  rpc CreateAPIKey(CreateAPIKeyRequest) returns (CreateAPIKeyResponse);
+  rpc RevokeAPIKey(RevokeAPIKeyRequest) returns (RevokeAPIKeyResponse);
+  rpc RotateAPIKey(RotateAPIKeyRequest) returns (RotateAPIKeyResponse);
+
+  // Dashboard metrics & analytics
+  rpc GetDashboardMetrics(GetDashboardMetricsRequest) returns (GetDashboardMetricsResponse);
+  rpc GetTransferStats(GetTransferStatsRequest) returns (GetTransferStatsResponse);
+  rpc GetFeeReport(GetFeeReportRequest) returns (GetFeeReportResponse);
+
+  // Analytics
+  rpc GetTransferStatusDistribution(GetTransferStatusDistributionRequest) returns (GetTransferStatusDistributionResponse);
+  rpc GetCorridorMetrics(GetCorridorMetricsRequest) returns (GetCorridorMetricsResponse);
+  rpc GetTransferLatencyPercentiles(GetTransferLatencyPercentilesRequest) returns (GetTransferLatencyPercentilesResponse);
+  rpc GetVolumeComparison(GetVolumeComparisonRequest) returns (GetVolumeComparisonResponse);
+  rpc GetRecentActivity(GetRecentActivityRequest) returns (GetRecentActivityResponse);
+
+  // Webhook management
+  rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
+  rpc GetWebhookDelivery(GetWebhookDeliveryRequest) returns (GetWebhookDeliveryResponse);
+  rpc GetWebhookDeliveryStats(GetWebhookDeliveryStatsRequest) returns (GetWebhookDeliveryStatsResponse);
+  rpc ListWebhookEventSubscriptions(ListWebhookEventSubscriptionsRequest) returns (ListWebhookEventSubscriptionsResponse);
+  rpc UpdateWebhookEventSubscriptions(UpdateWebhookEventSubscriptionsRequest) returns (UpdateWebhookEventSubscriptionsResponse);
+  rpc TestWebhook(TestWebhookRequest) returns (TestWebhookResponse);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tenant profile messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message GetMyTenantRequest {
+  string tenant_id = 1; // UUID — from auth context
+}
+
+message GetMyTenantResponse {
+  TenantProfile tenant = 1;
+}
+
+message TenantProfile {
+  string id = 1;                              // UUID
+  string name = 2;
+  string slug = 3;
+  string status = 4;                          // ACTIVE, SUSPENDED, ONBOARDING
+  string settlement_model = 5;                // PREFUNDED, NET_SETTLEMENT
+  string kyb_status = 6;                      // PENDING, IN_REVIEW, VERIFIED, REJECTED
+  google.protobuf.Timestamp kyb_verified_at = 7;
+  TenantFeeSchedule fee_schedule = 8;
+  string daily_limit_usd = 9;                 // Decimal string
+  string per_transfer_limit = 10;             // Decimal string
+  string webhook_url = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message TenantFeeSchedule {
+  int32 on_ramp_bps = 1;
+  int32 off_ramp_bps = 2;
+  string min_fee_usd = 3;                     // Decimal string
+  string max_fee_usd = 4;                     // Decimal string
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Webhook configuration messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message UpdateWebhookConfigRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  string webhook_url = 2;                     // HTTPS URL
+}
+
+message UpdateWebhookConfigResponse {
+  string webhook_url = 1;
+  string webhook_secret = 2;                  // Newly generated HMAC secret
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// API key management messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message ListAPIKeysRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+}
+
+message ListAPIKeysResponse {
+  repeated APIKeyInfo keys = 1;
+}
+
+message APIKeyInfo {
+  string id = 1;                              // UUID
+  string key_prefix = 2;                      // e.g. "sk_live_ab"
+  string environment = 3;                     // LIVE, TEST
+  string name = 4;
+  bool is_active = 5;
+  google.protobuf.Timestamp last_used_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message CreateAPIKeyRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  string environment = 2;                     // LIVE or TEST
+  string name = 3;                            // Human-readable label
+}
+
+message CreateAPIKeyResponse {
+  APIKeyInfo key = 1;
+  string raw_key = 2;                         // Full key — shown once, never retrievable again
+}
+
+message RevokeAPIKeyRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  string key_id = 2;                          // UUID of the key to revoke
+}
+
+message RevokeAPIKeyResponse {
+  // SHA-256 hex hash of the revoked key — returned so the gateway can
+  // immediately flush it from L1/L2 auth caches (SEC-2).
+  string key_hash = 1;
+}
+
+message RotateAPIKeyRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  string old_key_id = 2;                      // UUID of the key to replace
+  string name = 3;                            // Label for the new key
+}
+
+message RotateAPIKeyResponse {
+  APIKeyInfo key = 1;
+  string raw_key = 2;                         // Full replacement key — shown once
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Dashboard metrics messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message GetDashboardMetricsRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+}
+
+message GetDashboardMetricsResponse {
+  // Today's real-time counters
+  int64 transfers_today = 1;
+  string volume_today_usd = 2;               // Decimal string
+  int64 completed_today = 3;
+  int64 failed_today = 4;
+
+  // 7-day aggregates
+  int64 transfers_7d = 5;
+  string volume_7d_usd = 6;                  // Decimal string
+  string fees_7d_usd = 7;                    // Decimal string
+
+  // 30-day aggregates
+  int64 transfers_30d = 8;
+  string volume_30d_usd = 9;                 // Decimal string
+  string fees_30d_usd = 10;                  // Decimal string
+
+  // Success rate (30-day)
+  string success_rate_30d = 11;              // Decimal string (0-100)
+
+  // Daily limit usage
+  string daily_limit_usd = 12;              // Decimal string
+  string daily_usage_usd = 13;              // Decimal string
+}
+
+message GetTransferStatsRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  string period = 2;                          // "24h", "7d", "30d"
+  string granularity = 3;                     // "hour", "day"
+}
+
+message GetTransferStatsResponse {
+  repeated TransferStatsBucket buckets = 1;
+}
+
+message TransferStatsBucket {
+  google.protobuf.Timestamp timestamp = 1;
+  int64 total = 2;
+  int64 completed = 3;
+  int64 failed = 4;
+  string volume_usd = 5;                     // Decimal string
+  string fees_usd = 6;                       // Decimal string
+}
+
+message GetFeeReportRequest {
+  string tenant_id = 1;                       // UUID — from auth context
+  google.protobuf.Timestamp from = 2;
+  google.protobuf.Timestamp to = 3;
+}
+
+message GetFeeReportResponse {
+  repeated FeeReportEntry entries = 1;
+  string total_fees_usd = 2;                 // Decimal string
+}
+
+message FeeReportEntry {
+  string source_currency = 1;
+  string dest_currency = 2;
+  int64 transfer_count = 3;
+  string total_volume_usd = 4;               // Decimal string
+  string on_ramp_fees_usd = 5;               // Decimal string
+  string off_ramp_fees_usd = 6;              // Decimal string
+  string network_fees_usd = 7;               // Decimal string
+  string total_fees_usd = 8;                 // Decimal string
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Analytics messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message GetTransferStatusDistributionRequest {
+  string tenant_id = 1;
+  string period = 2;                          // "24h", "7d", "30d"
+}
+
+message GetTransferStatusDistributionResponse {
+  repeated StatusCount statuses = 1;
+}
+
+message StatusCount {
+  string status = 1;
+  int64 count = 2;
+}
+
+message GetCorridorMetricsRequest {
+  string tenant_id = 1;
+  string period = 2;                          // "24h", "7d", "30d"
+}
+
+message GetCorridorMetricsResponse {
+  repeated CorridorMetric corridors = 1;
+}
+
+message CorridorMetric {
+  string source_currency = 1;
+  string dest_currency = 2;
+  int64 transfer_count = 3;
+  string volume_usd = 4;                     // Decimal string
+  string fees_usd = 5;                       // Decimal string
+  int64 completed = 6;
+  int64 failed = 7;
+  string success_rate = 8;                   // Decimal string (0-100)
+  int32 avg_latency_ms = 9;
+}
+
+message GetTransferLatencyPercentilesRequest {
+  string tenant_id = 1;
+  string period = 2;                          // "24h", "7d", "30d"
+}
+
+message GetTransferLatencyPercentilesResponse {
+  int64 sample_count = 1;
+  int32 p50_ms = 2;
+  int32 p90_ms = 3;
+  int32 p95_ms = 4;
+  int32 p99_ms = 5;
+}
+
+message GetVolumeComparisonRequest {
+  string tenant_id = 1;
+  string period = 2;                          // "7d" or "30d" — compares vs. previous period
+}
+
+message GetVolumeComparisonResponse {
+  int64 current_count = 1;
+  string current_volume_usd = 2;             // Decimal string
+  string current_fees_usd = 3;               // Decimal string
+  int64 previous_count = 4;
+  string previous_volume_usd = 5;            // Decimal string
+  string previous_fees_usd = 6;              // Decimal string
+}
+
+message GetRecentActivityRequest {
+  string tenant_id = 1;
+  int32 limit = 2;
+}
+
+message GetRecentActivityResponse {
+  repeated ActivityItem items = 1;
+}
+
+message ActivityItem {
+  string transfer_id = 1;
+  string external_ref = 2;
+  string status = 3;
+  string source_currency = 4;
+  string source_amount = 5;                   // Decimal string
+  string dest_currency = 6;
+  string dest_amount = 7;                     // Decimal string
+  google.protobuf.Timestamp updated_at = 8;
+  string failure_reason = 9;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Webhook management messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message WebhookDeliveryInfo {
+  string id = 1;                              // UUID
+  string tenant_id = 2;
+  string event_type = 3;
+  string transfer_id = 4;
+  string delivery_id = 5;                     // X-Settla-Delivery header
+  string webhook_url = 6;
+  string status = 7;                          // pending, delivered, failed, dead_letter
+  int32 status_code = 8;                      // HTTP response code
+  int32 attempt = 9;
+  int32 max_attempts = 10;
+  string error_message = 11;
+  int32 duration_ms = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp delivered_at = 14;
+}
+
+message ListWebhookDeliveriesRequest {
+  string tenant_id = 1;
+  string event_type = 2;                      // Optional filter
+  string status = 3;                          // Optional filter
+  int32 page_size = 4;
+  int32 page_offset = 5;
+}
+
+message ListWebhookDeliveriesResponse {
+  repeated WebhookDeliveryInfo deliveries = 1;
+  int64 total_count = 2;
+}
+
+message GetWebhookDeliveryRequest {
+  string tenant_id = 1;
+  string delivery_id = 2;                     // UUID
+}
+
+message GetWebhookDeliveryResponse {
+  WebhookDeliveryInfo delivery = 1;
+  bytes request_body = 2;                     // JSON payload
+}
+
+message GetWebhookDeliveryStatsRequest {
+  string tenant_id = 1;
+  string period = 2;                          // "24h", "7d", "30d"
+}
+
+message GetWebhookDeliveryStatsResponse {
+  int64 total_deliveries = 1;
+  int64 successful = 2;
+  int64 failed = 3;
+  int64 dead_lettered = 4;
+  int64 pending = 5;
+  int32 avg_latency_ms = 6;
+  int32 p95_latency_ms = 7;
+}
+
+message WebhookEventSubscriptionInfo {
+  string id = 1;
+  string event_type = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ListWebhookEventSubscriptionsRequest {
+  string tenant_id = 1;
+}
+
+message ListWebhookEventSubscriptionsResponse {
+  repeated WebhookEventSubscriptionInfo subscriptions = 1;
+  repeated string available_event_types = 2;  // All possible event types
+}
+
+message UpdateWebhookEventSubscriptionsRequest {
+  string tenant_id = 1;
+  repeated string event_types = 2;            // Set the full list (replaces existing)
+}
+
+message UpdateWebhookEventSubscriptionsResponse {
+  repeated WebhookEventSubscriptionInfo subscriptions = 1;
+}
+
+message TestWebhookRequest {
+  string tenant_id = 1;
+}
+
+message TestWebhookResponse {
+  bool success = 1;
+  int32 status_code = 2;
+  int32 duration_ms = 3;
+  string error = 4;
+}
