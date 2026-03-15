@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: partition-archive-script
+  labels:
+    app.kubernetes.io/name: partition-archive
+    app.kubernetes.io/component: maintenance
+data:
+  archive.sh: |
+    #!/usr/bin/env bash
+    # Settla partition archival script — runs monthly via CronJob.
+    #
+    # Lifecycle for long-lived tables (transfers, transfer_events, entry_lines,
+    # position_history):
+    #   1. Identify partitions older than 90 days
+    #   2. Detach partition from parent table (instant metadata op)
+    #   3. Export partition data to Parquet via COPY + parquet-tools
+    #   4. Upload Parquet file to S3 Glacier Deep Archive
+    #   5. Verify upload (S3 ETag / object-exists check)
+    #   6. DROP detached partition (instant, no VACUUM needed)
+    #
+    # Tables managed (monthly partitions, 7-year retention in Glacier):
+    #   transfer DB  : transfers, transfer_events
+    #   ledger DB    : entry_lines
+    #   treasury DB  : position_history
+    #
+    # Outbox is excluded — it uses daily partitions with 48-hour DROP lifecycle
+    # managed by the settla-server partition scheduler (ADR-018).
+    #
+    # Environment variables (injected via ConfigMap / Secret):
+    #   SETTLA_TRANSFER_DB_URL   — PgBouncer URL for transfer DB
+    #   SETTLA_LEDGER_DB_URL     — PgBouncer URL for ledger DB
+    #   SETTLA_TREASURY_DB_URL   — PgBouncer URL for treasury DB
+    #   SETTLA_ARCHIVE_S3_BUCKET — S3 bucket name (e.g. settla-archive-prod)
+    #   SETTLA_ARCHIVE_S3_PREFIX — key prefix (e.g. partitions/)
+    #   AWS_DEFAULT_REGION       — AWS region for the bucket
+    #   SETTLA_ARCHIVE_DRY_RUN   — if "true", print actions but do not execute
+
+    set -euo pipefail
+
+    DRY_RUN="${SETTLA_ARCHIVE_DRY_RUN:-false}"
+    CUTOFF_DAYS="${SETTLA_ARCHIVE_CUTOFF_DAYS:-90}"
+    S3_BUCKET="${SETTLA_ARCHIVE_S3_BUCKET}"
+    S3_PREFIX="${SETTLA_ARCHIVE_S3_PREFIX:-partitions/}"
+    SCRATCH_DIR="${SETTLA_ARCHIVE_SCRATCH_DIR:-/tmp/settla-archive}"
+    STORAGE_CLASS="DEEP_ARCHIVE"
+
+    log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+    die() { log "ERROR: $*" >&2; exit 1; }
+
+    dry_run_prefix() {
+      if [[ "${DRY_RUN}" == "true" ]]; then echo "[DRY-RUN] "; fi
+    }
+
+    # Compute the cutoff date (partitions older than CUTOFF_DAYS are eligible).
+    CUTOFF_DATE=$(date -u -d "-${CUTOFF_DAYS} days" +%Y-%m-%d 2>/dev/null \
+      || date -u -v-"${CUTOFF_DAYS}"d +%Y-%m-%d)  # macOS fallback
+
+    log "Partition archival starting. cutoff_date=${CUTOFF_DATE} dry_run=${DRY_RUN}"
+    log "Target bucket: s3://${S3_BUCKET}/${S3_PREFIX}"
+
+    mkdir -p "${SCRATCH_DIR}"
+
+    # ---------------------------------------------------------------------------
+    # archive_partition TABLE DB_URL DB_NAME
+    #   Detaches, exports, uploads, verifies, and drops one monthly partition.
+    # ---------------------------------------------------------------------------
+    archive_partition() {
+      local partition="$1"
+      local db_url="$2"
+      local db_name="$3"
+      local parent_table="$4"
+
+      log "Processing partition ${partition} (parent=${parent_table}, db=${db_name})"
+
+      local parquet_file="${SCRATCH_DIR}/${partition}.parquet"
+      local csv_file="${SCRATCH_DIR}/${partition}.csv"
+      local s3_key="${S3_PREFIX}${db_name}/${parent_table}/${partition}.parquet"
+
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        log "[DRY-RUN] Would DETACH ${partition} from ${parent_table}"
+        log "[DRY-RUN] Would export to ${parquet_file}"
+        log "[DRY-RUN] Would upload to s3://${S3_BUCKET}/${s3_key} (${STORAGE_CLASS})"
+        log "[DRY-RUN] Would DROP TABLE ${partition}"
+        return 0
+      fi
+
+      # Step 1: Detach partition (instant metadata op — no row scanning).
+      log "Detaching ${partition} from ${parent_table}..."
+      psql "${db_url}" -c "ALTER TABLE ${parent_table} DETACH PARTITION ${partition};"
+
+      # Step 2: Export to CSV via COPY (fast, server-side).
+      log "Exporting ${partition} to CSV..."
+      psql "${db_url}" -c "\COPY ${partition} TO '${csv_file}' WITH (FORMAT csv, HEADER true)"
+
+      # Step 3: Convert CSV to Parquet.
+      # Uses DuckDB CLI (available in archive container image: settla-archive-tools).
+      log "Converting CSV to Parquet..."
+      duckdb -c "COPY (SELECT * FROM read_csv_auto('${csv_file}', HEADER=true)) \
+        TO '${parquet_file}' (FORMAT PARQUET, COMPRESSION 'zstd');"
+
+      # Step 4: Upload to S3 Glacier Deep Archive.
+      log "Uploading ${parquet_file} to s3://${S3_BUCKET}/${s3_key}..."
+      aws s3 cp "${parquet_file}" "s3://${S3_BUCKET}/${s3_key}" \
+        --storage-class "${STORAGE_CLASS}" \
+        --sse aws:kms \
+        --metadata "partition=${partition},table=${parent_table},db=${db_name},archived_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      # Step 5: Verify upload — confirm object exists and size matches.
+      log "Verifying upload..."
+      local local_size remote_size
+      local_size=$(wc -c < "${parquet_file}")
+      remote_size=$(aws s3api head-object \
+        --bucket "${S3_BUCKET}" --key "${s3_key}" \
+        --query 'ContentLength' --output text)
+
+      if [[ "${local_size}" != "${remote_size}" ]]; then
+        die "Upload size mismatch for ${s3_key}: local=${local_size} remote=${remote_size}. Partition NOT dropped."
+      fi
+      log "Upload verified: ${s3_key} size=${remote_size} bytes"
+
+      # Step 6: DROP the detached partition (instant, ~100ms regardless of row count).
+      log "Dropping detached partition ${partition}..."
+      psql "${db_url}" -c "DROP TABLE IF EXISTS ${partition};"
+
+      # Cleanup scratch files.
+      rm -f "${csv_file}" "${parquet_file}"
+
+      log "Partition ${partition} archived and dropped successfully."
+    }
+
+    # ---------------------------------------------------------------------------
+    # find_and_archive TABLE PARENT DB_URL DB_NAME
+    #   Queries pg_tables for partitions of PARENT older than CUTOFF_DATE.
+    # ---------------------------------------------------------------------------
+    find_and_archive() {
+      local parent_table="$1"
+      local db_url="$2"
+      local db_name="$3"
+
+      log "Scanning for old partitions of ${parent_table} in ${db_name}..."
+
+      # Monthly partition names follow pattern: {table}_y{YYYY}m{MM}
+      # We look for partitions where the embedded year-month < cutoff.
+      # Query pg_inherits to find all child partitions of the parent.
+      local partitions
+      partitions=$(psql "${db_url}" -t -A -c "
+        SELECT c.relname
+        FROM pg_inherits i
+          JOIN pg_class c ON c.oid = i.inhrelid
+          JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = '${parent_table}'
+          AND c.relname ~ '^${parent_table}_y[0-9]{4}m[0-9]{2}$'
+        ORDER BY c.relname;
+      ")
+
+      local archived_count=0
+      while IFS= read -r partition; do
+        [[ -z "${partition}" ]] && continue
+
+        # Extract year and month from partition name suffix _yYYYYmMM.
+        local year month partition_date
+        year=$(echo "${partition}" | grep -oE '_y([0-9]{4})m' | grep -oE '[0-9]{4}')
+        month=$(echo "${partition}" | grep -oE 'm([0-9]{2})$' | grep -oE '[0-9]{2}')
+        partition_date="${year}-${month}-01"
+
+        # Skip if partition start date >= cutoff (still within active window).
+        if [[ "${partition_date}" >= "${CUTOFF_DATE}" ]]; then
+          log "Skipping ${partition}: partition_date=${partition_date} is within active window"
+          continue
+        fi
+
+        archive_partition "${partition}" "${db_url}" "${db_name}" "${parent_table}"
+        archived_count=$((archived_count + 1))
+      done <<< "${partitions}"
+
+      log "Archived ${archived_count} partition(s) for ${parent_table} in ${db_name}"
+    }
+
+    # ---------------------------------------------------------------------------
+    # Main: process all long-lived tables across all databases.
+    # ---------------------------------------------------------------------------
+
+    log "--- Transfer DB: transfers ---"
+    find_and_archive "transfers" "${SETTLA_TRANSFER_DB_URL}" "transfer"
+
+    log "--- Transfer DB: transfer_events ---"
+    find_and_archive "transfer_events" "${SETTLA_TRANSFER_DB_URL}" "transfer"
+
+    log "--- Ledger DB: entry_lines ---"
+    find_and_archive "entry_lines" "${SETTLA_LEDGER_DB_URL}" "ledger"
+
+    log "--- Treasury DB: position_history ---"
+    find_and_archive "position_history" "${SETTLA_TREASURY_DB_URL}" "treasury"
+
+    # Cleanup scratch directory.
+    rm -rf "${SCRATCH_DIR}"
+
+    log "Partition archival complete."

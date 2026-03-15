@@ -1,0 +1,205 @@
+# Patroni Services — headless for StatefulSet DNS + read-write for leader routing.
+#
+# Five-nines rationale:
+# - Headless services give each pod a stable DNS name for Patroni peer discovery
+#   and streaming replication (e.g., patroni-ledger-0.patroni-ledger-headless).
+# - Read-write services use the "role: master" label that Patroni automatically
+#   applies to the current leader.  PgBouncer connects to these services, so
+#   traffic is always routed to the primary — no manual DNS updates on failover.
+#
+# Three pairs (headless + read-write) for the three bounded contexts:
+#   patroni-ledger    (port 5433 externally, 5432 internally)
+#   patroni-transfer  (port 5434 externally, 5432 internally)
+#   patroni-treasury  (port 5435 externally, 5432 internally)
+
+# =============================================================================
+# LEDGER
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-ledger-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-ledger
+    app.kubernetes.io/component: database
+    settla.io/context: ledger
+spec:
+  clusterIP: None  # Headless — enables individual pod DNS
+  selector:
+    app.kubernetes.io/name: patroni-ledger
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+    - name: patroni-api
+      port: 8008
+      targetPort: 8008
+  publishNotReadyAddresses: true  # Required for Patroni bootstrap
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-ledger
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-ledger
+    app.kubernetes.io/component: database
+    settla.io/context: ledger
+spec:
+  # Selector includes role=master — Patroni labels the leader pod automatically.
+  # On failover, the label moves to the new leader and Kubernetes routes traffic
+  # within seconds (no DNS TTL wait).
+  selector:
+    app.kubernetes.io/name: patroni-ledger
+    role: master
+  ports:
+    - name: postgres
+      port: 5433
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-ledger-replica
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-ledger
+    app.kubernetes.io/component: database
+    settla.io/context: ledger
+    settla.io/role: replica
+spec:
+  selector:
+    app.kubernetes.io/name: patroni-ledger
+    role: replica
+  ports:
+    - name: postgres
+      port: 5433
+      targetPort: 5432
+
+# =============================================================================
+# TRANSFER
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-transfer-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-transfer
+    app.kubernetes.io/component: database
+    settla.io/context: transfer
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: patroni-transfer
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+    - name: patroni-api
+      port: 8008
+      targetPort: 8008
+  publishNotReadyAddresses: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-transfer
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-transfer
+    app.kubernetes.io/component: database
+    settla.io/context: transfer
+spec:
+  selector:
+    app.kubernetes.io/name: patroni-transfer
+    role: master
+  ports:
+    - name: postgres
+      port: 5434
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-transfer-replica
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-transfer
+    app.kubernetes.io/component: database
+    settla.io/context: transfer
+    settla.io/role: replica
+spec:
+  selector:
+    app.kubernetes.io/name: patroni-transfer
+    role: replica
+  ports:
+    - name: postgres
+      port: 5434
+      targetPort: 5432
+
+# =============================================================================
+# TREASURY
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-treasury-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-treasury
+    app.kubernetes.io/component: database
+    settla.io/context: treasury
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: patroni-treasury
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+    - name: patroni-api
+      port: 8008
+      targetPort: 8008
+  publishNotReadyAddresses: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-treasury
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-treasury
+    app.kubernetes.io/component: database
+    settla.io/context: treasury
+spec:
+  selector:
+    app.kubernetes.io/name: patroni-treasury
+    role: master
+  ports:
+    - name: postgres
+      port: 5435
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-treasury-replica
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-treasury
+    app.kubernetes.io/component: database
+    settla.io/context: treasury
+    settla.io/role: replica
+spec:
+  selector:
+    app.kubernetes.io/name: patroni-treasury
+    role: replica
+  ports:
+    - name: postgres
+      port: 5435
+      targetPort: 5432

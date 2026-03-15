@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: settla
+data:
+  alertmanager.yml: |
+    # Settla AlertManager configuration for five-nines availability.
+    #
+    # Routing strategy:
+    #   critical -> PagerDuty (immediate page) + Slack #settla-incidents
+    #   warning  -> Slack #settla-alerts (ticket, no page)
+    #   default  -> Slack #settla-monitoring (informational)
+    #
+    # Secrets are injected via environment variables from K8s Secret
+    # 'alertmanager-secrets'.
+
+    global:
+      resolve_timeout: 5m
+      slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+    templates:
+      - '/etc/alertmanager/templates/*.tmpl'
+
+    route:
+      receiver: default
+      group_by: ['alertname', 'severity', 'team']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 4h
+
+      routes:
+        - match:
+            severity: critical
+          receiver: pagerduty-critical
+          group_wait: 5s
+          group_interval: 15s
+          repeat_interval: 1h
+          continue: true
+
+        - match:
+            severity: critical
+          receiver: slack-incidents
+          group_wait: 5s
+          group_interval: 15s
+          repeat_interval: 1h
+          continue: true
+
+        - match:
+            severity: critical
+          receiver: remediation-webhook
+          group_wait: 5s
+          group_interval: 1m
+          repeat_interval: 15m
+
+        - match:
+            severity: warning
+          receiver: slack-alerts
+          group_wait: 15s
+          group_interval: 1m
+          repeat_interval: 4h
+
+    receivers:
+      - name: default
+        slack_configs:
+          - channel: '#settla-monitoring'
+            send_resolved: true
+            title: >-
+              {{ if eq .Status "firing" }}:information_source:{{ else }}:white_check_mark:{{ end }}
+              [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}
+            text: >-
+              *Severity:* `{{ .CommonLabels.severity }}`
+
+              *Alerts:*
+              {{ range .Alerts }}
+              - *{{ .Labels.alertname }}* on `{{ .Labels.instance }}`
+                {{ .Annotations.summary }}
+                {{ if .Annotations.runbook }}:book: <{{ .Annotations.runbook }}|Runbook>{{ end }}
+              {{ end }}
+            icon_emoji: ':prometheus:'
+            username: 'Settla Alerts'
+
+      - name: pagerduty-critical
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_SERVICE_KEY}'
+            severity: critical
+            description: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+            client: 'Settla AlertManager'
+            client_url: 'https://settla.internal/grafana'
+            details:
+              alertname: '{{ .CommonLabels.alertname }}'
+              severity: '{{ .CommonLabels.severity }}'
+              instance: '{{ .CommonLabels.instance }}'
+              summary: '{{ .CommonAnnotations.summary }}'
+              description: '{{ .CommonAnnotations.description }}'
+              runbook: '{{ .CommonAnnotations.runbook }}'
+
+      - name: slack-incidents
+        slack_configs:
+          - channel: '#settla-incidents'
+            send_resolved: true
+            color: >-
+              {{ if eq .Status "firing" }}danger{{ else }}good{{ end }}
+            title: >-
+              {{ if eq .Status "firing" }}:rotating_light:{{ else }}:white_check_mark:{{ end }}
+              [{{ .Status | toUpper }}{{ if eq .Status "firing" }} x{{ .Alerts.Firing | len }}{{ end }}]
+              {{ .CommonLabels.alertname }}
+            title_link: '{{ (index .Alerts 0).Annotations.dashboard }}'
+            text: >-
+              *Severity:* :red_circle: `critical`
+              *Team:* `{{ .CommonLabels.team }}`
+
+              {{ range .Alerts }}
+              ---
+              :warning: *{{ .Labels.alertname }}*
+              *Instance:* `{{ .Labels.instance }}`
+              *Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              {{ if .Annotations.runbook }}:book: <{{ .Annotations.runbook }}|Runbook>{{ end }}
+              {{ if .Annotations.dashboard }}:bar_chart: <{{ .Annotations.dashboard }}|Dashboard>{{ end }}
+              {{ end }}
+            icon_emoji: ':fire:'
+            username: 'Settla Incidents'
+            actions:
+              - type: button
+                text: 'View Runbook'
+                url: '{{ .CommonAnnotations.runbook }}'
+              - type: button
+                text: 'Open Dashboard'
+                url: '{{ (index .Alerts 0).Annotations.dashboard }}'
+
+      - name: slack-alerts
+        slack_configs:
+          - channel: '#settla-alerts'
+            send_resolved: true
+            color: >-
+              {{ if eq .Status "firing" }}warning{{ else }}good{{ end }}
+            title: >-
+              {{ if eq .Status "firing" }}:warning:{{ else }}:white_check_mark:{{ end }}
+              [{{ .Status | toUpper }}{{ if eq .Status "firing" }} x{{ .Alerts.Firing | len }}{{ end }}]
+              {{ .CommonLabels.alertname }}
+            text: >-
+              *Severity:* :large_yellow_circle: `warning`
+
+              {{ range .Alerts }}
+              ---
+              *{{ .Labels.alertname }}* on `{{ .Labels.instance }}`
+              {{ .Annotations.summary }}
+              {{ if .Annotations.description }}> {{ .Annotations.description }}{{ end }}
+              {{ if .Annotations.runbook }}:book: <{{ .Annotations.runbook }}|Runbook>{{ end }}
+              {{ end }}
+            icon_emoji: ':warning:'
+            username: 'Settla Alerts'
+
+      - name: remediation-webhook
+        webhook_configs:
+          - url: 'http://alertmanager-remediation:9095/webhook'
+            send_resolved: false
+            max_alerts: 1
+
+    inhibit_rules:
+      - source_match:
+          severity: critical
+        target_match:
+          severity: warning
+        equal: ['alertname']
+
+      - source_match:
+          alertname: SettlaSyntheticFailure
+        target_match_re:
+          alertname: 'Settla(HighErrorRate|TransferSuccess|LatencySLO).*'
+        equal: ['team']
+
+      - source_match:
+          alertname: SettlaNATSDown
+        target_match_re:
+          alertname: 'SettlaNATS(ConsumerLag|MessageRate).*'
+
+      - source_match:
+          alertname: SettlaRedisDown
+        target_match_re:
+          alertname: 'SettlaRedisMemory.*'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-remediation
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: remediation
+    app.kubernetes.io/part-of: settla
+data:
+  # The auto-remediation script is mounted into the sidecar container.
+  # It is loaded from the deploy/remediation/auto-remediation.sh file
+  # during the build/deploy process. In a Kustomize setup, use a
+  # configMapGenerator with files to include the script contents.
+  # For now, this placeholder configmap is referenced by the deployment.
+  auto-remediation.sh: |
+    #!/usr/bin/env bash
+    # This is a placeholder. The actual script is sourced from
+    # deploy/remediation/auto-remediation.sh during build.
+    # Use kustomize configMapGenerator to embed the real script:
+    #
+    # configMapGenerator:
+    #   - name: alertmanager-remediation
+    #     files:
+    #       - auto-remediation.sh=../../remediation/auto-remediation.sh
+    echo "Remediation script placeholder — replace with actual script via Kustomize"
+    exit 1

@@ -1,3 +1,10 @@
+# ==========================================================================
+# LOCAL DEVELOPMENT ONLY — do not use these defaults in production/staging.
+# All passwords and secrets below are intentionally weak dev-only values.
+# Production credentials are injected via External Secrets Operator (ESO)
+# from AWS Secrets Manager — see deploy/k8s/base/secrets/.
+# ==========================================================================
+
 services:
   # ── PostgreSQL (one per bounded context) ─────────────────────────
   # Raw Postgres ports exposed for migrations and direct admin access.
@@ -9,10 +16,12 @@ services:
       POSTGRES_DB: settla_ledger
       POSTGRES_USER: ${POSTGRES_USER:-settla}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5433:5432"
     volumes:
       - pgdata-ledger:/var/lib/postgresql/data
+      - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
     networks:
       - settla-net
     healthcheck:
@@ -21,6 +30,13 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
 
   postgres-transfer:
     image: postgres:16-alpine
@@ -28,10 +44,12 @@ services:
       POSTGRES_DB: settla_transfer
       POSTGRES_USER: ${POSTGRES_USER:-settla}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5434:5432"
     volumes:
       - pgdata-transfer:/var/lib/postgresql/data
+      - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
     networks:
       - settla-net
     healthcheck:
@@ -40,6 +58,13 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
 
   postgres-treasury:
     image: postgres:16-alpine
@@ -47,10 +72,12 @@ services:
       POSTGRES_DB: settla_treasury
       POSTGRES_USER: ${POSTGRES_USER:-settla}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5435:5432"
     volumes:
       - pgdata-treasury:/var/lib/postgresql/data
+      - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
     networks:
       - settla-net
     healthcheck:
@@ -59,6 +86,13 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
 
   # ── PgBouncer (connection pooling per bounded context) ──────────
   # Production: 6+ settla-server replicas × 100 conns = 600 client conns
@@ -93,6 +127,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
 
   pgbouncer-transfer:
     image: edoburu/pgbouncer:1.21.0-p2
@@ -122,6 +161,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
 
   pgbouncer-treasury:
     image: edoburu/pgbouncer:1.21.0-p2
@@ -151,6 +195,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
 
   # ── TigerBeetle (ledger write authority) ────────────────────────
   # TigerBeetle handles 1M+ TPS for double-entry balance mutations.
@@ -185,6 +234,13 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4.0"
+        reservations:
+          memory: 2G
 
   # Init container: creates the TigerBeetle data file if it doesn't exist.
   # Runs once, exits 0 on success. If file already exists, TB format exits 1
@@ -204,6 +260,11 @@ services:
       - tbdata:/data
     networks:
       - settla-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   # ── NATS with JetStream ────────────────────────────────────────
   # Single node for dev. Production config (3-node cluster) documented in
@@ -230,6 +291,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
 
   # ── Redis ──────────────────────────────────────────────────────
   # Used for: quote cache, idempotency, rate limiting (L2), tenant config (L2).
@@ -242,6 +308,8 @@ services:
     image: redis:7.2-alpine
     command:
       - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:-settla-dev}"
       - "--appendonly"
       - "yes"
       - "--appendfsync"
@@ -255,17 +323,22 @@ services:
       - "--maxmemory-policy"
       - "allkeys-lru"
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redisdata:/data
     networks:
       - settla-net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-settla-dev} --no-auth-warning ping"]
       interval: 5s
       timeout: 3s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
 
   # ── Application services ───────────────────────────────────────
   # All DB URLs point to PgBouncer, NOT raw Postgres.
@@ -275,17 +348,24 @@ services:
       context: ..
       dockerfile: deploy/docker/settla-server.Dockerfile
     ports:
-      - "${SETTLA_SERVER_HTTP_PORT:-8080}:8080"
+      - "${SETTLA_SERVER_HTTP_PORT:-8081}:8080"
       - "${SETTLA_SERVER_GRPC_PORT:-9090}:9090"
       - "${SETTLA_PPROF_PORT:-6060}:6060"
+    volumes:
+      - ./config/features.json:/etc/settla/features.json:ro
     environment:
+      SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
       # DB URLs connect directly to Postgres (pgx prepared statements work)
       # PgBouncer is used in production with session mode or dedicated adapters
       SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
       SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
       SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
-      SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001
-      SETTLA_REDIS_URL: redis://redis:6379
+      # RLS-enforced pools disabled for local dev (settla_app role has SET LOCAL issues with PgBouncer)
+      # SETTLA_TRANSFER_APP_DB_URL: postgres://settla_app:settla_app@postgres-transfer:5432/settla_transfer?sslmode=disable
+      # SETTLA_LEDGER_APP_DB_URL: postgres://settla_app:settla_app@postgres-ledger:5432/settla_ledger?sslmode=disable
+      # SETTLA_TREASURY_APP_DB_URL: postgres://settla_app:settla_app@postgres-treasury:5432/settla_treasury?sslmode=disable
+      # SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001  # Disabled: TB Go client v0.16.11 address parsing issue; ledger runs in stub mode
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       SETTLA_NATS_URL: nats://nats:4222
       SETTLA_SERVER_HTTP_PORT: "8080"
       SETTLA_SERVER_GRPC_PORT: "9090"
@@ -293,6 +373,8 @@ services:
       SETTLA_PPROF: "${SETTLA_PPROF:-true}"
       SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
       SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      SETTLA_LEDGER_BATCH_MAX_SIZE: "${SETTLA_LEDGER_BATCH_MAX_SIZE:-500}"
+      SETTLA_MOCK_DELAY_MS: ${SETTLA_MOCK_DELAY_MS:-500}
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
       # Provider mode: mock (default) | testnet (real blockchain) | live (future)
@@ -328,6 +410,13 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4.0"
+        reservations:
+          memory: 512M
 
   settla-node:
     build:
@@ -335,9 +424,12 @@ services:
       dockerfile: deploy/docker/settla-node.Dockerfile
     ports:
       - "${SETTLA_NODE_METRICS_PORT:-9091}:9091"
+    volumes:
+      - ./config/features.json:/etc/settla/features.json:ro
     environment:
+      SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
       SETTLA_NATS_URL: nats://nats:4222
-      SETTLA_REDIS_URL: redis://redis:6379
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
       SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
       SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
@@ -345,8 +437,21 @@ services:
       SETTLA_NODE_METRICS_PORT: "9091"
       SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
       SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      SETTLA_LEDGER_BATCH_MAX_SIZE: "${SETTLA_LEDGER_BATCH_MAX_SIZE:-500}"
+      # Outbox relay tuning (peak burst capacity)
+      SETTLA_RELAY_BATCH_SIZE: "${SETTLA_RELAY_BATCH_SIZE:-200}"
+      SETTLA_RELAY_POLL_INTERVAL_MS: "${SETTLA_RELAY_POLL_INTERVAL_MS:-30}"
+      # Worker pool sizes (tuned for 5K TPS peak)
+      SETTLA_WORKER_POOL_TRANSFER: "${SETTLA_WORKER_POOL_TRANSFER:-8}"
+      SETTLA_WORKER_POOL_PROVIDER: "${SETTLA_WORKER_POOL_PROVIDER:-16}"
+      SETTLA_WORKER_POOL_BLOCKCHAIN: "${SETTLA_WORKER_POOL_BLOCKCHAIN:-16}"
+      SETTLA_WORKER_POOL_LEDGER: "${SETTLA_WORKER_POOL_LEDGER:-8}"
+      SETTLA_WORKER_POOL_TREASURY: "${SETTLA_WORKER_POOL_TREASURY:-8}"
+      SETTLA_WORKER_POOL_WEBHOOK: "${SETTLA_WORKER_POOL_WEBHOOK:-32}"
+      SETTLA_WORKER_POOL_INBOUND_WH: "${SETTLA_WORKER_POOL_INBOUND_WH:-8}"
       # In dev, single instance handles all partitions (PARTITION_ID not set).
       # In prod, run 8 instances each with SETTLA_NODE_PARTITION_ID=0..7.
+      SETTLA_MOCK_DELAY_MS: ${SETTLA_MOCK_DELAY_MS:-500}
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
       # Provider mode + blockchain RPC (same as settla-server)
@@ -372,6 +477,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4.0"
+        reservations:
+          memory: 512M
 
   gateway:
     build:
@@ -382,12 +494,16 @@ services:
     environment:
       PORT: "3000"
       HOST: "0.0.0.0"
-      SETTLA_REDIS_URL: redis://redis:6379
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       SETTLA_SERVER_GRPC_URL: settla-server:9090
       SETTLA_GRPC_POOL_SIZE: "${SETTLA_GRPC_POOL_SIZE:-50}"
       SETTLA_TENANT_CACHE_TTL_SECONDS: "${SETTLA_TENANT_CACHE_TTL_SECONDS:-30}"
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
+      SETTLA_RATE_LIMIT_PER_TENANT: "${SETTLA_RATE_LIMIT_PER_TENANT:-10000}"
+      SETTLA_LOAD_SHED_MAX_CONCURRENT: "${SETTLA_LOAD_SHED_MAX_CONCURRENT:-5000}"
+      SETTLA_LOAD_SHED_TARGET_LATENCY_MS: "${SETTLA_LOAD_SHED_TARGET_LATENCY_MS:-500}"
+      SETTLA_LOAD_SHED_INITIAL_LIMIT: "${SETTLA_LOAD_SHED_INITIAL_LIMIT:-2000}"
     networks:
       - settla-net
     depends_on:
@@ -399,6 +515,54 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2.0"
+
+  # ── Tyk API Gateway ────────────────────────────────────────────
+  # Tyk handles infrastructure concerns (auth, rate limiting, circuit breaking)
+  # and proxies to the Fastify BFF (gateway) for business logic.
+  # External traffic enters via Tyk on port 8080.
+
+  tyk-gateway:
+    image: tykio/tyk-gateway:v5.3
+    container_name: settla-tyk
+    ports:
+      - "${TYK_GATEWAY_PORT:-8090}:8080"
+    volumes:
+      - ./tyk/tyk.conf:/opt/tyk-gateway/tyk.conf
+      - ./tyk/apps:/opt/tyk-gateway/apps
+      - ./tyk/policies:/opt/tyk-gateway/policies
+      - ./tyk/middleware:/opt/tyk-gateway/middleware
+    environment:
+      # CHANGE IN PRODUCTION: set TYK_SECRET to a strong random value.
+      # Production K8s: injected from settla-app-secrets ExternalSecret (tyk-secret).
+      # Generate: openssl rand -hex 32
+      - TYK_GW_SECRET=${TYK_SECRET:-settla-tyk-secret}
+      - TYK_GW_STORAGE_HOST=redis
+      - TYK_GW_STORAGE_PORT=6379
+      - TYK_GW_STORAGE_PASSWORD=${REDIS_PASSWORD:-settla-dev}
+    depends_on:
+      redis:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/hello"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   # ── Observability ───────────────────────────────────────────────
 
@@ -406,12 +570,13 @@ services:
     image: prom/prometheus:v2.51.0
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
     ports:
       - "${SETTLA_PROMETHEUS_PORT:-9092}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts:/etc/prometheus/alerts:ro
       - promdata:/prometheus
     networks:
       - settla-net
@@ -423,6 +588,44 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=:9093"
+    ports:
+      - "${SETTLA_ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    environment:
+      # CHANGE IN PRODUCTION: set these via settla/production/alertmanager in AWS Secrets Manager.
+      # Production K8s: injected from alertmanager-secrets ExternalSecret.
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/placeholder}"
+      PAGERDUTY_SERVICE_KEY: "${PAGERDUTY_SERVICE_KEY:-placeholder}"
+      REMEDIATION_WEBHOOK_TOKEN: "${REMEDIATION_WEBHOOK_TOKEN:-dev-token}"
+    networks:
+      - settla-net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9093/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   grafana:
     image: grafana/grafana:10.4.1
@@ -430,7 +633,9 @@ services:
       - "${SETTLA_GRAFANA_PORT:-3002}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-settla}
+      # CHANGE IN PRODUCTION: set GRAFANA_ADMIN_PASSWORD to a strong random value.
+      # Production K8s: injected from settla-app-secrets ExternalSecret (grafana-admin-password).
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafanadata:/var/lib/grafana
@@ -447,6 +652,156 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+  # ── Monitoring Exporters ───────────────────────────────────────────────
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-settla-dev}
+    networks:
+      - settla-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9121/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  postgres-exporter-ledger:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9187/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  postgres-exporter-transfer:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    ports:
+      - "9188:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-transfer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9187/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  postgres-exporter-treasury:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    ports:
+      - "9189:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable"
+    networks:
+      - settla-net
+    depends_on:
+      postgres-treasury:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9187/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  pgbouncer-exporter-ledger:
+    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    ports:
+      - "9127:9127"
+    environment:
+      PGBOUNCER_EXPORTER_HOST: pgbouncer-ledger
+      PGBOUNCER_EXPORTER_PORT: 6432
+    networks:
+      - settla-net
+    depends_on:
+      pgbouncer-ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9127/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  pgbouncer-exporter-transfer:
+    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    ports:
+      - "9128:9127"
+    environment:
+      PGBOUNCER_EXPORTER_HOST: pgbouncer-transfer
+      PGBOUNCER_EXPORTER_PORT: 6432
+    networks:
+      - settla-net
+    depends_on:
+      pgbouncer-transfer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9127/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  pgbouncer-exporter-treasury:
+    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    ports:
+      - "9129:9127"
+    environment:
+      PGBOUNCER_EXPORTER_HOST: pgbouncer-treasury
+      PGBOUNCER_EXPORTER_PORT: 6432
+    networks:
+      - settla-net
+    depends_on:
+      pgbouncer-treasury:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9127/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    ports:
+      - "9100:9100"
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9100/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 volumes:
   pgdata-ledger:

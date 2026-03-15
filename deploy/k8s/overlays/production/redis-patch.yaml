@@ -1,0 +1,223 @@
+# Production Redis patch — activates the Sentinel HA topology.
+#
+# Base layer runs a single standalone redis:7-alpine pod (replicas: 1).
+# In production we disable that standalone instance and instead rely on the
+# redis-sentinel sub-tree (infrastructure/redis-sentinel/) which provides:
+#   - settla-redis      StatefulSet: 3 pods (ordinal-0 = master, 1–2 = replicas)
+#   - settla-redis-sentinel StatefulSet: 3 dedicated sentinel pods
+#
+# Five-nines rationale:
+#   Redis is the L2 cache, rate-limit store, and idempotency registry.
+#   A standalone instance is a SPOF.  Sentinel provides automatic failover:
+#     • 3 sentinels form quorum (2-of-3 must agree master is down)
+#     • Failover triggers after 5 s of no response (down-after-milliseconds)
+#     • Failover completes within 10 s (failover-timeout)
+#     • Total Redis unavailability per incident: < 15 s
+#
+# Client configuration:
+#   ioredis (gateway/webhook) and goredis (server/node) both support Sentinel
+#   natively.  SETTLA_REDIS_SENTINEL_ADDRS lists the 3 sentinel pods; clients
+#   query sentinels to discover the current master before connecting.
+#   SETTLA_REDIS_SENTINEL_MASTER_NAME must match the name in sentinel.conf
+#   (settla-redis).
+#
+# The base-layer standalone StatefulSet (name: redis) is scaled to 0 here so
+# that no standalone instance runs in production.  The sentinel-aware resources
+# in infrastructure/redis-sentinel/ are referenced from the production
+# kustomization.yaml resources list (added separately).
+---
+# ── Scale down the standalone base-layer Redis to 0 in production ────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: settla
+spec:
+  replicas: 0
+---
+# ── Resource upgrades for the sentinel data nodes ────────────────────────────
+# Patch the settla-redis StatefulSet (from infrastructure/redis-sentinel/) for
+# production-grade memory and CPU.  Base already sets 512 Mi / 500 m; we
+# increase to support higher throughput and larger key sets at 50 M tx/day.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-redis
+  namespace: settla
+spec:
+  # Anti-affinity is already set in the base (required, hostname).
+  # Add zone-spread so the 3 replicas survive an AZ failure.
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      containers:
+        - name: redis
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: redis
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            # Larger volume for AOF + RDB at production write volume.
+            storage: 20Gi
+---
+# ── ConfigMap: redis.conf — production master config ─────────────────────────
+# maxmemory raised to 1 GB to accommodate L2 cache, rate-limit sliding-window
+# counters (per-tenant, 5-s buckets), and idempotency keys (TTL 24 h).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: settla
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+
+    # Memory — sized for production L2 cache + rate-limit counters + idempotency
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+
+    # Persistence — AOF for rate-limit / idempotency durability
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    save 900 1
+    save 300 10
+    save 60 10000
+
+    # Replication safety: require at least 1 replica in sync before accepting writes.
+    # This prevents data loss on master crash at the cost of one extra round-trip.
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+
+    # Performance
+    hz 10
+    dynamic-hz yes
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+
+    # Logging
+    loglevel notice
+
+  replica.conf: |
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    save 900 1
+    save 300 10
+    save 60 10000
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+    hz 10
+    dynamic-hz yes
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+    loglevel notice
+    # Initial master — Sentinel rewrites this on failover
+    replicaof settla-redis-0.settla-redis-headless 6379
+
+  sentinel.conf: |
+    port 26379
+    # Monitor the master.  Quorum of 2 out of 3 sentinels must agree the
+    # master is unreachable before triggering failover.
+    sentinel monitor settla-redis settla-redis-0.settla-redis-headless 6379 2
+
+    # Declare master down after 5 s without a reply (aggressive enough to keep
+    # total failover under 15 s, conservative enough to survive GC pauses).
+    sentinel down-after-milliseconds settla-redis 5000
+
+    # Abort and retry failover if it hasn't completed within 10 s.
+    sentinel failover-timeout settla-redis 10000
+
+    # Sync replicas sequentially so at least one replica serves reads during
+    # the promotion window.
+    sentinel parallel-syncs settla-redis 1
+
+    # Prevent unsafe script execution via Sentinel.
+    sentinel deny-scripts-reconfig yes
+---
+# ── ConfigMap patches: redirect applications to Sentinel ─────────────────────
+# ioredis (TypeScript) and go-redis (Go) both accept a sentinel configuration.
+# SETTLA_REDIS_SENTINEL_ADDRS is a comma-separated list of all 3 sentinel pods.
+# SETTLA_REDIS_SENTINEL_MASTER_NAME must match the monitor name in sentinel.conf.
+# SETTLA_REDIS_URL is kept for backward compat with non-sentinel code paths but
+# should be superseded by the sentinel vars in production.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settla-server-config
+  namespace: settla
+data:
+  # Sentinel discovery endpoints (all 3 pods for resilience).
+  SETTLA_REDIS_SENTINEL_ADDRS: "settla-redis-sentinel-0.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-1.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-2.settla-redis-sentinel-headless.settla.svc.cluster.local:26379"
+  SETTLA_REDIS_SENTINEL_MASTER_NAME: "settla-redis"
+  # Fallback ClusterIP URL for tooling / health-check scripts that are not
+  # Sentinel-aware (e.g., redis-cli from an init container).
+  SETTLA_REDIS_URL: "redis://settla-redis:6379"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settla-node-config
+  namespace: settla
+data:
+  SETTLA_REDIS_SENTINEL_ADDRS: "settla-redis-sentinel-0.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-1.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-2.settla-redis-sentinel-headless.settla.svc.cluster.local:26379"
+  SETTLA_REDIS_SENTINEL_MASTER_NAME: "settla-redis"
+  SETTLA_REDIS_URL: "redis://settla-redis:6379"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: settla
+data:
+  SETTLA_REDIS_SENTINEL_ADDRS: "settla-redis-sentinel-0.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-1.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-2.settla-redis-sentinel-headless.settla.svc.cluster.local:26379"
+  SETTLA_REDIS_SENTINEL_MASTER_NAME: "settla-redis"
+  SETTLA_REDIS_URL: "redis://settla-redis:6379"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-config
+  namespace: settla
+data:
+  SETTLA_REDIS_SENTINEL_ADDRS: "settla-redis-sentinel-0.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-1.settla-redis-sentinel-headless.settla.svc.cluster.local:26379,settla-redis-sentinel-2.settla-redis-sentinel-headless.settla.svc.cluster.local:26379"
+  SETTLA_REDIS_SENTINEL_MASTER_NAME: "settla-redis"
+  SETTLA_REDIS_URL: "redis://settla-redis:6379"

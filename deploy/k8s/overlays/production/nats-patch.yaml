@@ -1,0 +1,104 @@
+# Production NATS cluster patch.
+#
+# Three-node JetStream cluster with full mesh routing.
+#
+# Rationale:
+#   - 3 replicas allow NATS Raft to tolerate one node failure (quorum = 2).
+#   - JetStream streams use R=3 replication so no message is lost if a single
+#     broker crashes. The application calls CreateStreams with replicas=3 via
+#     SETTLA_NATS_REPLICAS (read in cmd/settla-node/main.go and
+#     cmd/settla-server/main.go to set WithReplicas).
+#   - Explicit -routes flags connect every pod to its two peers using the
+#     stable headless DNS names provided by the nats StatefulSet service
+#     (nats-0.nats, nats-1.nats, nats-2.nats in the settla namespace).
+#   - A dedicated headless service (nats-headless) must already exist for
+#     per-pod DNS; the existing nats Service covers client traffic.
+#   - Pod anti-affinity ensures the 3 brokers land on 3 distinct nodes, so a
+#     single node failure takes out at most one broker.
+#
+# JetStream R=3:
+#   The Go application honours SETTLA_NATS_REPLICAS. When set to "3" the
+#   messaging.NewClient call is given WithReplicas(3) and EnsureStreams
+#   creates / updates all 7 streams with Replicas=3.
+---
+# ── StatefulSet patch ────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: settla
+spec:
+  replicas: 3
+  # podManagementPolicy Parallel lets all 3 brokers start simultaneously;
+  # each waits for its peers via the cluster route retry loop in NATS itself.
+  podManagementPolicy: Parallel
+  template:
+    spec:
+      # Hard anti-affinity: no two NATS brokers on the same node.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: nats
+              topologyKey: kubernetes.io/hostname
+      # Spread across availability zones where possible.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      containers:
+        - name: nats
+          args:
+            # JetStream enabled with /data as the store directory.
+            - "-js"
+            - "-sd"
+            - "/data"
+            # Monitoring port.
+            - "-m"
+            - "8222"
+            # Cluster name — all brokers in the same cluster must share this.
+            - "-cluster_name"
+            - "settla-nats"
+            # This broker's cluster-route listen address.
+            - "-cluster"
+            - "nats://0.0.0.0:6222"
+            # Full-mesh routes to the other two peers.
+            # nats-0.nats, nats-1.nats, nats-2.nats resolve via the headless
+            # service (clusterIP: None, see nats-headless-service-patch below).
+            # NATS ignores the route to itself, so listing all 3 is safe.
+            - "-routes"
+            - "nats://nats-0.nats-headless.settla.svc.cluster.local:6222,nats://nats-1.nats-headless.settla.svc.cluster.local:6222,nats://nats-2.nats-headless.settla.svc.cluster.local:6222"
+          # Increased limits for production message volumes (~580 TPS sustained).
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+# ── ConfigMap patches: point applications at all 3 brokers ───────────────────
+# NATS clients support comma-separated server URLs for automatic reconnection
+# across the cluster.  SETTLA_NATS_REPLICAS=3 tells the Go startup code to
+# call WithReplicas(3) so EnsureStreams creates streams with R=3.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settla-server-config
+  namespace: settla
+data:
+  SETTLA_NATS_URL: "nats://nats-0.nats-headless.settla.svc.cluster.local:4222,nats://nats-1.nats-headless.settla.svc.cluster.local:4222,nats://nats-2.nats-headless.settla.svc.cluster.local:4222"
+  SETTLA_NATS_REPLICAS: "3"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settla-node-config
+  namespace: settla
+data:
+  SETTLA_NATS_URL: "nats://nats-0.nats-headless.settla.svc.cluster.local:4222,nats://nats-1.nats-headless.settla.svc.cluster.local:4222,nats://nats-2.nats-headless.settla.svc.cluster.local:4222"
+  SETTLA_NATS_REPLICAS: "3"

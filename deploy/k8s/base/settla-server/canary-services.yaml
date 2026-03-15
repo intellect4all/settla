@@ -1,0 +1,52 @@
+# Separate stable and canary Services for Argo Rollouts traffic splitting.
+#
+# Five-nines rationale: Argo Rollouts manipulates the selector on these
+# Services to shift traffic between the stable and canary ReplicaSets.
+# By having two distinct Service objects, the mesh / ingress controller
+# can route a precise percentage of traffic to each revision independently.
+# This prevents bad deployments from ever reaching 100% of users.
+#
+# Note: the selectors are managed by Argo Rollouts at runtime — it injects
+# the correct rollouts-pod-template-hash label automatically.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-server-stable
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+    settla.io/traffic: stable
+spec:
+  selector:
+    app.kubernetes.io/name: settla-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-server-canary
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+    settla.io/traffic: canary
+spec:
+  selector:
+    app.kubernetes.io/name: settla-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+      protocol: TCP

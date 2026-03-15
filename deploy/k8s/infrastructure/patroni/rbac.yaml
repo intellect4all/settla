@@ -1,0 +1,59 @@
+# RBAC for Patroni — allows the Patroni agent to manage Endpoints for
+# leader election via the Kubernetes API.
+#
+# Five-nines rationale: Patroni uses Kubernetes Endpoints as a distributed
+# consensus store for leader election.  Without these permissions, automatic
+# failover cannot function — a leader failure would require manual
+# intervention, breaking the five-nines SLA.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patroni
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni
+    app.kubernetes.io/component: database
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patroni
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni
+    app.kubernetes.io/component: database
+rules:
+  # Patroni needs full control over Endpoints for leader election
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["create", "get", "list", "patch", "update", "watch", "delete", "deletecollection"]
+  # Patroni reads pods to discover cluster members
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Patroni needs to manage ConfigMaps for DCS (distributed configuration store)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "patch", "update", "watch", "delete"]
+  # Patroni reads Services to find the cluster
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patroni
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni
+    app.kubernetes.io/component: database
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: patroni
+subjects:
+  - kind: ServiceAccount
+    name: patroni
+    namespace: settla

@@ -1,0 +1,111 @@
+# Redis and Sentinel configuration for automatic failover.
+#
+# Five-nines rationale: Redis is used for L2 cache, rate limiting, and
+# idempotency.  A single Redis instance is a SPOF — if it goes down,
+# every request falls through to the database, causing a latency spike
+# that can cascade into timeouts and failures.  Sentinel provides
+# automatic master detection and failover in under 10 seconds.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+data:
+  # Master configuration — used by the initial master (settla-redis-0)
+  redis.conf: |
+    # Network
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+
+    # Memory — sized for L2 cache + rate limit counters + idempotency keys
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+
+    # Persistence — AOF for durability of rate limit state
+    # RDB snapshots as backup
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    save 900 1
+    save 300 10
+    save 60 10000
+
+    # Replication
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+
+    # Performance
+    hz 10
+    dynamic-hz yes
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+
+    # Logging
+    loglevel notice
+
+  # Replica configuration — applied to settla-redis-1 and settla-redis-2
+  replica.conf: |
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    save 900 1
+    save 300 10
+    save 60 10000
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync yes
+    repl-diskless-sync-delay 5
+    hz 10
+    dynamic-hz yes
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+    loglevel notice
+    # Initial master — Sentinel will update this on failover
+    replicaof settla-redis-0.settla-redis-headless 6379
+
+  # Sentinel configuration
+  sentinel.conf: |
+    port 26379
+    # Monitor the master.  Quorum of 2 (out of 3 sentinels) must agree
+    # the master is down before triggering failover.  This prevents
+    # split-brain from a single network partition.
+    sentinel monitor settla-redis settla-redis-0.settla-redis-headless 6379 2
+
+    # Mark master as down after 5 seconds of no response.
+    # Aggressive enough to keep failover under 10s total, but not so
+    # aggressive that a GC pause triggers a false positive.
+    sentinel down-after-milliseconds settla-redis 5000
+
+    # Maximum time for a failover to complete.  If it takes longer,
+    # Sentinel retries with a different replica.
+    sentinel failover-timeout settla-redis 10000
+
+    # How many replicas can sync from the new master simultaneously.
+    # 1 = sequential replication, so at least one replica is always
+    # serving reads during the failover.
+    sentinel parallel-syncs settla-redis 1
+
+    # Deny unsafe scripting commands on Sentinel
+    sentinel deny-scripts-reconfig yes

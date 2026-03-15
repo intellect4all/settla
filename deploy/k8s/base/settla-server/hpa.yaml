@@ -1,0 +1,43 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: settla-server
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+spec:
+  scaleTargetRef:
+    # Production uses an Argo Rollout; development overlay falls back to the
+    # plain Deployment.  The Rollout controller registers itself as the scale
+    # target so HPA works identically either way.
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: settla-server
+  minReplicas: 6
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

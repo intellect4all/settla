@@ -1,0 +1,42 @@
+# Enable pprof profiling in development.
+# pprof is removed from the base manifests (security: not exposed in production).
+# This patch re-adds the pprof port to the Deployment/Rollout and Service.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: settla-server
+          ports:
+            - containerPort: 6060
+              name: pprof
+              protocol: TCP
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: settla-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: settla-server
+          ports:
+            - containerPort: 6060
+              name: pprof
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-server
+spec:
+  ports:
+    - name: pprof
+      port: 6060
+      targetPort: pprof
+      protocol: TCP

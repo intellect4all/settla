@@ -1,0 +1,88 @@
+# backup-production.yaml — Production overrides for backup CronJobs.
+#
+# Applied by the production overlay's kustomization.yaml:
+#   patches:
+#     - path: patches/backup-production.yaml
+#
+# This patch:
+#   1. Sets the IRSA role ARN on the settla-backup ServiceAccount so pods get
+#      automatic AWS credentials without storing access keys in Secrets.
+#   2. Sets the production S3 bucket and environment in backup-config.
+#   3. Raises minimum row count thresholds for the verify job once the system
+#      has ingested production data.
+---
+# 1. IRSA annotation on the backup ServiceAccount.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settla-backup
+  namespace: settla
+  annotations:
+    # Replace with the actual ARN from your Terraform/CDK output.
+    # The IAM role must have these permissions:
+    #   s3:PutObject, s3:GetObject, s3:DeleteObject, s3:ListBucket
+    #   on arn:aws:s3:::settla-backups-prod/*
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/settla-backup-irsa-prod"
+
+---
+# 2. Production ConfigMap values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  namespace: settla
+data:
+  ENVIRONMENT: "production"
+  S3_BUCKET: "settla-backups-prod"
+  POSTGRES_S3_PREFIX: "postgres"
+  POSTGRES_RETENTION_DAYS: "30"
+  TB_DATA_FILE: "/data/0_0.tigerbeetle"
+  TB_REPLICA_INDEX: "0"
+  TB_S3_PREFIX: "tigerbeetle"
+  TB_RETENTION_HOURS: "72"
+  NATS_URL: "nats://nats:4222"
+  NATS_S3_PREFIX: "nats"
+  NATS_RETENTION_HOURS: "48"
+  # Restore-test instance: a db.t3.medium RDS Postgres in the same VPC,
+  # used exclusively for daily verification (keeps production RDS untouched).
+  VERIFY_PG_HOST: "postgres-verify.settla-prod.internal"
+  VERIFY_PG_PORT: "5432"
+  VERIFY_PG_USER: "postgres"
+  POSTGRES_VERIFY_S3_PREFIX: "postgres"
+  # Raise these after the first month of production traffic.
+  # Rule of thumb: 80% of the lowest observed daily row count.
+  MIN_ROWS_LEDGER: "1000000"
+  MIN_ROWS_TRANSFER: "5000000"
+  MIN_ROWS_TREASURY: "10"
+
+---
+# 3. TigerBeetle backup: co-locate with the follower replica (index=1 in production
+#    3-node cluster) to avoid impacting the leader node during file copy.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tigerbeetle-backup
+  namespace: settla
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: tigerbeetle
+                      statefulset.kubernetes.io/pod-name: tigerbeetle-1
+                  topologyKey: kubernetes.io/hostname
+          volumes:
+            - name: tigerbeetle-data
+              persistentVolumeClaim:
+                claimName: data-tigerbeetle-1
+                readOnly: true
+          containers:
+            - name: tigerbeetle-backup
+              env:
+                - name: TB_REPLICA_INDEX
+                  value: "1"

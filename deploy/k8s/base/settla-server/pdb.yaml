@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-server
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: 4
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: settla-server

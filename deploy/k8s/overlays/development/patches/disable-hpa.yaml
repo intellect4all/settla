@@ -1,0 +1,20 @@
+# Remove HPAs in development — not needed with 1 replica
+$patch: delete
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: settla-server
+---
+$patch: delete
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+---
+# Relax PDB for development
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-server
+spec:
+  minAvailable: 0

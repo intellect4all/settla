@@ -1,0 +1,77 @@
+# Argo Rollouts AnalysisTemplate — automated SLI gates for canary promotion.
+#
+# Five-nines rationale: human-gated deployments are slow and error-prone.
+# Automated SLI checks run every 60-120s during the canary window and will
+# trigger an instant rollback if any metric breaches its threshold.  This
+# keeps the blast radius small (5-50% of traffic) and recovery time under
+# 2 minutes — well within a 99.999% error budget.
+#
+# Three SLIs are checked:
+#   1. Error rate   — canary 5xx rate must stay below 1%
+#   2. Latency p99  — must stay below 500ms (SLA commitment)
+#   3. Transfer success — settlement completion rate must exceed 99%
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: settla-sli-check
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: analysis
+spec:
+  args:
+    - name: service-name
+  metrics:
+    # --- SLI 1: Error rate ---
+    # gRPC non-OK responses as a fraction of total gRPC requests.
+    # Threshold: < 1% (0.01).  Checked every 60s over a 2-minute window.
+    # failureLimit=3 means three consecutive breaches trigger rollback,
+    # giving transient spikes a chance to recover.
+    # Metric: settla_grpc_requests_total{service, method, code} — exported by
+    # observability/metrics.go (GRPCRequestsTotal). gRPC OK code is "OK";
+    # all other codes are errors.
+    - name: error-rate
+      successCondition: result[0] < 0.01
+      interval: 60s
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus:9090
+          query: |
+            sum(rate(settla_grpc_requests_total{code!="OK"}[2m]))
+            /
+            sum(rate(settla_grpc_requests_total[2m]))
+
+    # --- SLI 2: p99 latency ---
+    # 99th-percentile gRPC request latency must stay under 500ms.
+    # At 50M tx/day the tail matters — a p99 regression means thousands
+    # of users per minute experience unacceptable latency.
+    # Metric: settla_grpc_request_latency_seconds — exported by
+    # observability/metrics.go (GRPCRequestLatency histogram).
+    - name: latency-p99
+      successCondition: result[0] < 0.5
+      interval: 60s
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(settla_grpc_request_latency_seconds_bucket[2m])) by (le)
+            )
+
+    # --- SLI 3: Transfer success rate ---
+    # End-to-end settlement completion must exceed 99%.
+    # This catches deeper issues (provider failures, ledger errors) that
+    # may not surface as HTTP 5xx at the gateway layer.
+    # Checked every 120s over a 5-minute window for statistical significance.
+    - name: transfer-success
+      successCondition: result[0] > 0.99
+      interval: 120s
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus:9090
+          query: |
+            sum(rate(settla_transfers_total{status="completed"}[5m]))
+            /
+            sum(rate(settla_transfers_total[5m]))

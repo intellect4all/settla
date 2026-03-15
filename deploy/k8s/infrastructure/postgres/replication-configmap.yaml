@@ -1,0 +1,187 @@
+# PostgreSQL replication configuration shared across all 3 database StatefulSets.
+# pg_hba.conf allows replication connections from the pod network.
+# postgresql-replication.conf sets WAL-level settings for streaming replication.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replication-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-replication-config
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+data:
+  # Appended to the default pg_hba.conf to allow replication connections
+  # from any pod in the cluster. In production, restrict to the pod CIDR.
+  pg_hba_replication.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    # Allow replication connections from the pod network (all pod IPs)
+    host    replication     replicator      10.0.0.0/8              md5
+    host    replication     replicator      172.16.0.0/12           md5
+    host    replication     replicator      192.168.0.0/16          md5
+    # Allow replication via headless service DNS (same namespace)
+    host    replication     replicator      all                     md5
+
+  # WAL and replication tuning appended to postgresql.conf
+  postgresql-replication.conf: |
+    # --- Streaming Replication ---
+    wal_level = replica
+    max_wal_senders = 5
+    wal_keep_size = '1GB'
+    max_replication_slots = 5
+    hot_standby = on
+    hot_standby_feedback = on
+
+    # --- WAL tuning for throughput ---
+    wal_buffers = '64MB'
+    checkpoint_completion_target = 0.9
+    min_wal_size = '512MB'
+    max_wal_size = '2GB'
+
+    # --- Synchronous replication (optional, disabled by default) ---
+    # Uncomment for synchronous mode (at cost of write latency):
+    # synchronous_standby_names = 'ANY 1 (*)'
+    # synchronous_commit = on
+
+  # Init script that runs on every pod start.
+  # Ordinal 0 = primary: creates replication user and slots.
+  # Ordinal 1+ = replica: runs pg_basebackup and configures standby.
+  setup-replication.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Extract ordinal from hostname (e.g., postgres-ledger-0 -> 0)
+    ORDINAL="${HOSTNAME##*-}"
+    echo "Pod hostname: ${HOSTNAME}, ordinal: ${ORDINAL}"
+
+    # These are set by the StatefulSet env vars
+    : "${PG_PRIMARY_HOST:?PG_PRIMARY_HOST must be set}"
+    : "${POSTGRES_DB:?POSTGRES_DB must be set}"
+    : "${POSTGRES_USER:?POSTGRES_USER must be set}"
+    : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+    : "${REPLICATION_PASSWORD:?REPLICATION_PASSWORD must be set}"
+
+    PGDATA="${PGDATA:-/var/lib/postgresql/data/pgdata}"
+
+    if [ "${ORDINAL}" -eq 0 ]; then
+      echo "=== PRIMARY (ordinal 0): configuring as primary ==="
+
+      # If PGDATA already initialized, just ensure replication config is appended
+      if [ -s "${PGDATA}/PG_VERSION" ]; then
+        echo "PGDATA already initialized, ensuring replication config..."
+      fi
+
+      # Copy replication pg_hba entries (will be picked up on next reload)
+      # The primary setup SQL runs via the docker-entrypoint-initdb.d mechanism
+      mkdir -p /docker-entrypoint-initdb.d
+      cat > /docker-entrypoint-initdb.d/setup-replication.sql <<EOSQL
+    -- Create replication user if not exists
+    DO \$\$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'replicator') THEN
+        CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+      END IF;
+    END
+    \$\$;
+
+    -- Create replication slots for replicas (slots 1 and 2)
+    SELECT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM pg_replication_slots WHERE slot_name = 'replica_slot_1'
+    ) THEN pg_create_physical_replication_slot('replica_slot_1')
+    END;
+
+    SELECT CASE WHEN NOT EXISTS (
+      SELECT 1 FROM pg_replication_slots WHERE slot_name = 'replica_slot_2'
+    ) THEN pg_create_physical_replication_slot('replica_slot_2')
+    END;
+    EOSQL
+
+      echo "Primary setup complete. Replication user and slots will be created on first init."
+
+    else
+      echo "=== REPLICA (ordinal ${ORDINAL}): configuring as standby ==="
+
+      # Determine which replication slot to use
+      SLOT_NAME="replica_slot_${ORDINAL}"
+
+      # If PGDATA is empty or not initialized, run pg_basebackup from primary
+      if [ ! -s "${PGDATA}/PG_VERSION" ]; then
+        echo "PGDATA empty — running pg_basebackup from ${PG_PRIMARY_HOST}..."
+
+        # Wait for primary to be ready
+        echo "Waiting for primary at ${PG_PRIMARY_HOST}:5432..."
+        until PGPASSWORD="${REPLICATION_PASSWORD}" pg_isready -h "${PG_PRIMARY_HOST}" -p 5432 -U replicator 2>/dev/null; do
+          echo "  Primary not ready yet, retrying in 2s..."
+          sleep 2
+        done
+        echo "Primary is ready."
+
+        # Clean PGDATA directory before base backup
+        rm -rf "${PGDATA}"/*
+
+        PGPASSWORD="${REPLICATION_PASSWORD}" pg_basebackup \
+          -h "${PG_PRIMARY_HOST}" \
+          -p 5432 \
+          -U replicator \
+          -D "${PGDATA}" \
+          -Fp -Xs -P -R \
+          --slot="${SLOT_NAME}" \
+          --checkpoint=fast
+
+        echo "pg_basebackup complete."
+      else
+        echo "PGDATA already exists, ensuring standby configuration..."
+      fi
+
+      # Ensure standby.signal exists (tells PG to start in recovery mode)
+      touch "${PGDATA}/standby.signal"
+
+      # Write primary_conninfo for streaming replication
+      cat > "${PGDATA}/postgresql.auto.conf" <<EOCONF
+    primary_conninfo = 'host=${PG_PRIMARY_HOST} port=5432 user=replicator password=${REPLICATION_PASSWORD} application_name=${HOSTNAME}'
+    primary_slot_name = '${SLOT_NAME}'
+    EOCONF
+
+      # Remove postmaster.pid if it exists from a previous unclean shutdown
+      rm -f "${PGDATA}/postmaster.pid"
+
+      echo "Replica setup complete. Will stream from ${PG_PRIMARY_HOST} using slot ${SLOT_NAME}."
+    fi
+
+  # Readiness check script: primary returns ready if accepting connections,
+  # replicas return ready only when replication has caught up.
+  readiness-check.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Basic connectivity check
+    pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -q || exit 1
+
+    # Check if this is a replica
+    IS_RECOVERY=$(psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT pg_is_in_recovery();" 2>/dev/null || echo "error")
+
+    if [ "${IS_RECOVERY}" = "t" ]; then
+      # Replica: check replication lag is acceptable (< 100MB behind)
+      LAG_BYTES=$(psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "
+        SELECT COALESCE(
+          pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()),
+          0
+        )::bigint;" 2>/dev/null || echo "-1")
+
+      if [ "${LAG_BYTES}" = "-1" ]; then
+        echo "Cannot determine replication lag"
+        exit 1
+      fi
+
+      # 100MB threshold
+      if [ "${LAG_BYTES}" -gt 104857600 ]; then
+        echo "Replication lag too high: ${LAG_BYTES} bytes"
+        exit 1
+      fi
+
+      echo "Replica ready (lag: ${LAG_BYTES} bytes)"
+    else
+      echo "Primary ready"
+    fi
+    exit 0

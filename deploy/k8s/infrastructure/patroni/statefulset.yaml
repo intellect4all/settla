@@ -1,0 +1,484 @@
+# Patroni StatefulSets — 3 replicas per bounded context for automatic failover.
+#
+# Five-nines rationale: with 3 replicas and synchronous replication, the cluster
+# tolerates the loss of any single node (or even a full AZ) without data loss
+# and with automatic recovery in under 30 seconds.  This eliminates the single
+# biggest SPOF in the original architecture (single-instance Postgres).
+#
+# Each bounded context (ledger, transfer, treasury) gets its own 3-node Patroni
+# cluster with independent leader election, so a failure in one context cannot
+# cascade to others.
+#
+# Pod anti-affinity ensures replicas are spread across nodes/zones.
+
+# =============================================================================
+# LEDGER — CQRS read-side for TigerBeetle sync, journal entries, balance snapshots
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-ledger
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-ledger
+    app.kubernetes.io/component: database
+    settla.io/context: ledger
+spec:
+  replicas: 3
+  serviceName: patroni-ledger-headless
+  podManagementPolicy: OrderedReady  # Sequential start for clean bootstrap
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patroni-ledger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patroni-ledger
+        app.kubernetes.io/component: database
+        settla.io/context: ledger
+    spec:
+      serviceAccountName: patroni
+      terminationGracePeriodSeconds: 60  # Allow time for WAL flush + clean shutdown
+      # Spread pods across failure domains — losing a single node/AZ must not
+      # lose quorum (2 of 3 pods must survive).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: patroni-ledger
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: patroni-ledger
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: patroni
+          image: ghcr.io/zalando/spilo-16:3.2-p1
+          ports:
+            - containerPort: 5432
+              name: postgres
+            - containerPort: 8008
+              name: patroni-api
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Patroni scope identifies this cluster (must be unique per context)
+            - name: PATRONI_SCOPE
+              value: patroni-ledger
+            - name: PATRONI_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PATRONI_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PATRONI_KUBERNETES_LABELS
+              value: '{"app.kubernetes.io/name": "patroni-ledger"}'
+            - name: PATRONI_KUBERNETES_USE_ENDPOINTS
+              value: "true"
+            - name: PATRONI_POSTGRESQL_DATA_DIR
+              value: /var/lib/postgresql/data/pgdata
+            - name: PATRONI_POSTGRESQL_LISTEN
+              value: "0.0.0.0:5432"
+            - name: PATRONI_RESTAPI_LISTEN
+              value: "0.0.0.0:8008"
+            - name: PATRONI_POSTGRESQL_CONNECT_ADDRESS
+              value: "$(POD_IP):5432"
+            - name: PATRONI_RESTAPI_CONNECT_ADDRESS
+              value: "$(POD_IP):8008"
+            # Database init
+            - name: PATRONI_SUPERUSER_USERNAME
+              value: postgres
+            - name: PATRONI_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: superuser-password
+            - name: PATRONI_REPLICATION_USERNAME
+              value: replicator
+            - name: PATRONI_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: replication-password
+            # Application database
+            - name: PGDATABASE
+              value: settla_ledger
+            - name: PGUSER
+              value: settla
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: patroni-config
+              mountPath: /etc/patroni
+          # Patroni REST API health checks
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8008
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 8008
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: patroni-config
+          configMap:
+            name: patroni-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: patroni-ledger
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 200Gi
+
+# =============================================================================
+# TRANSFER — transfers, events, quotes, tenants, API keys (highest write volume)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-transfer
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-transfer
+    app.kubernetes.io/component: database
+    settla.io/context: transfer
+spec:
+  replicas: 3
+  serviceName: patroni-transfer-headless
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patroni-transfer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patroni-transfer
+        app.kubernetes.io/component: database
+        settla.io/context: transfer
+    spec:
+      serviceAccountName: patroni
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: patroni-transfer
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: patroni-transfer
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: patroni
+          image: ghcr.io/zalando/spilo-16:3.2-p1
+          ports:
+            - containerPort: 5432
+              name: postgres
+            - containerPort: 8008
+              name: patroni-api
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: PATRONI_SCOPE
+              value: patroni-transfer
+            - name: PATRONI_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PATRONI_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PATRONI_KUBERNETES_LABELS
+              value: '{"app.kubernetes.io/name": "patroni-transfer"}'
+            - name: PATRONI_KUBERNETES_USE_ENDPOINTS
+              value: "true"
+            - name: PATRONI_POSTGRESQL_DATA_DIR
+              value: /var/lib/postgresql/data/pgdata
+            - name: PATRONI_POSTGRESQL_LISTEN
+              value: "0.0.0.0:5432"
+            - name: PATRONI_RESTAPI_LISTEN
+              value: "0.0.0.0:8008"
+            - name: PATRONI_POSTGRESQL_CONNECT_ADDRESS
+              value: "$(POD_IP):5432"
+            - name: PATRONI_RESTAPI_CONNECT_ADDRESS
+              value: "$(POD_IP):8008"
+            - name: PATRONI_SUPERUSER_USERNAME
+              value: postgres
+            - name: PATRONI_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: superuser-password
+            - name: PATRONI_REPLICATION_USERNAME
+              value: replicator
+            - name: PATRONI_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: replication-password
+            - name: PGDATABASE
+              value: settla_transfer
+            - name: PGUSER
+              value: settla
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: patroni-config
+              mountPath: /etc/patroni
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8008
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 8008
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: patroni-config
+          configMap:
+            name: patroni-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: patroni-transfer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 200Gi
+
+# =============================================================================
+# TREASURY — position snapshots (lowest write volume, highest consistency need)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-treasury
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni-treasury
+    app.kubernetes.io/component: database
+    settla.io/context: treasury
+spec:
+  replicas: 3
+  serviceName: patroni-treasury-headless
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patroni-treasury
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patroni-treasury
+        app.kubernetes.io/component: database
+        settla.io/context: treasury
+    spec:
+      serviceAccountName: patroni
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: patroni-treasury
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: patroni-treasury
+                topologyKey: topology.kubernetes.io/zone
+      containers:
+        - name: patroni
+          image: ghcr.io/zalando/spilo-16:3.2-p1
+          ports:
+            - containerPort: 5432
+              name: postgres
+            - containerPort: 8008
+              name: patroni-api
+          # Treasury has lower resource needs (~50 hot positions)
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: PATRONI_SCOPE
+              value: patroni-treasury
+            - name: PATRONI_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PATRONI_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PATRONI_KUBERNETES_LABELS
+              value: '{"app.kubernetes.io/name": "patroni-treasury"}'
+            - name: PATRONI_KUBERNETES_USE_ENDPOINTS
+              value: "true"
+            - name: PATRONI_POSTGRESQL_DATA_DIR
+              value: /var/lib/postgresql/data/pgdata
+            - name: PATRONI_POSTGRESQL_LISTEN
+              value: "0.0.0.0:5432"
+            - name: PATRONI_RESTAPI_LISTEN
+              value: "0.0.0.0:8008"
+            - name: PATRONI_POSTGRESQL_CONNECT_ADDRESS
+              value: "$(POD_IP):5432"
+            - name: PATRONI_RESTAPI_CONNECT_ADDRESS
+              value: "$(POD_IP):8008"
+            - name: PATRONI_SUPERUSER_USERNAME
+              value: postgres
+            - name: PATRONI_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: superuser-password
+            - name: PATRONI_REPLICATION_USERNAME
+              value: replicator
+            - name: PATRONI_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: replication-password
+            - name: PGDATABASE
+              value: settla_treasury
+            - name: PGUSER
+              value: settla
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: patroni-config
+              mountPath: /etc/patroni
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8008
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 8008
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: patroni-config
+          configMap:
+            name: patroni-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: patroni-treasury
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 200Gi

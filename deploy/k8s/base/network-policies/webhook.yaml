@@ -1,0 +1,100 @@
+# NetworkPolicy for the webhook dispatcher (Fastify, TypeScript).
+#
+# The webhook service consumes events from NATS JetStream and delivers them
+# to tenant-configured HTTP endpoints over the public internet (egress to
+# 0.0.0.0/0 required for webhook delivery).  It also accepts inbound
+# provider webhooks routed by Tyk.
+#
+# Ingress:
+#   - :3001 HTTP — from Tyk (inbound provider webhooks and health checks)
+#
+# Egress:
+#   - NATS :4222   — JetStream consumer for outbound webhook events
+#   - Redis :6379  — dead-letter queue state, idempotency, retry counters
+#   - 0.0.0.0/0 :443 HTTPS — outbound webhook delivery to tenant endpoints
+#   - 0.0.0.0/0 :80  HTTP  — fallback for tenant endpoints that use HTTP
+#
+# The external egress is intentionally broad: tenants configure arbitrary
+# webhook URLs.  Restrict further in a production overlay by allowing only
+# known CIDR ranges if your tenant base permits it.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: webhook
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: webhook
+  policyTypes:
+    - Ingress
+  ingress:
+    # Inbound provider webhooks and health checks routed through Tyk
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tyk
+      ports:
+        - port: 3001
+          protocol: TCP
+    # Prometheus scrapes /metrics on :3001
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 3001
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: webhook
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: webhook
+  policyTypes:
+    - Egress
+  egress:
+    # NATS JetStream — consume outbound webhook events
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    # Redis — retry state, dead-letter queue, idempotency keys
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # External webhook delivery to tenant-configured endpoints (HTTPS)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # Exclude RFC-1918 private ranges to prevent SSRF against
+              # internal cluster services.  Webhook URLs must be public.
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP

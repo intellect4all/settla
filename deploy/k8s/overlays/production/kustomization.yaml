@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  # TigerBeetle infrastructure (headless service for StatefulSet DNS)
+  - ../../infrastructure/tigerbeetle/service.yaml
+  - ../../infrastructure/tigerbeetle/statefulset.yaml
+  # Redis Sentinel HA topology (3 data nodes + 3 sentinel pods + services).
+  # The standalone base-layer redis StatefulSet is scaled to 0 by redis-patch.yaml.
+  - ../../infrastructure/redis-sentinel/configmap.yaml
+  - ../../infrastructure/redis-sentinel/statefulset.yaml
+  - ../../infrastructure/redis-sentinel/sentinel-statefulset.yaml
+  - ../../infrastructure/redis-sentinel/service.yaml
+  # NATS headless service for per-pod DNS (nats-{N}.nats-headless.settla.svc.cluster.local).
+  # Must be a resource (not a patch) because it is a new Service, not a modification of an
+  # existing one. The -routes flag in nats-patch.yaml references these DNS names.
+  - nats-headless-service.yaml
+  # NATS StatefulSet (scaled to 3 and configured for cluster mode by nats-patch.yaml).
+  - ../../infrastructure/nats/statefulset.yaml
+  # Patroni PostgreSQL HA: 3-node synchronous replication per bounded context.
+  # Replaces plain postgres/statefulset.yaml with automatic failover (<10s).
+  - ../../infrastructure/patroni/rbac.yaml
+  - ../../infrastructure/patroni/configmap.yaml
+  - ../../infrastructure/patroni/service.yaml
+  - ../../infrastructure/patroni/statefulset.yaml
+  # PgBouncer Deployments and Services (write pools -> Patroni primary, read pools -> Patroni replica).
+  - ../../infrastructure/pgbouncer/deployment.yaml
+  - ../../infrastructure/pgbouncer/services.yaml
+  # Redis standalone StatefulSet (scaled to 0 in production by redis-patch.yaml).
+  - ../../infrastructure/redis/statefulset.yaml
+
+namespace: settla
+
+patches:
+  - path: patches/production-topology.yaml
+  - path: patches/production-env.yaml
+  - path: patches/production-images.yaml
+  # Scale TigerBeetle to a 3-node Raft cluster with peer discovery
+  - path: tigerbeetle-patch.yaml
+  # Overrides base ingress with real domain (api.settla.io) and production cert issuer
+  - path: ingress-patch.yaml
+  # NATS: scale to 3 replicas, add full-mesh cluster routes, R=3 JetStream.
+  - path: nats-patch.yaml
+  # Redis: disable standalone node, activate Sentinel HA, update client config.
+  - path: redis-patch.yaml
+  # PostgreSQL: scale to 3-node HA with streaming replication (1 primary + 2 replicas)
+  - path: postgres-patch.yaml
+  # Backup: set IRSA role ARN, production S3 bucket, and TB follower replica index.
+  - path: patches/backup-production.yaml

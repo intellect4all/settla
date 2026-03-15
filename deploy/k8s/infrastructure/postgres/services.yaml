@@ -1,0 +1,187 @@
+# Headless services for PostgreSQL StatefulSets (required for pod DNS).
+# Each DB also gets a primary (write) service pointing to ordinal-0 and
+# a read-only service that load-balances across all replicas.
+---
+# === LEDGER ===
+# Headless service — provides stable DNS: postgres-ledger-{0,1,2}.postgres-ledger.settla.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-ledger
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-ledger
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-ledger
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Primary (write) service — always routes to ordinal-0 pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-ledger-primary
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-ledger-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: primary
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-ledger
+    # StatefulSet ordinal 0 gets the pod label statefulset.kubernetes.io/pod-name
+    # We use the headless DNS directly in PgBouncer instead of this service for writes,
+    # but this service is useful for direct primary access.
+    statefulset.kubernetes.io/pod-name: postgres-ledger-0
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Read-only service — load-balances across all pods (primary + replicas)
+# Replicas become ready only when replication is caught up (readiness probe).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-ledger-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-ledger-readonly
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: readonly
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-ledger
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# === TRANSFER ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-transfer
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-transfer
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-transfer
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-transfer-primary
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-transfer-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: primary
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-transfer
+    statefulset.kubernetes.io/pod-name: postgres-transfer-0
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-transfer-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-transfer-readonly
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: readonly
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-transfer
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# === TREASURY ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-treasury
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-treasury
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-treasury
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-treasury-primary
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-treasury-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: primary
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-treasury
+    statefulset.kubernetes.io/pod-name: postgres-treasury-0
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-treasury-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: postgres-treasury-readonly
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: readonly
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres-treasury
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

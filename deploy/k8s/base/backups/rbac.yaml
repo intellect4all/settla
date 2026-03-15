@@ -1,0 +1,62 @@
+---
+# ServiceAccount used by all backup CronJobs.
+# In production the IRSA annotation (eks.amazonaws.com/role-arn) is added via
+# the production overlay patch so the pod gets an AWS session token automatically.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settla-backup
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: settla
+  annotations:
+    # Populated by the production overlay (deploy/k8s/overlays/production/patches/).
+    # Example:
+    #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/settla-backup-role
+    eks.amazonaws.com/role-arn: ""
+
+---
+# Role — minimal permissions needed to run backup jobs.
+# The backup pods themselves don't need any Kubernetes API access; this Role
+# is intentionally empty and exists as a hook for future audit tooling.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: settla-backup
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: settla
+rules:
+  # Allow reading the backup-config ConfigMap and backup-secrets Secret
+  # so backup scripts can self-inspect their configuration if needed.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["backup-config", "backup-scripts"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["backup-secrets"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: settla-backup
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: settla
+subjects:
+  - kind: ServiceAccount
+    name: settla-backup
+    namespace: settla
+roleRef:
+  kind: Role
+  name: settla-backup
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-node
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: 6
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: settla-node

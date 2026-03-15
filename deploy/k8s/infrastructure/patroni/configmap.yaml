@@ -1,0 +1,107 @@
+# Patroni configuration for all three Postgres bounded contexts.
+#
+# Five-nines rationale: single-instance Postgres is a SPOF.  Patroni
+# provides automatic leader election, streaming replication, and
+# sub-30-second failover — eliminating the need for human intervention
+# during a primary failure.
+#
+# Key settings:
+#   ttl=10 / loop_wait=2 / retry_timeout=5 — leader lease expires in 10s,
+#     checked every 2s.  A failed primary is detected within 6-10s and a new
+#     leader is elected within ~2s after that (total failover < 10s).
+#   maximum_lag_on_failover=1048576 (1MB) — prevents promotion of a replica
+#     that is more than 1MB behind, protecting against data loss.
+#   synchronous_commit=on + synchronous_standby_names=* — every committed
+#     transaction is confirmed by at least one replica before acknowledging
+#     the client, giving RPO=0 (zero data loss) for all committed writes.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: patroni-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: patroni
+    app.kubernetes.io/component: database
+data:
+  # Shared Patroni bootstrap configuration.
+  # Each StatefulSet overrides PATRONI_SCOPE, PATRONI_POSTGRESQL_DATA_DIR,
+  # and database-specific settings via environment variables.
+  patroni.yaml: |
+    bootstrap:
+      dcs:
+        ttl: 10
+        loop_wait: 2
+        retry_timeout: 5
+        maximum_lag_on_failover: 1048576
+        # Synchronous replication: at least one replica must confirm writes.
+        # This guarantees RPO=0 at the cost of slightly higher write latency
+        # (~1-2ms).  For a settlement system handling real money, zero data
+        # loss is non-negotiable.
+        synchronous_mode: true
+        synchronous_mode_strict: false
+      initdb:
+        - encoding: UTF8
+        - data-checksums
+      postgresql:
+        parameters:
+          # Connection management — sized for PgBouncer pool (not direct clients)
+          max_connections: 200
+          # Memory — tuned for 4Gi container limit
+          shared_buffers: 1GB
+          effective_cache_size: 3GB
+          work_mem: 16MB
+          maintenance_work_mem: 256MB
+          # WAL and replication
+          wal_level: replica
+          max_wal_senders: 10
+          max_replication_slots: 10
+          hot_standby: "on"
+          wal_keep_size: 1GB
+          # Synchronous replication for zero data loss
+          synchronous_commit: "on"
+          synchronous_standby_names: "*"
+          # Checkpointing — spread I/O to avoid latency spikes
+          checkpoint_completion_target: 0.9
+          checkpoint_timeout: 10min
+          max_wal_size: 4GB
+          min_wal_size: 1GB
+          # Logging
+          log_min_duration_statement: 500
+          log_checkpoints: "on"
+          log_lock_waits: "on"
+          log_temp_files: 0
+          # Performance
+          random_page_cost: 1.1
+          effective_io_concurrency: 200
+          # Vacuum
+          autovacuum_max_workers: 4
+          autovacuum_naptime: 30s
+    postgresql:
+      listen: "0.0.0.0:5432"
+      use_pg_rewind: true
+      authentication:
+        superuser:
+          username: postgres
+          password: "${PATRONI_SUPERUSER_PASSWORD}"
+        replication:
+          username: replicator
+          password: "${PATRONI_REPLICATION_PASSWORD}"
+    restapi:
+      listen: "0.0.0.0:8008"
+    # pg_hba.conf entries for replication and application access.
+    # Patroni writes these during bootstrap and manages them thereafter.
+    pg_hba:
+      - "local   all             all                                     trust"
+      - "host    all             all             127.0.0.1/32            md5"
+      - "host    all             all             ::1/128                 md5"
+      - "host    all             all             10.0.0.0/8              md5"
+      - "host    all             all             172.16.0.0/12           md5"
+      - "host    all             all             192.168.0.0/16          md5"
+      - "host    replication     replicator      10.0.0.0/8              md5"
+      - "host    replication     replicator      172.16.0.0/12           md5"
+      - "host    replication     replicator      192.168.0.0/16          md5"
+    tags:
+      nofailover: false
+      noloadbalance: false
+      clonefrom: false

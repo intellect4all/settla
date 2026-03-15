@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: settla-server
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: settla
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["settla-server-config"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # Actual secrets consumed by settla-server pods (via env var injection):
+    #   - settla-db-credentials: POSTGRES_PASSWORD
+    #   - settla-app-secrets: TYK_SECRET, SETTLA_WALLET_ENCRYPTION_KEY, SETTLA_MASTER_SEED, SETTLA_TRON_API_KEY
+    resourceNames: ["settla-db-credentials", "settla-app-secrets"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: settla-server
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: settla
+subjects:
+  - kind: ServiceAccount
+    name: settla-server
+    namespace: settla
+roleRef:
+  kind: Role
+  name: settla-server
+  apiGroup: rbac.authorization.k8s.io

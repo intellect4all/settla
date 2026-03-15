@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  # Plain K8s Secrets for local dev (no External Secrets Operator required).
+  # In production/staging these are replaced by ExternalSecrets in base/secrets/.
+  - secrets.yaml
+  # Infrastructure StatefulSets required by storage-patch.yaml.
+  # In production these are included via the production overlay.
+  - ../../infrastructure/tigerbeetle/statefulset.yaml
+  - ../../infrastructure/nats/statefulset.yaml
+  - ../../infrastructure/redis/statefulset.yaml
+  - ../../infrastructure/postgres/statefulset.yaml
+  - ../../infrastructure/pgbouncer/deployment.yaml
+  - ../../infrastructure/patroni/statefulset.yaml
+  - ../../infrastructure/redis-sentinel/statefulset.yaml
+  - ../../infrastructure/redis-sentinel/sentinel-statefulset.yaml
+
+namePrefix: ""
+namespace: settla-dev
+
+patches:
+  - path: patches/reduce-replicas.yaml
+  - path: patches/relax-resources.yaml
+  - path: patches/disable-hpa.yaml
+  - path: patches/dev-env.yaml
+  - path: patches/enable-pprof.yaml
+  # Override all StatefulSet PVCs to use `standard` StorageClass.
+  # fast-ssd (TigerBeetle base default) is not needed in development.
+  - path: storage-patch.yaml

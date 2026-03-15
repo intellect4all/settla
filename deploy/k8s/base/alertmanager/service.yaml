@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+      protocol: TCP
+    - name: remediation
+      port: 9095
+      targetPort: remediation
+      protocol: TCP
+---
+# Headless service for AlertManager cluster mesh peer discovery.
+# AlertManager HA uses gossip protocol on port 9094 to deduplicate
+# notifications across replicas.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: mesh
+      port: 9094
+      targetPort: mesh
+      protocol: TCP
+---
+# Service for the remediation webhook sidecar.
+# AlertManager routes to this for auto-remediation triggers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-remediation
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: remediation
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: webhook
+      port: 9095
+      targetPort: remediation
+      protocol: TCP

@@ -1,0 +1,76 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: settla
+
+resources:
+  - namespace.yaml
+  # StorageClass definitions (cluster-scoped): fast-ssd (TigerBeetle) and
+  # standard (PostgreSQL, NATS, Redis).  Applied before namespaced resources
+  # so PVCs can bind immediately on first apply.
+  - storage/storage-classes.yaml
+  # External Secrets — syncs credentials from AWS Secrets Manager into K8s Secrets.
+  # Requires External Secrets Operator to be installed in the cluster.
+  # For local development, the development overlay applies overlays/development/secrets.yaml
+  # with plain K8s Secrets instead, so ESO is not needed on a local cluster.
+  - secrets/external-secret-store.yaml
+  - secrets/settla-db-secrets.yaml
+  - secrets/settla-app-secrets.yaml
+  - secrets/settla-webhook-secrets.yaml
+  - secrets/settla-alertmanager-secrets.yaml
+  # Application services
+  - settla-server/deployment.yaml
+  - settla-server/service.yaml
+  - settla-server/hpa.yaml
+  - settla-server/pdb.yaml
+  - settla-server/configmap.yaml
+  - settla-server/rbac.yaml
+  # Argo Rollouts canary deployment (used in production overlay instead of deployment.yaml)
+  - settla-server/rollout.yaml
+  - settla-server/canary-services.yaml
+  - settla-server/analysis-template.yaml
+  - settla-node/statefulset.yaml
+  - settla-node/service.yaml
+  - settla-node/configmap.yaml
+  - settla-node/rbac.yaml
+  - settla-node/pdb.yaml
+  - gateway/deployment.yaml
+  - gateway/service.yaml
+  - gateway/hpa.yaml
+  - gateway/configmap.yaml
+  - gateway/pdb.yaml
+  - webhook/deployment.yaml
+  - webhook/service.yaml
+  - webhook/configmap.yaml
+  - webhook/pdb.yaml
+  - dashboard/deployment.yaml
+  - dashboard/service.yaml
+  # Ingress, TLS, and cert-manager resources
+  - ingress/cluster-issuer.yaml
+  - ingress/certificate.yaml
+  - ingress/ingress.yaml
+  # Alerting and remediation
+  - alertmanager/deployment.yaml
+  - alertmanager/service.yaml
+  - alertmanager/configmap.yaml
+  # Partition lifecycle maintenance (monthly archive CronJob)
+  - maintenance/archive-script-configmap.yaml
+  - maintenance/archive-cronjob.yaml
+  # Backup automation CronJobs (PostgreSQL daily, TigerBeetle hourly, NATS every 6h,
+  # daily restore-verification). See deploy/k8s/base/backups/kustomization.yaml.
+  - backups/
+  # Network policies (zero-trust: default-deny + explicit allow rules)
+  - network-policies/default-deny.yaml
+  - network-policies/settla-server.yaml
+  - network-policies/settla-node.yaml
+  - network-policies/gateway.yaml
+  - network-policies/webhook.yaml
+  - network-policies/tyk.yaml
+  - network-policies/infrastructure.yaml
+
+# Deep health check probes for settla-node (replaces shallow /health probes)
+patchesStrategicMerge:
+  - settla-node/updated-probes.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: settla

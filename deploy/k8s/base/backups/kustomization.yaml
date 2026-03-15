@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: settla
+
+resources:
+  - rbac.yaml
+  - backup-config.yaml
+  - secret.yaml
+  - scripts-configmap.yaml
+  - postgres-backup-cronjob.yaml
+  - tigerbeetle-backup-cronjob.yaml
+  - nats-backup-cronjob.yaml
+  - backup-verify-cronjob.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: settla
+
+# In production, replace the scripts-configmap.yaml inline scripts with the
+# actual .sh files from the scripts/ directory using configMapGenerator:
+#
+# configMapGenerator:
+#   - name: backup-scripts
+#     files:
+#       - scripts/postgres-backup.sh
+#       - scripts/tigerbeetle-backup.sh
+#       - scripts/nats-backup.sh
+#       - scripts/backup-verify.sh
+#     options:
+#       disableNameSuffixHash: true
+#
+# backup-secrets is now an ExternalSecret (secret.yaml) that syncs from
+# AWS Secrets Manager path settla/production/backup.
+# For development, add a plain K8s Secret for backup-secrets to
+# deploy/k8s/overlays/development/secrets.yaml.

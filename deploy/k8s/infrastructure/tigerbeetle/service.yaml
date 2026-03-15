@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tigerbeetle
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: tigerbeetle
+    app.kubernetes.io/component: ledger-engine
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless for StatefulSet
+  selector:
+    app.kubernetes.io/name: tigerbeetle
+  ports:
+    - name: tb
+      port: 3001
+      targetPort: tb
+      protocol: TCP
