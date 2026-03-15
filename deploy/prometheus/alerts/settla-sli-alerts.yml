@@ -1,0 +1,895 @@
+# Settla SLI-based alerting rules for five-nines availability (99.999%).
+#
+# Monthly error budget: 26.3 seconds downtime.
+# Burn rate approach (Google SRE): alerts fire when the error budget is being
+# consumed faster than sustainable, NOT when a static threshold is breached.
+#
+# Metric sources:
+#   - settla-server (:8080/metrics)  — Go server metrics
+#   - settla-node   (:9091/metrics)  — Worker metrics
+#   - gateway       (:3000/metrics)  — Fastify gateway metrics
+#   - webhook       (:3001/metrics)  — Webhook dispatcher metrics
+#   - Infrastructure exporters (postgres, redis, nats, node)
+
+groups:
+  # ═══════════════════════════════════════════════════════════════════════
+  # SLI Burn Rate Alerts
+  # Based on Google SRE multi-window, multi-burn-rate approach.
+  # SLO target: 99.9% success rate (0.1% error budget).
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-sli-burn-rate
+    interval: 15s
+    rules:
+      # ── Fast burn: 14.4x consumption rate ──────────────────────────────
+      # Exhausts 99.9% monthly budget in ~1 hour.
+      # Requires both 5m and 1m windows to confirm (avoids single-scrape spikes).
+      # Triggers immediate page — human must intervene within minutes.
+      - alert: SettlaHighErrorRateFastBurn
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(settla_gateway_requests_total[5m]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[1m]))
+            /
+            sum(rate(settla_gateway_requests_total[1m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Error rate burning SLA budget 14.4x faster than allowed"
+          description: "Current error rate {{ $value | humanizePercentage }}. At this rate, monthly budget exhausted in ~1 hour. Immediate action required."
+          runbook: "https://settla.internal/runbooks/high-error-rate"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Medium burn: 6x consumption rate ───────────────────────────────
+      # Exhausts monthly budget in ~2.5 days.
+      # Requires 30m + 5m windows to confirm sustained degradation.
+      - alert: SettlaHighErrorRateMediumBurn
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[30m]))
+            /
+            sum(rate(settla_gateway_requests_total[30m]))
+          ) > (6 * 0.001)
+          and
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(settla_gateway_requests_total[5m]))
+          ) > (6 * 0.001)
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Error rate burning SLA budget 6x faster than allowed"
+          description: "Sustained error rate {{ $value | humanizePercentage }} over 30m window. Monthly budget exhausted in ~2.5 days at this rate."
+          runbook: "https://settla.internal/runbooks/high-error-rate"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Slow burn: 3x consumption rate ─────────────────────────────────
+      # Exhausts monthly budget in ~10 days.
+      # Requires 6h + 1h windows — catches slow-building degradation.
+      # Warning severity: creates ticket, does not page.
+      - alert: SettlaHighErrorRateSlowBurn
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[6h]))
+            /
+            sum(rate(settla_gateway_requests_total[6h]))
+          ) > (3 * 0.001)
+          and
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[1h]))
+            /
+            sum(rate(settla_gateway_requests_total[1h]))
+          ) > (3 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Error rate burning SLA budget 3x faster than allowed"
+          description: "Error rate {{ $value | humanizePercentage }} sustained over 6h window. Budget exhausted in ~10 days at this rate."
+          runbook: "https://settla.internal/runbooks/high-error-rate"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Transfer success rate SLI ──────────────────────────────────────
+      # Transfer pipeline SLO: 99.5% of transfers complete successfully.
+      # This is the business-level SLI — distinct from HTTP error rate.
+      - alert: SettlaTransferSuccessLow
+        expr: |
+          (
+            sum(rate(settla_transfers_total{status="completed"}[30m]))
+            /
+            sum(rate(settla_transfers_total[30m]))
+          ) < 0.995
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          slo: transfer-success
+        annotations:
+          summary: "Transfer success rate below 99.5% SLA"
+          description: "Transfer completion rate is {{ $value | humanizePercentage }} over 30m, below the 99.5% SLO. Check provider health and NATS consumer lag."
+          runbook: "https://settla.internal/runbooks/transfer-success-low"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Transfer success rate critical ─────────────────────────────────
+      # Hard floor: if success rate drops below 95%, pipeline is severely broken.
+      - alert: SettlaTransferSuccessCritical
+        expr: |
+          (
+            sum(rate(settla_transfers_total{status="completed"}[10m]))
+            /
+            sum(rate(settla_transfers_total[10m]))
+          ) < 0.95
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          slo: transfer-success
+        annotations:
+          summary: "Transfer success rate critically low — below 95%"
+          description: "Transfer completion rate is {{ $value | humanizePercentage }} over 10m. Pipeline is severely degraded. Check all downstream dependencies."
+          runbook: "https://settla.internal/runbooks/transfer-success-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Latency SLI: p99 gateway response time ────────────────────────
+      # SLO: p99 < 500ms for gateway requests.
+      - alert: SettlaLatencySLOBreach
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_gateway_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          slo: latency
+        annotations:
+          summary: "Gateway p99 latency exceeds 500ms SLO"
+          description: "p99 latency is {{ $value | humanizeDuration }}. SLO target is 500ms."
+          runbook: "https://settla.internal/runbooks/latency-slo-breach"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── Latency SLI: p99 gateway response time critical ────────────────
+      # Hard floor: p99 > 2s means something is deeply wrong.
+      - alert: SettlaLatencySLOCritical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_gateway_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          slo: latency
+        annotations:
+          summary: "Gateway p99 latency exceeds 2s — critical degradation"
+          description: "p99 latency is {{ $value | humanizeDuration }}. Likely database or downstream timeout."
+          runbook: "https://settla.internal/runbooks/latency-slo-critical"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Component Health Alerts
+  # Per-subsystem alerts for Settla's internal components.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-component-health
+    interval: 15s
+    rules:
+      # ── Deep health check failures ─────────────────────────────────────
+      # settla-server exposes /health/ready with per-dependency checks.
+      # A value of 0 means the check is failing (TB, Postgres, NATS, Redis).
+      - alert: SettlaHealthCheckFailing
+        expr: settla_health_check_status == 0
+        for: 30s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Health check {{ $labels.check }} is failing on {{ $labels.instance }}"
+          description: "Dependency health check '{{ $labels.check }}' has been failing for 30s. Pod will be removed from service if readiness probe also fails."
+          runbook: "https://settla.internal/runbooks/health-check-failing"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Treasury flush lag ─────────────────────────────────────────────
+      # Treasury positions are held in-memory and flushed to Postgres every 100ms.
+      # Lag > 1s means the flush goroutine is falling behind — risk of data loss
+      # if the pod is killed before positions are persisted.
+      - alert: SettlaTreasuryFlushLagHigh
+        expr: settla_treasury_flush_lag_seconds > 1
+        for: 30s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Treasury flush lag {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "In-memory treasury positions are not being flushed to Postgres within the 100ms target. Lag is {{ $value }}s. Risk of position data loss on pod termination."
+          runbook: "https://settla.internal/runbooks/treasury-flush-lag"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      # ── Treasury flush lag warning ─────────────────────────────────────
+      - alert: SettlaTreasuryFlushLagWarning
+        expr: settla_treasury_flush_lag_seconds > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Treasury flush lag elevated at {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "Flush lag is above 500ms. Not yet critical but trending toward danger zone. Check Postgres treasury DB connection pool and write latency."
+          runbook: "https://settla.internal/runbooks/treasury-flush-lag"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      # ── Treasury reservation latency ───────────────────────────────────
+      # Reserve/Release must be in-memory only (Critical Invariant #10).
+      # If p99 > 1ms, something is wrong (possible DB call in hot path).
+      - alert: SettlaTreasuryReserveLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_treasury_reserve_latency_seconds_bucket[5m])) by (le)
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Treasury reserve p99 latency exceeds 1ms"
+          description: "Treasury reserve p99 is {{ $value | humanizeDuration }}. This operation should be pure in-memory (~microseconds). Possible database call in hot path."
+          runbook: "https://settla.internal/runbooks/treasury-reserve-latency"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      # ── NATS consumer lag ──────────────────────────────────────────────
+      # Partitioned consumers process transfer events. Queue depth > 1000
+      # means workers are falling behind — transfers are stalling.
+      - alert: SettlaNATSConsumerLagHigh
+        expr: settla_nats_partition_queue_depth > 1000
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS consumer queue depth {{ $value }} on partition {{ $labels.partition }}"
+          description: "Partition {{ $labels.partition }} has {{ $value }} pending messages. Workers are falling behind. Consider scaling settla-node replicas."
+          runbook: "https://settla.internal/runbooks/nats-consumer-lag"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── NATS consumer lag critical ─────────────────────────────────────
+      # Queue depth > 5000: pipeline is severely backlogged.
+      - alert: SettlaNATSConsumerLagCritical
+        expr: settla_nats_partition_queue_depth > 5000
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "NATS consumer queue depth critical: {{ $value }} on partition {{ $labels.partition }}"
+          description: "Partition {{ $labels.partition }} has {{ $value }} pending messages. Transfer processing is severely delayed. Auto-scaling or manual intervention required."
+          runbook: "https://settla.internal/runbooks/nats-consumer-lag-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Ledger sync lag (TigerBeetle → Postgres) ──────────────────────
+      # CQRS read model must stay within 30s of the write model.
+      # Lag > 30s means dashboard/API queries show stale data.
+      - alert: SettlaLedgerSyncLagHigh
+        expr: settla_ledger_pg_sync_lag_seconds > 30
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Ledger TB→PG sync lag is {{ $value | humanizeDuration }}"
+          description: "TigerBeetle to Postgres sync consumer is {{ $value }}s behind. API read queries and dashboard will show stale balance data."
+          runbook: "https://settla.internal/runbooks/ledger-sync-lag"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Ledger sync lag critical ───────────────────────────────────────
+      - alert: SettlaLedgerSyncLagCritical
+        expr: settla_ledger_pg_sync_lag_seconds > 120
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Ledger TB→PG sync lag critical: {{ $value | humanizeDuration }}"
+          description: "Sync lag exceeds 2 minutes. Read model is severely stale. Check sync consumer health, Postgres write throughput, and TigerBeetle connectivity."
+          runbook: "https://settla.internal/runbooks/ledger-sync-lag-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── TigerBeetle write latency ─────────────────────────────────────
+      # TB should handle 1M+ TPS. p99 > 10ms indicates contention or disk issues.
+      - alert: SettlaLedgerTBWriteLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_ledger_tb_write_latency_seconds_bucket[5m])) by (le)
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TigerBeetle write p99 latency exceeds 10ms"
+          description: "TB write p99 is {{ $value | humanizeDuration }}. Check TigerBeetle disk I/O and cluster health."
+          runbook: "https://settla.internal/runbooks/tigerbeetle-latency"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Circuit breaker open ───────────────────────────────────────────
+      # Circuit breakers protect downstream services. An open breaker means
+      # a dependency is unhealthy — all requests to it are being short-circuited.
+      - alert: SettlaCircuitBreakerOpen
+        expr: settla_circuit_breaker_state > 0
+        for: 10s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Circuit breaker '{{ $labels.name }}' is OPEN on {{ $labels.instance }}"
+          description: "Circuit breaker '{{ $labels.name }}' tripped open. Requests to {{ $labels.target }} are being rejected. Downstream dependency is likely unhealthy."
+          runbook: "https://settla.internal/runbooks/circuit-breaker-open"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Load shedding active ───────────────────────────────────────────
+      # Load shedding rejects requests when the system is overloaded.
+      # Any shedding means we are at capacity — need to scale or investigate.
+      - alert: SettlaLoadSheddingActive
+        expr: rate(settla_loadshed_rejected_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Load shedding active on {{ $labels.instance }} — rejecting {{ $value | humanize }} req/s"
+          description: "Requests are being rejected to protect system stability. Rate: {{ $value | humanize }}/s. Check CPU/memory pressure, scale up replicas, or investigate upstream traffic spike."
+          runbook: "https://settla.internal/runbooks/load-shedding"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── Load shedding critical ─────────────────────────────────────────
+      - alert: SettlaLoadSheddingCritical
+        expr: rate(settla_loadshed_rejected_total[5m]) > 100
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Heavy load shedding: rejecting {{ $value | humanize }} req/s on {{ $labels.instance }}"
+          description: "System is under extreme load, rejecting >100 req/s. Immediate scaling required."
+          runbook: "https://settla.internal/runbooks/load-shedding-critical"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── gRPC request errors ────────────────────────────────────────────
+      # Gateway→settla-server gRPC error rate.
+      # Metric: settla_grpc_requests_total{service, method, code} (observability/metrics.go).
+      # Label is "code" (gRPC status code string), NOT "status".
+      - alert: SettlaGRPCErrorRateHigh
+        expr: |
+          (
+            sum(rate(settla_grpc_requests_total{code!="OK"}[5m]))
+            /
+            sum(rate(settla_grpc_requests_total[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "gRPC error rate {{ $value | humanizePercentage }} exceeds 1%"
+          description: "Gateway-to-server gRPC calls are failing at {{ $value | humanizePercentage }}. Check settla-server logs and resource usage."
+          runbook: "https://settla.internal/runbooks/grpc-error-rate"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── gRPC latency ───────────────────────────────────────────────────
+      - alert: SettlaGRPCLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_grpc_request_latency_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "gRPC p99 latency exceeds 1s"
+          description: "gRPC p99 latency is {{ $value | humanizeDuration }}. Investigate settla-server processing time, database queries, and TigerBeetle latency."
+          runbook: "https://settla.internal/runbooks/grpc-latency"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── Webhook delivery failures ──────────────────────────────────────
+      - alert: SettlaWebhookDeliveryFailureHigh
+        expr: |
+          (
+            sum(rate(settla_webhook_deliveries_total{status="failed"}[15m]))
+            /
+            sum(rate(settla_webhook_deliveries_total[15m]))
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Webhook delivery failure rate {{ $value | humanizePercentage }} exceeds 10%"
+          description: "Webhook deliveries are failing at {{ $value | humanizePercentage }}. Check tenant endpoint health and webhook dead letter queue."
+          runbook: "https://settla.internal/runbooks/webhook-failures"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Transfer duration SLI ──────────────────────────────────────────
+      # End-to-end transfer should complete within 30s (p95).
+      - alert: SettlaTransferDurationHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(settla_transfer_duration_seconds_bucket[15m])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Transfer p95 duration exceeds 30s"
+          description: "End-to-end transfer p95 is {{ $value | humanizeDuration }}. Check provider latency, NATS consumer lag, and ledger write throughput."
+          runbook: "https://settla.internal/runbooks/transfer-duration"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Anomaly Detection
+  # Derivative-based and baseline-comparison alerts that catch trends
+  # BEFORE they breach static thresholds.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-anomaly-detection
+    interval: 30s
+    rules:
+      # ── Error rate spike (derivative-based) ────────────────────────────
+      # Detects when error rate is increasing rapidly, even before
+      # the absolute threshold is breached. Catches regressions early.
+      - alert: SettlaErrorRateSpike
+        expr: |
+          deriv(
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))[10m:1m]
+          ) > 0.001
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Error rate increasing rapidly — trend may breach SLA"
+          description: "Error rate derivative is {{ $value | humanize }}/s over 10m. Errors are accelerating. Investigate before threshold breach."
+          runbook: "https://settla.internal/runbooks/error-rate-spike"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Latency degradation (comparing to 1h baseline) ────────────────
+      # Fires when current p99 is 2x higher than the 1-hour rolling baseline.
+      # Catches gradual degradation that static thresholds miss.
+      - alert: SettlaLatencyDegrading
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_gateway_request_duration_seconds_bucket[5m])) by (le)
+          )
+          /
+          histogram_quantile(0.99,
+            sum(rate(settla_gateway_request_duration_seconds_bucket[1h])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "p99 latency is 2x higher than 1-hour baseline"
+          description: "Current p99 is {{ $value }}x the 1h rolling average. Latency is degrading relative to recent performance. Check for slow queries, GC pressure, or resource contention."
+          runbook: "https://settla.internal/runbooks/latency-degradation"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── Throughput drop (sudden traffic loss) ──────────────────────────
+      # A sudden >50% drop in traffic may indicate upstream failure,
+      # DNS issues, or load balancer misconfiguration — not a Settla bug
+      # but equally impactful to SLA.
+      - alert: SettlaThroughputDrop
+        expr: |
+          sum(rate(settla_gateway_requests_total[5m]))
+          /
+          sum(rate(settla_gateway_requests_total[1h]))
+          < 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Request throughput dropped >50% from 1-hour baseline"
+          description: "Current RPS is {{ $value | humanizePercentage }} of the 1h average. Possible upstream failure, DNS issue, or load balancer misconfiguration."
+          runbook: "https://settla.internal/runbooks/throughput-drop"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Throughput drop critical ───────────────────────────────────────
+      # >80% traffic loss — almost certainly a major outage upstream or in networking.
+      - alert: SettlaThroughputDropCritical
+        expr: |
+          sum(rate(settla_gateway_requests_total[5m]))
+          /
+          sum(rate(settla_gateway_requests_total[1h]))
+          < 0.2
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Request throughput dropped >80% — possible major outage"
+          description: "Traffic is at {{ $value | humanizePercentage }} of the 1h average. Major infrastructure failure likely."
+          runbook: "https://settla.internal/runbooks/throughput-drop-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── NATS message rate anomaly ──────────────────────────────────────
+      # Sudden drop in NATS message processing may indicate stalled consumers.
+      - alert: SettlaNATSMessageRateDrop
+        expr: |
+          sum(rate(settla_nats_messages_total[5m]))
+          /
+          sum(rate(settla_nats_messages_total[1h]))
+          < 0.3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS message processing rate dropped >70% from baseline"
+          description: "Message processing is at {{ $value | humanizePercentage }} of the 1h average. Check settla-node pods, NATS connectivity, and consumer group health."
+          runbook: "https://settla.internal/runbooks/nats-message-rate-drop"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Transfer initiation rate anomaly ───────────────────────────────
+      # Detect sudden surge in transfer initiations (possible abuse or bug).
+      - alert: SettlaTransferInitiationSurge
+        expr: |
+          sum(rate(settla_transfers_total{status="initiated"}[5m]))
+          /
+          sum(rate(settla_transfers_total{status="initiated"}[1h]))
+          > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Transfer initiation rate 3x above baseline"
+          description: "Transfer initiations are {{ $value }}x the 1h average. Possible traffic surge, tenant abuse, or upstream retry storm."
+          runbook: "https://settla.internal/runbooks/transfer-surge"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Goroutine count anomaly ────────────────────────────────────────
+      # Rapid goroutine growth suggests a leak (blocked channel, leaked timer, etc).
+      - alert: SettlaGoroutineGrowth
+        expr: |
+          deriv(go_goroutines[15m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Goroutine count growing at {{ $value | humanize }}/s on {{ $labels.instance }}"
+          description: "Goroutine count is increasing by ~{{ $value | humanize }}/s over 15m. Possible goroutine leak. Check for blocked channels, leaked timers, or connection pool issues."
+          runbook: "https://settla.internal/runbooks/goroutine-leak"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Infrastructure Alerts
+  # Database, cache, messaging, and host-level alerts.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-infrastructure
+    interval: 15s
+    rules:
+      # ── Postgres replication lag ───────────────────────────────────────
+      # Settla uses 3 Postgres instances (ledger, transfer, treasury).
+      # In production with read replicas, replication lag > 5s means
+      # read-after-write consistency is broken.
+      - alert: SettlaPostgresReplicationLag
+        expr: pg_replication_lag_seconds > 5
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Postgres replication lag {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "Replication lag is {{ $value }}s on {{ $labels.instance }}. Read replicas are serving stale data. Check WAL sender/receiver, network, and disk I/O."
+          runbook: "https://settla.internal/runbooks/postgres-replication-lag"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Postgres replication lag critical ───────────────────────────────
+      - alert: SettlaPostgresReplicationLagCritical
+        expr: pg_replication_lag_seconds > 30
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Postgres replication lag critical: {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "Replication lag exceeds 30s. Read queries are severely stale. Risk of data loss if primary fails."
+          runbook: "https://settla.internal/runbooks/postgres-replication-lag-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Postgres connection count ──────────────────────────────────────
+      - alert: SettlaPostgresConnectionsHigh
+        expr: |
+          pg_stat_activity_count
+          /
+          pg_settings_max_connections
+          > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Postgres connections at {{ $value | humanizePercentage }} capacity on {{ $labels.instance }}"
+          description: "Connection usage is at {{ $value | humanizePercentage }}. Approaching max_connections limit. Check PgBouncer pool health and connection leaks."
+          runbook: "https://settla.internal/runbooks/postgres-connections"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Postgres slow queries ──────────────────────────────────────────
+      - alert: SettlaPostgresSlowQueries
+        expr: rate(pg_stat_activity_max_tx_duration{state="active"}[5m]) > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Long-running queries detected on {{ $labels.instance }}"
+          description: "Active queries running longer than 30s. Check for missing indexes, lock contention, or runaway queries."
+          runbook: "https://settla.internal/runbooks/postgres-slow-queries"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Redis memory usage ─────────────────────────────────────────────
+      # Settla uses Redis for L2 cache, rate limiting, idempotency.
+      # At 85% memory, evictions will increase and cache hit rate drops.
+      - alert: SettlaRedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis memory at {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Redis memory usage is {{ $value | humanizePercentage }}. Approaching maxmemory limit. LRU evictions will increase, degrading cache hit rate for auth lookups, quotes, and idempotency."
+          runbook: "https://settla.internal/runbooks/redis-memory"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Redis memory critical ──────────────────────────────────────────
+      - alert: SettlaRedisMemoryCritical
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis memory critical: {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Redis is near maxmemory. Heavy eviction is occurring. Rate limiting, idempotency, and auth cache performance severely degraded."
+          runbook: "https://settla.internal/runbooks/redis-memory-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Redis connectivity ─────────────────────────────────────────────
+      - alert: SettlaRedisDown
+        expr: redis_up == 0
+        for: 15s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis is unreachable on {{ $labels.instance }}"
+          description: "Redis exporter cannot connect. L2 cache, rate limiting, and idempotency are offline. Gateway will fall back to L1 local cache only."
+          runbook: "https://settla.internal/runbooks/redis-down"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── PgBouncer pool saturation ──────────────────────────────────────
+      # 6+ settla-server replicas share PgBouncer pools.
+      # At 85% saturation, new connections will queue or be rejected.
+      - alert: SettlaPgBouncerPoolSaturated
+        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.85
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PgBouncer pool {{ $labels.database }} at {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Connection pool for {{ $labels.database }} is {{ $value | humanizePercentage }} utilized. Queries may start queuing. Check for long-running transactions or connection leaks."
+          runbook: "https://settla.internal/runbooks/pgbouncer-saturation"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── PgBouncer pool critical ────────────────────────────────────────
+      - alert: SettlaPgBouncerPoolCritical
+        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.95
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "PgBouncer pool {{ $labels.database }} critical: {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Pool near exhaustion. New database connections will be rejected imminently. Immediate investigation required."
+          runbook: "https://settla.internal/runbooks/pgbouncer-saturation-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── PgBouncer waiting clients ──────────────────────────────────────
+      - alert: SettlaPgBouncerClientsWaiting
+        expr: pgbouncer_pools_client_waiting > 10
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} clients waiting for PgBouncer connections on {{ $labels.instance }}"
+          description: "Clients are queuing for database connections in pool {{ $labels.database }}. Increase pool size or investigate long-running transactions."
+          runbook: "https://settla.internal/runbooks/pgbouncer-waiting"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Disk space ─────────────────────────────────────────────────────
+      # Postgres WAL, TigerBeetle data files, and NATS JetStream all consume disk.
+      - alert: SettlaDiskSpaceLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint=~"/.*"}
+            /
+            node_filesystem_size_bytes{mountpoint=~"/.*"}
+          ) < 0.15
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Disk space below 15% on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          description: "Available disk space is {{ $value | humanizePercentage }} on {{ $labels.mountpoint }}. Clean up old WAL segments, compact TigerBeetle, or expand volume."
+          runbook: "https://settla.internal/runbooks/disk-space-low"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Disk space critical ────────────────────────────────────────────
+      - alert: SettlaDiskSpaceCritical
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint=~"/.*"}
+            /
+            node_filesystem_size_bytes{mountpoint=~"/.*"}
+          ) < 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Disk space critical: below 5% on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          description: "Disk is nearly full. Postgres and TigerBeetle may crash. Immediate action: expand volume, delete old partitions, or move data."
+          runbook: "https://settla.internal/runbooks/disk-space-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Disk I/O saturation ────────────────────────────────────────────
+      - alert: SettlaDiskIOSaturation
+        expr: |
+          rate(node_disk_io_time_seconds_total[5m]) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Disk I/O saturation {{ $value | humanizePercentage }} on {{ $labels.instance }}:{{ $labels.device }}"
+          description: "Disk {{ $labels.device }} is {{ $value | humanizePercentage }} utilized. Database and TigerBeetle write performance will degrade."
+          runbook: "https://settla.internal/runbooks/disk-io-saturation"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── CPU saturation ─────────────────────────────────────────────────
+      - alert: SettlaCPUHigh
+        expr: |
+          (
+            1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+          ) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "CPU usage {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Sustained high CPU. Check for hot loops, excessive GC, or need to scale horizontally."
+          runbook: "https://settla.internal/runbooks/cpu-high"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── Memory pressure ────────────────────────────────────────────────
+      - alert: SettlaMemoryHigh
+        expr: |
+          (
+            1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+          ) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Memory usage {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}. OOM kills may occur. Check for memory leaks in Go processes (pprof heap profile)."
+          runbook: "https://settla.internal/runbooks/memory-high"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── NATS cluster health ────────────────────────────────────────────
+      - alert: SettlaNATSDown
+        expr: nats_server_info == 0
+        for: 15s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "NATS server unreachable on {{ $labels.instance }}"
+          description: "NATS is down. All async event processing (transfer saga, webhooks) is halted. Transfers will stall in intermediate states."
+          runbook: "https://settla.internal/runbooks/nats-down"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Go process restarts ────────────────────────────────────────────
+      - alert: SettlaProcessRestarted
+        expr: |
+          changes(process_start_time_seconds[5m]) > 0
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Process restarted on {{ $labels.instance }} (job={{ $labels.job }})"
+          description: "The {{ $labels.job }} process was restarted. Check for OOM kills, crash loops, or manual restarts."
+          runbook: "https://settla.internal/runbooks/process-restart"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Synthetic Canary Alerts
+  # Synthetic transactions run every 60s to validate the E2E pipeline.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-synthetic
+    interval: 15s
+    rules:
+      # ── Synthetic canary failure ───────────────────────────────────────
+      # Any synthetic failure means the full transfer pipeline
+      # (API → Core → Ledger → Treasury → Provider → Webhook) is broken.
+      - alert: SettlaSyntheticFailure
+        expr: increase(settla_synthetic_failures_total[5m]) > 0
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Synthetic canary transaction failed — E2E pipeline may be broken"
+          description: "{{ $value }} synthetic transaction(s) failed in the last 5m. The full transfer pipeline may be broken. This is the highest-confidence signal of a production outage."
+          runbook: "https://settla.internal/runbooks/synthetic-failure"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Synthetic latency degradation ──────────────────────────────────
+      # Synthetic transactions should complete in < 60s. Over 120s means
+      # the pipeline is severely slow even if not failing.
+      #
+      # Metric: settla_synthetic_duration_seconds — a HistogramVec with label
+      # "step" (observability/synthetic/canary.go). Use the average duration
+      # (sum/count) across all steps as a proxy for overall pipeline speed.
+      - alert: SettlaSyntheticSlow
+        expr: |
+          (
+            sum(rate(settla_synthetic_duration_seconds_sum[5m]))
+            /
+            sum(rate(settla_synthetic_duration_seconds_count[5m]))
+          ) > 120
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Synthetic canary average step duration {{ $value | humanizeDuration }} — pipeline is slow"
+          description: "Synthetic canary average step duration over 5m is {{ $value | humanizeDuration }}, above the 120s threshold. Pipeline is functional but severely degraded."
+          runbook: "https://settla.internal/runbooks/synthetic-slow"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Synthetic canary stale ─────────────────────────────────────────
+      # If no synthetic run has been recorded in 5 minutes, the canary is down.
+      # Metric: settla_synthetic_runs_total — a Counter (observability/synthetic/canary.go).
+      # Zero rate over 5m means the canary goroutine has stopped firing.
+      - alert: SettlaSyntheticStale
+        expr: |
+          rate(settla_synthetic_runs_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "No synthetic canary run in 5+ minutes — canary may be down"
+          description: "settla_synthetic_runs_total has not incremented in 5m. The canary goroutine has stopped or cannot reach the API gateway. Verify the canary is configured (SETTLA_SYNTHETIC_ENABLED=true) and the gateway URL is reachable."
+          runbook: "https://settla.internal/runbooks/synthetic-stale"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
