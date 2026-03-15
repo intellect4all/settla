@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/intellect4all/settla/core"
+	"github.com/intellect4all/settla/core/recovery"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/ledger"
 	"github.com/intellect4all/settla/observability"
@@ -26,17 +28,20 @@ import (
 
 var (
 	LemfiTenantID  = uuid.MustParse("a0000000-0000-0000-0000-000000000001")
-	FincraTenantID = uuid.MustParse("b0000000-0000-0000-0000-000000000002")
+	FincraTenantID        = uuid.MustParse("b0000000-0000-0000-0000-000000000002")
+	NetSettlementTenantID = uuid.MustParse("c0000000-0000-0000-0000-000000000003")
 )
 
 // ─── In-Memory Transfer Store ───────────────────────────────────────────────
 
 type memTransferStore struct {
-	mu         sync.RWMutex
-	transfers  map[uuid.UUID]*domain.Transfer
-	idempotent map[string]*domain.Transfer // key: "tenantID:idempotencyKey"
-	events     map[uuid.UUID][]domain.TransferEvent
-	quotes     map[uuid.UUID]*domain.Quote
+	mu             sync.RWMutex
+	transfers      map[uuid.UUID]*domain.Transfer
+	idempotent     map[string]*domain.Transfer // key: "tenantID:idempotencyKey"
+	events         map[uuid.UUID][]domain.TransferEvent
+	quotes         map[uuid.UUID]*domain.Quote
+	outboxEntries  []domain.OutboxEntry
+	eventPublisher domain.EventPublisher // optional: publishes non-intent outbox events
 }
 
 var _ core.TransferStore = (*memTransferStore)(nil)
@@ -50,9 +55,22 @@ func newMemTransferStore() *memTransferStore {
 	}
 }
 
+func (s *memTransferStore) setEventPublisher(p domain.EventPublisher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eventPublisher = p
+}
+
 func (s *memTransferStore) CreateTransfer(ctx context.Context, t *domain.Transfer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Enforce idempotency key uniqueness within a tenant (mirrors DB UNIQUE constraint).
+	if t.IdempotencyKey != "" {
+		key := fmt.Sprintf("%s:%s", t.TenantID, t.IdempotencyKey)
+		if _, exists := s.idempotent[key]; exists {
+			return fmt.Errorf("duplicate idempotency key %s for tenant %s", t.IdempotencyKey, t.TenantID)
+		}
+	}
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
 	}
@@ -174,6 +192,84 @@ func (s *memTransferStore) ListTransfers(ctx context.Context, tenantID uuid.UUID
 	return result[offset:end], nil
 }
 
+func (s *memTransferStore) TransitionWithOutbox(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error {
+	s.mu.Lock()
+	t, ok := s.transfers[transferID]
+	if !ok {
+		s.mu.Unlock()
+		return domain.ErrTransferNotFound(transferID.String())
+	}
+	if t.Version != expectedVersion {
+		s.mu.Unlock()
+		return domain.ErrOptimisticLock("transfer", transferID.String())
+	}
+	fromStatus := t.Status
+	t.Status = newStatus
+	t.Version++
+	now := time.Now().UTC()
+	ev := domain.TransferEvent{
+		ID:         uuid.New(),
+		TransferID: transferID,
+		TenantID:   t.TenantID,
+		FromStatus: fromStatus,
+		ToStatus:   newStatus,
+		OccurredAt: now,
+	}
+	s.events[transferID] = append(s.events[transferID], ev)
+	s.outboxEntries = append(s.outboxEntries, entries...)
+	pub := s.eventPublisher
+	s.mu.Unlock()
+
+	// Publish non-intent outbox entries as domain events.
+	if pub != nil {
+		for _, e := range entries {
+			if !e.IsIntent {
+				_ = pub.Publish(ctx, domain.Event{
+					ID:        e.ID,
+					TenantID:  e.TenantID,
+					Type:      e.EventType,
+					Timestamp: e.CreatedAt,
+				})
+			}
+		}
+	}
+	return nil
+}
+
+func (s *memTransferStore) CreateTransferWithOutbox(ctx context.Context, transfer *domain.Transfer, entries []domain.OutboxEntry) error {
+	if err := s.CreateTransfer(ctx, transfer); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	// Record a TransferEvent for the initial CREATED status
+	createdEv := domain.TransferEvent{
+		ID:         uuid.New(),
+		TransferID: transfer.ID,
+		TenantID:   transfer.TenantID,
+		FromStatus: "",
+		ToStatus:   domain.TransferStatusCreated,
+		OccurredAt: transfer.CreatedAt,
+	}
+	s.events[transfer.ID] = append(s.events[transfer.ID], createdEv)
+	s.outboxEntries = append(s.outboxEntries, entries...)
+	pub := s.eventPublisher
+	s.mu.Unlock()
+
+	if pub != nil {
+		for _, e := range entries {
+			if !e.IsIntent {
+				_ = pub.Publish(ctx, domain.Event{
+					ID:        e.ID,
+					TenantID:  e.TenantID,
+					Type:      e.EventType,
+					Timestamp: e.CreatedAt,
+				})
+			}
+		}
+	}
+	return nil
+}
+
 func (s *memTransferStore) addQuote(q *domain.Quote) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,6 +284,15 @@ func (s *memTransferStore) allTransfers() []*domain.Transfer {
 		result = append(result, t)
 	}
 	return result
+}
+
+// drainOutbox returns and clears all accumulated outbox entries.
+func (s *memTransferStore) drainOutbox() []domain.OutboxEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := s.outboxEntries
+	s.outboxEntries = nil
+	return entries
 }
 
 // ─── In-Memory Tenant Store ─────────────────────────────────────────────────
@@ -429,41 +534,6 @@ func (c *eventCollector) reset() {
 	c.events = nil
 }
 
-// ─── Registry Adapter (core.ProviderRegistry) ───────────────────────────────
-
-// coreRegistryAdapter wraps provider.Registry to satisfy core.ProviderRegistry.
-// core.ProviderRegistry returns nil on not-found (no error), while
-// provider.Registry returns (T, error).
-type coreRegistryAdapter struct {
-	reg *provider.Registry
-}
-
-var _ core.ProviderRegistry = (*coreRegistryAdapter)(nil)
-
-func (a *coreRegistryAdapter) GetOnRampProvider(id string) domain.OnRampProvider {
-	p, err := a.reg.GetOnRamp(id)
-	if err != nil {
-		return nil
-	}
-	return p
-}
-
-func (a *coreRegistryAdapter) GetOffRampProvider(id string) domain.OffRampProvider {
-	p, err := a.reg.GetOffRamp(id)
-	if err != nil {
-		return nil
-	}
-	return p
-}
-
-func (a *coreRegistryAdapter) GetBlockchainClient(chain string) domain.BlockchainClient {
-	c, err := a.reg.GetBlockchainClient(chain)
-	if err != nil {
-		return nil
-	}
-	return c
-}
-
 // ─── Test Harness ───────────────────────────────────────────────────────────
 
 type testHarness struct {
@@ -491,6 +561,8 @@ func newTestHarness(t *testing.T) *testHarness {
 	tenantStore := newMemTenantStore()
 	treasuryStore := newMemTreasuryStore()
 	events := newEventCollector()
+	// Wire event publisher so TransitionWithOutbox publishes domain events.
+	transferStore.setEventPublisher(events)
 
 	// Seed Lemfi tenant
 	now := time.Now().UTC()
@@ -604,16 +676,11 @@ func newTestHarness(t *testing.T) *testHarness {
 	railRouter := router.NewRouter(reg, tenantStore, logger)
 	coreRouterAdapter := router.NewCoreRouterAdapter(railRouter, tenantStore, logger)
 
-	// Core engine
-	coreAdapter := &coreRegistryAdapter{reg: reg}
+	// Core engine (pure state machine — outbox pattern, no side-effect deps)
 	engine := core.NewEngine(
 		transferStore,
 		tenantStore,
-		ledgerSvc,
-		treasurySvc,
 		coreRouterAdapter,
-		coreAdapter,
-		events,
 		logger,
 		metrics,
 	)
@@ -628,5 +695,142 @@ func newTestHarness(t *testing.T) *testHarness {
 		TB:            tbClient,
 		Events:        events,
 		Registry:      reg,
+	}
+}
+
+// ─── Mock Types for Recovery Tests ───────────────────────────────────────────
+
+// memStuckTransferStore wraps memTransferStore to satisfy recovery.TransferQueryStore.
+type memStuckTransferStore struct {
+	inner *memTransferStore
+}
+
+func (s *memStuckTransferStore) ListStuckTransfers(ctx context.Context, status domain.TransferStatus, olderThan time.Time) ([]*domain.Transfer, error) {
+	s.inner.mu.RLock()
+	defer s.inner.mu.RUnlock()
+	var result []*domain.Transfer
+	for _, t := range s.inner.transfers {
+		if t.Status == status && t.UpdatedAt.Before(olderThan) {
+			result = append(result, t)
+		}
+	}
+	return result, nil
+}
+
+// mockReviewStore implements recovery.ReviewStore for testing.
+type mockReviewStore struct {
+	mu      sync.Mutex
+	reviews []mockReview
+}
+
+type mockReview struct {
+	transferID     uuid.UUID
+	tenantID       uuid.UUID
+	transferStatus string
+	stuckSince     time.Time
+}
+
+func (s *mockReviewStore) CreateManualReview(ctx context.Context, transferID, tenantID uuid.UUID, transferStatus string, stuckSince time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviews = append(s.reviews, mockReview{
+		transferID:     transferID,
+		tenantID:       tenantID,
+		transferStatus: transferStatus,
+		stuckSince:     stuckSince,
+	})
+	return nil
+}
+
+func (s *mockReviewStore) HasActiveReview(ctx context.Context, transferID uuid.UUID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.reviews {
+		if r.transferID == transferID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// mockProviderStatusChecker implements recovery.ProviderStatusChecker for testing.
+type mockProviderStatusChecker struct {
+	onRampStatus  map[uuid.UUID]*recovery.ProviderStatus
+	offRampStatus map[uuid.UUID]*recovery.ProviderStatus
+	chainStatus   map[string]*recovery.ChainStatus
+}
+
+func (m *mockProviderStatusChecker) CheckOnRampStatus(ctx context.Context, providerID string, transferID uuid.UUID) (*recovery.ProviderStatus, error) {
+	if m.onRampStatus != nil {
+		if s, ok := m.onRampStatus[transferID]; ok {
+			return s, nil
+		}
+	}
+	return &recovery.ProviderStatus{Status: "pending"}, nil
+}
+
+func (m *mockProviderStatusChecker) CheckOffRampStatus(ctx context.Context, providerID string, transferID uuid.UUID) (*recovery.ProviderStatus, error) {
+	if m.offRampStatus != nil {
+		if s, ok := m.offRampStatus[transferID]; ok {
+			return s, nil
+		}
+	}
+	return &recovery.ProviderStatus{Status: "pending"}, nil
+}
+
+func (m *mockProviderStatusChecker) CheckBlockchainStatus(ctx context.Context, chain string, txHash string) (*recovery.ChainStatus, error) {
+	if m.chainStatus != nil {
+		if s, ok := m.chainStatus[txHash]; ok {
+			return s, nil
+		}
+	}
+	return &recovery.ChainStatus{Confirmed: false}, nil
+}
+
+// executeOutbox processes pending outbox intents by calling the actual treasury
+// and ledger services. This simulates the workers in integration tests.
+func (h *testHarness) executeOutbox(ctx context.Context) {
+	entries := h.TransferStore.drainOutbox()
+	for _, e := range entries {
+		if !e.IsIntent {
+			continue
+		}
+		switch e.EventType {
+		case domain.IntentTreasuryReserve:
+			var p domain.TreasuryReservePayload
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				_ = h.Treasury.Reserve(ctx, p.TenantID, p.Currency, p.Location, p.Amount, p.TransferID)
+			}
+		case domain.IntentTreasuryRelease:
+			var p domain.TreasuryReleasePayload
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				_ = h.Treasury.Release(ctx, p.TenantID, p.Currency, p.Location, p.Amount, p.TransferID)
+			}
+		case domain.IntentLedgerPost:
+			var p domain.LedgerPostPayload
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				tenantID := p.TenantID
+				entry := domain.JournalEntry{
+					ID:             uuid.New(),
+					TenantID:       &tenantID,
+					IdempotencyKey: p.IdempotencyKey,
+					Description:    p.Description,
+					ReferenceType:  p.ReferenceType,
+					PostedAt:       time.Now().UTC(),
+				}
+				for _, l := range p.Lines {
+					entry.Lines = append(entry.Lines, domain.EntryLine{
+						Posting: domain.Posting{
+							AccountCode: l.AccountCode,
+							EntryType:   domain.EntryType(l.EntryType),
+							Amount:      l.Amount,
+							Currency:    domain.Currency(l.Currency),
+							Description: l.Description,
+						},
+					})
+				}
+				_, _ = h.Ledger.PostEntries(ctx, entry)
+			}
+		}
 	}
 }
