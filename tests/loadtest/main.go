@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -46,6 +47,14 @@ type LoadTestConfig struct {
 	Duration       time.Duration
 	RampUpDuration time.Duration
 	DrainDuration  time.Duration
+
+	// Optional: direct database URLs for post-test consistency checks.
+	// If empty, DB-backed checks are skipped (best-effort, no failure).
+	TransferDBURL string // e.g. postgres://settla:settla@localhost:6434/settla_transfer?sslmode=disable
+	LedgerDBURL   string // e.g. postgres://settla:settla@localhost:6433/settla_ledger?sslmode=disable
+
+	// MaxErrorRate is the maximum acceptable error rate as a percentage (default 1.0%).
+	MaxErrorRate float64
 }
 
 // TenantConfig represents a test tenant with API credentials.
@@ -112,22 +121,18 @@ func (r *LoadTestRunner) Run(ctx context.Context) error {
 	// Start result collector
 	go r.collectResults(ctx)
 
-	// Phase 1: Ramp-up
 	if err := r.phaseRampUp(ctx); err != nil {
 		return fmt.Errorf("ramp-up phase failed: %w", err)
 	}
 
-	// Phase 2: Sustained peak
 	if err := r.phaseSustainedPeak(ctx); err != nil {
 		return fmt.Errorf("sustained peak phase failed: %w", err)
 	}
 
-	// Phase 3: Drain
 	if err := r.phaseDrain(ctx); err != nil {
 		return fmt.Errorf("drain phase failed: %w", err)
 	}
 
-	// Phase 4: Verification
 	if err := r.phaseVerification(ctx); err != nil {
 		return fmt.Errorf("verification phase failed: %w", err)
 	}
@@ -324,7 +329,7 @@ func (r *LoadTestRunner) executeTransferFlow(ctx context.Context) {
 	if err != nil {
 		r.inflight.Add(-1)
 		r.logger.Error("quote creation failed", "tenant", tenant.ID, "error", err)
-		r.metrics.RecordError("quote_create_failed")
+		r.metrics.RecordError(categorizeError(err))
 		r.transferCh <- TransferResult{Error: err, TenantID: tenant.ID}
 		return
 	}
@@ -336,7 +341,7 @@ func (r *LoadTestRunner) executeTransferFlow(ctx context.Context) {
 	if err != nil {
 		r.inflight.Add(-1)
 		r.logger.Error("transfer creation failed", "tenant", tenant.ID, "error", err)
-		r.metrics.RecordError("transfer_create_failed")
+		r.metrics.RecordError(categorizeError(err))
 		r.transferCh <- TransferResult{Error: err, TenantID: tenant.ID}
 		return
 	}
@@ -533,11 +538,52 @@ func (r *LoadTestRunner) doRequest(ctx context.Context, method, path, apiKey str
 	}
 
 	if resp.StatusCode >= 400 {
+		category := categorizeHTTPError(resp.StatusCode)
+		r.metrics.RecordError(category)
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	r.metrics.RequestsTotal.Add(1)
 	return respBody, nil
+}
+
+// categorizeError maps an error to a category based on its message.
+func categorizeError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "http 429"):
+		return "rate_limited_429"
+	case strings.Contains(msg, "http 5"):
+		return "server_error_5xx"
+	case strings.Contains(msg, "http 4"):
+		return "client_error_4xx"
+	case strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "dial"):
+		return "connection_error"
+	default:
+		return "unknown"
+	}
+}
+
+// categorizeHTTPError maps an HTTP status code to an error category.
+func categorizeHTTPError(statusCode int) string {
+	switch {
+	case statusCode == 429:
+		return "rate_limited_429"
+	case statusCode >= 500:
+		return "server_error_5xx"
+	case statusCode >= 400:
+		return "client_error_4xx"
+	default:
+		return "unknown"
+	}
 }
 
 // reportMetrics prints live metrics every 5 seconds and tracks current TPS.
@@ -650,15 +696,18 @@ func randomDestCurrency(source string) string {
 
 func main() {
 	var (
-		gatewayURL   = flag.String("gateway", "http://localhost:3000", "Gateway URL")
-		targetTPS    = flag.Int("tps", 1000, "Target transactions per second")
-		duration     = flag.Duration("duration", 10*time.Minute, "Test duration")
-		tenants      = flag.Int("tenants", 2, "Number of tenants to simulate")
-		rampUp       = flag.Duration("rampup", 30*time.Second, "Ramp-up duration")
-		drain        = flag.Duration("drain", 60*time.Second, "Drain duration")
-		soakMode     = flag.Bool("soak", false, "Run in soak test mode (with health monitoring)")
-		pprofURL     = flag.String("pprof", "http://localhost:6060", "settla-server pprof URL")
-		scenarioName = flag.String("scenario", "", "Named scenario (PeakLoad|SustainedLoad|BurstRecovery|SingleTenantFlood|MultiTenantScale)")
+		gatewayURL    = flag.String("gateway", "http://localhost:3000", "Gateway URL")
+		targetTPS     = flag.Int("tps", 1000, "Target transactions per second")
+		duration      = flag.Duration("duration", 10*time.Minute, "Test duration")
+		tenants       = flag.Int("tenants", 2, "Number of tenants to simulate")
+		rampUp        = flag.Duration("rampup", 30*time.Second, "Ramp-up duration")
+		drain         = flag.Duration("drain", 60*time.Second, "Drain duration")
+		soakMode      = flag.Bool("soak", false, "Run in soak test mode (with health monitoring)")
+		pprofURL      = flag.String("pprof", "http://localhost:6060", "settla-server pprof URL")
+		scenarioName  = flag.String("scenario", "", "Named scenario (PeakLoad|SustainedLoad|BurstRecovery|SingleTenantFlood|MultiTenantScale)")
+		transferDBURL = flag.String("transfer-db", "", "Transfer DB URL for post-test outbox/stuck-transfer checks (optional)")
+		ledgerDBURL   = flag.String("ledger-db", "", "Ledger DB URL for post-test debit=credit balance check (optional)")
+		maxErrorRate  = flag.Float64("max-error-rate", 1.0, "Maximum acceptable error rate percentage (default 1.0%)")
 	)
 	flag.Parse()
 
@@ -669,18 +718,56 @@ func main() {
 
 	// Seed tenant configs — these must match the API keys in db/seed/transfer_seed.sql
 	seedTenants := []TenantConfig{
-		{
-			ID:       "a0000000-0000-0000-0000-000000000001",
-			APIKey:   "sk_live_lemfi_demo_key",
-			Currency: "GBP",
-			Country:  "NG",
-		},
-		{
-			ID:       "b0000000-0000-0000-0000-000000000002",
-			APIKey:   "sk_live_fincra_demo_key",
-			Currency: "NGN",
-			Country:  "GB",
-		},
+		{ID: "a0000000-0000-0000-0000-000000000001", APIKey: "sk_live_lemfi_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "b0000000-0000-0000-0000-000000000002", APIKey: "sk_live_fincra_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "c0000000-0000-0000-0000-000000000003", APIKey: "sk_live_paystack_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "d0000000-0000-0000-0000-000000000004", APIKey: "sk_live_flutterwave_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "e0000000-0000-0000-0000-000000000005", APIKey: "sk_live_chipper_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "f0000000-0000-0000-0000-000000000006", APIKey: "sk_live_moniepoint_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "10000000-0000-0000-0000-000000000007", APIKey: "sk_live_kuda_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "20000000-0000-0000-0000-000000000008", APIKey: "sk_live_opay_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "30000000-0000-0000-0000-000000000009", APIKey: "sk_live_ecobank_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "40000000-0000-0000-0000-000000000010", APIKey: "sk_live_access_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000011", APIKey: "sk_live_palmpay_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000012", APIKey: "sk_live_carbon_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000013", APIKey: "sk_live_fairmoney_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000014", APIKey: "sk_live_wise_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000015", APIKey: "sk_live_worldremit_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000016", APIKey: "sk_live_monzo_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000017", APIKey: "sk_live_revolut_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000018", APIKey: "sk_live_paga_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000019", APIKey: "sk_live_remitly_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000020", APIKey: "sk_live_teamapt_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000021", APIKey: "sk_live_starling_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000022", APIKey: "sk_live_vfd_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000023", APIKey: "sk_live_nala_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000024", APIKey: "sk_live_wema_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000025", APIKey: "sk_live_sendwave_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000026", APIKey: "sk_live_zenith_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000027", APIKey: "sk_live_azimo_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000028", APIKey: "sk_live_gtbank_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000029", APIKey: "sk_live_tymebank_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000030", APIKey: "sk_live_firstbank_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000031", APIKey: "sk_live_xoom_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000032", APIKey: "sk_live_uba_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000033", APIKey: "sk_live_currencycloud_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000034", APIKey: "sk_live_interswitch_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000035", APIKey: "sk_live_transfergo_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000036", APIKey: "sk_live_stanbic_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000037", APIKey: "sk_live_skrill_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000038", APIKey: "sk_live_fcmb_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000039", APIKey: "sk_live_payoneer_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000040", APIKey: "sk_live_sterling_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000041", APIKey: "sk_live_afriex_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000042", APIKey: "sk_live_providus_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000043", APIKey: "sk_live_mukuru_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000044", APIKey: "sk_live_fidelity_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000045", APIKey: "sk_live_taptap_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000046", APIKey: "sk_live_polaris_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000047", APIKey: "sk_live_cellulant_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000048", APIKey: "sk_live_unionbank_demo_key", Currency: "NGN", Country: "GB"},
+		{ID: "50000000-0000-0000-0000-000000000049", APIKey: "sk_live_mfsafrica_demo_key", Currency: "GBP", Country: "NG"},
+		{ID: "50000000-0000-0000-0000-000000000050", APIKey: "sk_live_heritage_demo_key", Currency: "NGN", Country: "GB"},
 	}
 
 	var config LoadTestConfig
@@ -710,7 +797,19 @@ func main() {
 			Duration:       *duration,
 			RampUpDuration: *rampUp,
 			DrainDuration:  *drain,
+			MaxErrorRate:   *maxErrorRate,
 		}
+	}
+
+	// DB URLs are always injectable regardless of scenario/flag mode.
+	if *transferDBURL != "" {
+		config.TransferDBURL = *transferDBURL
+	}
+	if *ledgerDBURL != "" {
+		config.LedgerDBURL = *ledgerDBURL
+	}
+	if config.MaxErrorRate == 0 {
+		config.MaxErrorRate = *maxErrorRate
 	}
 
 	// Handle graceful shutdown

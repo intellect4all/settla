@@ -39,7 +39,7 @@ func DefaultChaosConfig() ChaosConfig {
 	return ChaosConfig{
 		ComposeFile:     "deploy/docker-compose.yml",
 		EnvFile:         ".env",
-		GatewayURL:      "http://localhost:3000",
+		GatewayURL:      "http://localhost:3100",
 		ServerURL:       "http://localhost:8080",
 		LoadTPS:         500,
 		LoadDuration:    60 * time.Second,
@@ -67,6 +67,7 @@ type ScenarioResult struct {
 	DataConsistent     bool
 	LedgerBalanced     bool
 	TreasuryConsistent bool
+	StuckTransfers     int64
 	Passed             bool
 	FailReason         string
 }
@@ -92,6 +93,8 @@ func (c *ChaosRunner) Run(ctx context.Context) error {
 		{"Redis Failure", c.scenarioRedisFailure},
 		{"Server Crash", c.scenarioServerCrash},
 		{"PgBouncer Saturation", c.scenarioPgBouncerSaturation},
+		{"Outbox Relay Interruption", c.scenarioOutboxRelayInterruption},
+		{"Worker Node Restart", c.scenarioWorkerNodeRestart},
 	}
 
 	fmt.Println()
@@ -390,7 +393,7 @@ func main() {
 	var (
 		composeFile = flag.String("compose", "deploy/docker-compose.yml", "Docker compose file")
 		envFile     = flag.String("env", ".env", "Environment file")
-		gatewayURL  = flag.String("gateway", "http://localhost:3000", "Gateway URL")
+		gatewayURL  = flag.String("gateway", "http://localhost:3100", "Gateway URL")
 		serverURL   = flag.String("server", "http://localhost:8080", "Server URL")
 		tps         = flag.Int("tps", 500, "Background TPS during chaos")
 	)
