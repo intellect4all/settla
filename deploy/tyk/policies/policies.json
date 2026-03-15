@@ -1,0 +1,50 @@
+[
+  {
+    "id": "settla-standard",
+    "org_id": "settla",
+    "rate": 30,
+    "per": 60,
+    "quota_max": 10000,
+    "quota_renewal_rate": 3600,
+    "access_rights": {
+      "settla-quotes": { "api_name": "Settla Quotes API", "api_id": "settla-quotes", "versions": ["Default"] },
+      "settla-transfers": { "api_name": "Settla Transfers API", "api_id": "settla-transfers", "versions": ["Default"] },
+      "settla-treasury": { "api_name": "Settla Treasury API", "api_id": "settla-treasury", "versions": ["Default"] }
+    },
+    "active": true,
+    "name": "Standard Tenant Policy",
+    "tags": ["tenant", "standard"]
+  },
+  {
+    "id": "settla-premium",
+    "org_id": "settla",
+    "rate": 100,
+    "per": 60,
+    "quota_max": 50000,
+    "quota_renewal_rate": 3600,
+    "access_rights": {
+      "settla-quotes": { "api_name": "Settla Quotes API", "api_id": "settla-quotes", "versions": ["Default"] },
+      "settla-transfers": { "api_name": "Settla Transfers API", "api_id": "settla-transfers", "versions": ["Default"] },
+      "settla-treasury": { "api_name": "Settla Treasury API", "api_id": "settla-treasury", "versions": ["Default"] }
+    },
+    "active": true,
+    "name": "Premium Tenant Policy",
+    "tags": ["tenant", "premium"]
+  },
+  {
+    "id": "settla-admin",
+    "org_id": "settla",
+    "rate": 1000,
+    "per": 60,
+    "quota_max": -1,
+    "access_rights": {
+      "settla-admin": { "api_name": "Settla Admin API", "api_id": "settla-admin", "versions": ["Default"] },
+      "settla-quotes": { "api_name": "Settla Quotes API", "api_id": "settla-quotes", "versions": ["Default"] },
+      "settla-transfers": { "api_name": "Settla Transfers API", "api_id": "settla-transfers", "versions": ["Default"] },
+      "settla-treasury": { "api_name": "Settla Treasury API", "api_id": "settla-treasury", "versions": ["Default"] }
+    },
+    "active": true,
+    "name": "Admin Policy",
+    "tags": ["admin"]
+  }
+]

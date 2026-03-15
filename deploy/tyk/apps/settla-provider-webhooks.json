@@ -1,0 +1,29 @@
+{
+  "name": "Settla Provider Webhooks",
+  "slug": "settla-provider-webhooks",
+  "api_id": "settla-provider-webhooks",
+  "org_id": "settla",
+  "use_keyless": true,
+  "definition": {
+    "location": "header",
+    "key": "x-api-version"
+  },
+  "version_data": {
+    "not_versioned": true,
+    "versions": {
+      "Default": {
+        "name": "Default",
+        "use_extended_paths": true,
+        "extended_paths": {}
+      }
+    }
+  },
+  "proxy": {
+    "listen_path": "/webhooks/providers",
+    "target_url": "http://gateway:3000",
+    "strip_listen_path": false,
+    "preserve_host_header": false
+  },
+  "active": true,
+  "enable_batch_request_support": false
+}

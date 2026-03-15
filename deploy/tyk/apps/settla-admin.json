@@ -1,0 +1,36 @@
+{
+  "name": "Settla Admin API",
+  "slug": "settla-admin",
+  "api_id": "settla-admin",
+  "org_id": "settla",
+  "use_keyless": false,
+  "definition": {
+    "location": "header",
+    "key": "x-api-version"
+  },
+  "auth": {
+    "auth_header_name": "Authorization",
+    "use_param": false,
+    "strip_auth_data": false
+  },
+  "version_data": {
+    "not_versioned": true,
+    "versions": {
+      "Default": {
+        "name": "Default",
+        "use_extended_paths": true,
+        "extended_paths": {
+          "rate_limit": []
+        }
+      }
+    }
+  },
+  "proxy": {
+    "listen_path": "/admin",
+    "target_url": "http://gateway:3000",
+    "strip_listen_path": false,
+    "preserve_host_header": false
+  },
+  "active": true,
+  "enable_batch_request_support": false
+}

@@ -1,0 +1,225 @@
+# Settla AlertManager configuration for five-nines availability.
+#
+# Routing strategy:
+#   critical → PagerDuty (immediate page) + Slack #settla-incidents
+#   warning  → Slack #settla-alerts (ticket, no page)
+#   default  → Slack #settla-monitoring (informational)
+#
+# Environment variables (injected via K8s secrets or Docker env):
+#   SLACK_WEBHOOK_URL       — Slack incoming webhook URL
+#   PAGERDUTY_SERVICE_KEY   — PagerDuty Events API v1 service key
+#
+# Group timing is optimized for five-nines:
+#   group_wait: 10s   — fast initial notification
+#   group_interval: 30s — rapid follow-up for evolving incidents
+#   repeat_interval: 4h — avoid alert fatigue on persistent issues
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+# ── Templates ────────────────────────────────────────────────────────────
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# ── Routing tree ─────────────────────────────────────────────────────────
+route:
+  receiver: default
+  group_by: ['alertname', 'severity', 'team']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts: page on-call AND post to incidents channel
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      group_wait: 5s
+      group_interval: 15s
+      repeat_interval: 1h
+      continue: true
+
+    - match:
+        severity: critical
+      receiver: slack-incidents
+      group_wait: 5s
+      group_interval: 15s
+      repeat_interval: 1h
+      continue: true
+
+    # Critical alerts also trigger auto-remediation webhook
+    - match:
+        severity: critical
+      receiver: remediation-webhook
+      group_wait: 5s
+      group_interval: 1m
+      repeat_interval: 15m
+
+    # Warning alerts: Slack channel, no page
+    - match:
+        severity: warning
+      receiver: slack-alerts
+      group_wait: 15s
+      group_interval: 1m
+      repeat_interval: 4h
+
+# ── Receivers ────────────────────────────────────────────────────────────
+receivers:
+  # Default: low-priority informational alerts
+  - name: default
+    slack_configs:
+      - channel: '#settla-monitoring'
+        send_resolved: true
+        title: >-
+          {{ if eq .Status "firing" }}:information_source:{{ else }}:white_check_mark:{{ end }}
+          [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}
+        text: >-
+          *Severity:* `{{ .CommonLabels.severity }}`
+
+          *Alerts:*
+          {{ range .Alerts }}
+          - *{{ .Labels.alertname }}* on `{{ .Labels.instance }}`
+            {{ .Annotations.summary }}
+            {{ if .Annotations.description }}> {{ .Annotations.description }}{{ end }}
+            {{ if .Annotations.runbook }}:book: <{{ .Annotations.runbook }}|Runbook>{{ end }}
+          {{ end }}
+        fallback: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        icon_emoji: ':prometheus:'
+        username: 'Settla Alerts'
+
+  # PagerDuty: pages on-call engineer for critical alerts
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        severity: critical
+        description: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        client: 'Settla AlertManager'
+        client_url: 'https://settla.internal/grafana'
+        details:
+          alertname: '{{ .CommonLabels.alertname }}'
+          severity: '{{ .CommonLabels.severity }}'
+          instance: '{{ .CommonLabels.instance }}'
+          summary: '{{ .CommonAnnotations.summary }}'
+          description: '{{ .CommonAnnotations.description }}'
+          runbook: '{{ .CommonAnnotations.runbook }}'
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+
+  # Slack #settla-incidents: critical alerts with full context
+  - name: slack-incidents
+    slack_configs:
+      - channel: '#settla-incidents'
+        send_resolved: true
+        color: >-
+          {{ if eq .Status "firing" }}danger{{ else }}good{{ end }}
+        title: >-
+          {{ if eq .Status "firing" }}:rotating_light:{{ else }}:white_check_mark:{{ end }}
+          [{{ .Status | toUpper }}{{ if eq .Status "firing" }} x{{ .Alerts.Firing | len }}{{ end }}]
+          {{ .CommonLabels.alertname }}
+        title_link: '{{ (index .Alerts 0).Annotations.dashboard }}'
+        text: >-
+          *Severity:* :red_circle: `critical`
+          *Team:* `{{ .CommonLabels.team }}`
+          {{ if .CommonLabels.slo }}*SLO:* `{{ .CommonLabels.slo }}`{{ end }}
+
+          {{ range .Alerts }}
+          ---
+          :warning: *{{ .Labels.alertname }}*
+          *Instance:* `{{ .Labels.instance }}`
+          *Summary:* {{ .Annotations.summary }}
+          *Details:* {{ .Annotations.description }}
+          {{ if .Annotations.runbook }}:book: *Runbook:* <{{ .Annotations.runbook }}|Open Runbook>{{ end }}
+          {{ if .Annotations.dashboard }}:bar_chart: *Dashboard:* <{{ .Annotations.dashboard }}|Open Dashboard>{{ end }}
+          *Started:* {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
+          {{ end }}
+        fallback: >-
+          CRITICAL: {{ .CommonLabels.alertname }} — {{ .CommonAnnotations.summary }}
+        icon_emoji: ':fire:'
+        username: 'Settla Incidents'
+        actions:
+          - type: button
+            text: 'View Runbook'
+            url: '{{ .CommonAnnotations.runbook }}'
+          - type: button
+            text: 'Open Dashboard'
+            url: '{{ (index .Alerts 0).Annotations.dashboard }}'
+          - type: button
+            text: 'Acknowledge in PagerDuty'
+            url: 'https://settla.pagerduty.com/incidents'
+
+  # Slack #settla-alerts: warning alerts
+  - name: slack-alerts
+    slack_configs:
+      - channel: '#settla-alerts'
+        send_resolved: true
+        color: >-
+          {{ if eq .Status "firing" }}warning{{ else }}good{{ end }}
+        title: >-
+          {{ if eq .Status "firing" }}:warning:{{ else }}:white_check_mark:{{ end }}
+          [{{ .Status | toUpper }}{{ if eq .Status "firing" }} x{{ .Alerts.Firing | len }}{{ end }}]
+          {{ .CommonLabels.alertname }}
+        title_link: '{{ (index .Alerts 0).Annotations.dashboard }}'
+        text: >-
+          *Severity:* :large_yellow_circle: `warning`
+          {{ if .CommonLabels.slo }}*SLO:* `{{ .CommonLabels.slo }}`{{ end }}
+
+          {{ range .Alerts }}
+          ---
+          *{{ .Labels.alertname }}* on `{{ .Labels.instance }}`
+          {{ .Annotations.summary }}
+          {{ if .Annotations.description }}> {{ .Annotations.description }}{{ end }}
+          {{ if .Annotations.runbook }}:book: <{{ .Annotations.runbook }}|Runbook>{{ end }}
+          {{ if .Annotations.dashboard }}:bar_chart: <{{ .Annotations.dashboard }}|Dashboard>{{ end }}
+          {{ end }}
+        fallback: >-
+          WARNING: {{ .CommonLabels.alertname }} — {{ .CommonAnnotations.summary }}
+        icon_emoji: ':warning:'
+        username: 'Settla Alerts'
+
+  # Auto-remediation webhook receiver
+  - name: remediation-webhook
+    webhook_configs:
+      - url: 'http://alertmanager-remediation:9095/webhook'
+        send_resolved: false
+        max_alerts: 1
+        http_config:
+          bearer_token: '${REMEDIATION_WEBHOOK_TOKEN}'
+
+# ── Inhibition rules ────────────────────────────────────────────────────
+# Prevent alert storms by suppressing lower-severity alerts when
+# higher-severity alerts are already firing for the same issue.
+inhibit_rules:
+  # Don't fire warning if critical is already firing for same alertname
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['alertname']
+
+  # Don't fire component health alerts if synthetic canary is failing
+  # (synthetic failure is the highest-confidence signal)
+  - source_match:
+      alertname: SettlaSyntheticFailure
+    target_match_re:
+      alertname: 'Settla(HighErrorRate|TransferSuccess|LatencySLO).*'
+    equal: ['team']
+
+  # Don't fire NATS consumer lag if NATS itself is down
+  - source_match:
+      alertname: SettlaNATSDown
+    target_match_re:
+      alertname: 'SettlaNATS(ConsumerLag|MessageRate).*'
+
+  # Don't fire PgBouncer alerts if the underlying Postgres is down
+  - source_match_re:
+      alertname: 'SettlaPostgres.*Down'
+    target_match_re:
+      alertname: 'SettlaPgBouncer.*'
+    equal: ['database']
+
+  # Don't fire Redis cache alerts if Redis itself is down
+  - source_match:
+      alertname: SettlaRedisDown
+    target_match_re:
+      alertname: 'SettlaRedisMemory.*'

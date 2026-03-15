@@ -1,0 +1,29 @@
+{
+  "name": "Settla Health API",
+  "slug": "settla-health",
+  "api_id": "settla-health",
+  "org_id": "settla",
+  "use_keyless": true,
+  "definition": {
+    "location": "header",
+    "key": "x-api-version"
+  },
+  "version_data": {
+    "not_versioned": true,
+    "versions": {
+      "Default": {
+        "name": "Default",
+        "use_extended_paths": true,
+        "extended_paths": {}
+      }
+    }
+  },
+  "proxy": {
+    "listen_path": "/health",
+    "target_url": "http://gateway:3000",
+    "strip_listen_path": false,
+    "preserve_host_header": false
+  },
+  "active": true,
+  "enable_batch_request_support": false
+}

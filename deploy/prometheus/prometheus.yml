@@ -1,31 +1,125 @@
+# Settla Prometheus configuration (Docker Compose).
+#
+# Scrapes all Settla services and infrastructure components.
+# Evaluation interval is 15s — aligned with five-nines alerting latency
+# requirements (detect + alert within 30s of anomaly onset).
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # External labels for federated Prometheus / Thanos identification.
+  external_labels:
+    cluster: 'settla-docker'
+    environment: 'development'
 
+# ── Alerting ─────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+      timeout: 10s
+
+# ── Alert rules ──────────────────────────────────────────────────────────
+rule_files:
+  - "/etc/prometheus/alerts/*.yml"
+  - "/etc/prometheus/alerts.yml"
+
+# ── Scrape configs ───────────────────────────────────────────────────────
 scrape_configs:
-  # ── Go services ──────────────────────────────────────────────
+  # ── Go services ──────────────────────────────────────────────────────
   - job_name: "settla-server"
     static_configs:
       - targets: ["settla-server:8080"]
     metrics_path: /metrics
+    scrape_interval: 10s    # Faster scrape for critical Go service
+    scrape_timeout: 5s
 
   - job_name: "settla-node"
     static_configs:
       - targets: ["settla-node:9091"]
     metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
 
-  # ── TypeScript services ──────────────────────────────────────
+  # ── TypeScript services ──────────────────────────────────────────────
   - job_name: "gateway"
     static_configs:
       - targets: ["gateway:3000"]
     metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
 
   - job_name: "webhook"
     static_configs:
       - targets: ["webhook:3001"]
     metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 5s
 
-  # ── Infrastructure ───────────────────────────────────────────
+  # ── Tyk API Gateway ─────────────────────────────────────────────────
+  - job_name: "tyk-gateway"
+    static_configs:
+      - targets: ["tyk-gateway:8080"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 5s
+
+  # ── Infrastructure ──────────────────────────────────────────────────
+
+  # Prometheus self-monitoring
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
+
+  # AlertManager
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+    metrics_path: /metrics
+
+  # NATS monitoring (HTTP monitoring port)
+  - job_name: "nats"
+    static_configs:
+      - targets: ["nats:8222"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # Redis (requires redis_exporter sidecar or standalone)
+  # Deploy redis_exporter alongside Redis for these metrics.
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+    scrape_interval: 15s
+
+  # PgBouncer (requires pgbouncer_exporter sidecar)
+  # Provides pool utilization, client waiting, server active metrics.
+  - job_name: "pgbouncer"
+    static_configs:
+      - targets:
+          - "pgbouncer-exporter-ledger:9127"
+          - "pgbouncer-exporter-transfer:9128"
+          - "pgbouncer-exporter-treasury:9129"
+    scrape_interval: 15s
+
+  # Postgres (requires postgres_exporter sidecar per DB)
+  # Provides replication lag, connection count, query stats.
+  - job_name: "postgres"
+    static_configs:
+      - targets:
+          - "postgres-exporter-ledger:9187"
+          - "postgres-exporter-transfer:9188"
+          - "postgres-exporter-treasury:9189"
+    scrape_interval: 15s
+
+  # TigerBeetle metrics exporter
+  - job_name: "tigerbeetle"
+    static_configs:
+      - targets: ["tigerbeetle-exporter:9181"]
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # Node exporter (host-level metrics: CPU, memory, disk, network)
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+    scrape_interval: 15s

@@ -1,0 +1,820 @@
+# Runbook base URL: https://settla.internal/runbooks/ — update when production docs platform is deployed
+#
+# Settla Prometheus alerting rules — aligned with SLO targets in docs/sla.md.
+#
+# Coverage:
+#   - Availability: error rate > 0.1% over 5m (SLA: 99.9%)
+#   - Latency: quote p95 > 200ms over 5m (SLA target)
+#   - Transfer stuck: p99 duration > 30 min (histogram proxy; settla_transfer_duration_seconds)
+#   - Treasury: over-reservation (settla_treasury_locked > settla_treasury_balance per label set)
+#   - Treasury: flush lag > 5s (settla_treasury_flush_lag_seconds)
+#   - NATS queue depth > 10K (warn), > 100K (critical) — settla_nats_partition_queue_depth
+#   - Outbox backlog > 10K (warn), > 100K (critical) — settla_outbox_unpublished_gauge
+#   - Error budget fast burn: 14.4x — page (settla_gateway_requests_total)
+#   - Error budget slow burn: 3x — notify (settla_gateway_requests_total)
+#   - Database replication lag > 60s WARNING (pg_replication_lag_seconds)
+#   - Disk usage > 70% (warn), > 85% (critical) — node_filesystem_* metrics
+#
+# Medium burn rate (6x) is covered in deploy/prometheus/alerts/settla-sli-alerts.yml
+# (SettlaHighErrorRateMediumBurn), which is also loaded by prometheus.yml rule_files.
+#
+# Metric sources:
+#   settla-server (:8080/metrics)  — Go server, treasury, transfer engine
+#   settla-node   (:9091/metrics)  — NATS workers, outbox relay
+#   gateway       (:3000/metrics)  — Fastify REST gateway
+#   postgres-exporter-*            — pg_replication_lag_seconds
+#   node-exporter (:9100/metrics)  — filesystem metrics
+
+groups:
+  # ═══════════════════════════════════════════════════════════════════════
+  # Availability
+  # SLA: 99.9% monthly (error budget: 43.2 min/month).
+  # Alert fires when the raw 5-minute error rate exceeds 0.1%.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-availability
+    interval: 15s
+    rules:
+      # ── Error rate > 0.1% over 5 minutes ──────────────────────────────
+      # Direct SLA threshold: any 5-minute window with > 0.1% 5xx errors
+      # is burning into the contractual error budget.
+      - alert: SettlaAvailabilityBreach
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(settla_gateway_requests_total[5m]))
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Gateway error rate {{ $value | humanizePercentage }} exceeds 0.1% SLA threshold"
+          description: >
+            The 5-minute HTTP 5xx error rate is {{ $value | humanizePercentage }},
+            above the 99.9% SLA threshold (0.1% errors allowed).
+            Monthly error budget is being consumed. Check gateway logs, settla-server health,
+            and downstream dependencies (TigerBeetle, Postgres, NATS).
+          runbook: "https://settla.internal/runbooks/availability-breach"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Error budget fast burn: 14.4x consumption rate ────────────────
+      # At 14.4x the SLO budget consumption rate the monthly budget (43.2 min)
+      # is exhausted in approximately 3 hours. Requires dual-window confirmation
+      # (5m + 1m) to avoid alerting on single-scrape noise.
+      # Page on-call immediately.
+      - alert: SettlaErrorBudgetFastBurn
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(settla_gateway_requests_total[5m]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[1m]))
+            /
+            sum(rate(settla_gateway_requests_total[1m]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Error budget fast burn: consuming at 14.4x — budget exhausted in ~3 hours"
+          description: >
+            Error rate {{ $value | humanizePercentage }} is 14.4× above the SLO budget
+            consumption rate. At this pace the entire monthly error budget (43.2 min) will
+            be exhausted in approximately 3 hours. Page on-call immediately.
+          runbook: "https://settla.internal/runbooks/error-budget-fast-burn"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Error budget slow burn: 3x consumption rate ───────────────────
+      # At 3x the budget is exhausted in approximately 10 days.
+      # Requires dual-window (6h + 1h) — catches slow-building degradation
+      # that would otherwise exhaust the budget without triggering fast burn.
+      # Notify team via Slack; no page required.
+      - alert: SettlaErrorBudgetSlowBurn
+        expr: |
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[6h]))
+            /
+            sum(rate(settla_gateway_requests_total[6h]))
+          ) > (3 * 0.001)
+          and
+          (
+            sum(rate(settla_gateway_requests_total{status=~"5.."}[1h]))
+            /
+            sum(rate(settla_gateway_requests_total[1h]))
+          ) > (3 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+          slo: availability
+        annotations:
+          summary: "Error budget slow burn: consuming at 3x — budget exhausted in ~10 days"
+          description: >
+            Error rate {{ $value | humanizePercentage }} sustained over a 6-hour window
+            is 3× above the SLO budget consumption rate. Monthly budget exhausted in ~10 days
+            at this pace. Review recent deploys and slow-building degradation signals.
+          runbook: "https://settla.internal/runbooks/error-budget-slow-burn"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Latency
+  # SLA: p95 < 200ms for POST /v1/quotes.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-latency
+    interval: 15s
+    rules:
+      # ── Quote p95 latency > 200ms ──────────────────────────────────────
+      # SLA commitment: POST /v1/quotes p95 < 200ms.
+      # Source metric: settla_gateway_request_duration_seconds_bucket
+      # with path="/v1/quotes" and method="POST" labels (set by Fastify metrics plugin).
+      - alert: SettlaQuoteLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum(
+              rate(settla_gateway_request_duration_seconds_bucket{path="/v1/quotes",method="POST"}[5m])
+            ) by (le)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          slo: latency
+        annotations:
+          summary: "Quote p95 latency {{ $value | humanizeDuration }} exceeds 200ms SLA"
+          description: >
+            POST /v1/quotes p95 latency is {{ $value | humanizeDuration }} over the last 5 minutes,
+            above the 200ms SLA commitment. Check: provider registry latency, gRPC pool health,
+            quote cache hit rate, and settla-server CPU/GC pressure.
+          runbook: "https://settla.internal/runbooks/quote-latency"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── Quote p95 latency > 500ms (critical) ──────────────────────────
+      # Hard floor: p95 > 500ms means the routing/scoring pipeline is severely
+      # degraded even for cached quotes.
+      - alert: SettlaQuoteLatencyP95Critical
+        expr: |
+          histogram_quantile(0.95,
+            sum(
+              rate(settla_gateway_request_duration_seconds_bucket{path="/v1/quotes",method="POST"}[5m])
+            ) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          slo: latency
+        annotations:
+          summary: "Quote p95 latency {{ $value | humanizeDuration }} exceeds 500ms — critical"
+          description: >
+            POST /v1/quotes p95 is {{ $value | humanizeDuration }}. The routing/scoring pipeline
+            is severely degraded. Investigate settla-server, gRPC connection pool exhaustion,
+            and provider health endpoints.
+          runbook: "https://settla.internal/runbooks/quote-latency-critical"
+          dashboard: "https://settla.internal/grafana/d/api-performance"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Transfer Pipeline
+  # SLA: >99.5% of transfers complete within 30 minutes.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-transfer-pipeline
+    interval: 30s
+    rules:
+      # ── Transfers stuck: p99 E2E duration > 30 minutes ───────────────
+      # Detects transfers that are not completing on time using the
+      # settla_transfer_duration_seconds histogram (emitted when a transfer
+      # reaches a terminal state). p99 > 1800s means ≥1% of transfers are
+      # breaching the contractual 30-minute SLA ceiling.
+      #
+      # Note: a dedicated settla_transfers_stuck_total gauge (transfers in a
+      # non-terminal state for > 30 min) would give a more direct signal but
+      # is not yet exported by the codebase. Use the duration histogram until
+      # the recovery module exposes that gauge.
+      - alert: SettlaTransferDurationP99Exceeded
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(settla_transfer_duration_seconds_bucket[15m])) by (le)
+          ) > 1800
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          slo: transfer-success
+        annotations:
+          summary: "Transfer p99 E2E duration exceeds 30 minutes"
+          description: >
+            Transfer p99 end-to-end duration is {{ $value | humanizeDuration }},
+            breaching the 30-minute SLA ceiling. This indicates that the slowest 1% of
+            transfers are not completing on time. Check provider latency, NATS lag,
+            and settlement confirmation delays.
+          runbook: "https://settla.internal/runbooks/transfer-duration-p99"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Treasury Integrity
+  # Critical Invariant: reserved must never exceed balance.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-treasury
+    interval: 15s
+    rules:
+      # ── Over-reservation: locked > balance ────────────────────────────
+      # This is a critical invariant violation. The treasury module uses
+      # in-memory atomic reservations; if locked > balance the system has
+      # issued more liquidity than is available — a fundamental correctness bug.
+      #
+      # Metric sources (from observability/metrics.go):
+      #   settla_treasury_locked{tenant, currency, location}  — reserved amount
+      #   settla_treasury_balance{tenant, currency, location} — total balance
+      # When locked > balance for the same label set, over-reservation has occurred.
+      - alert: SettlaTreasuryOverReservation
+        expr: |
+          sum by (tenant, currency, location) (settla_treasury_locked)
+          >
+          sum by (tenant, currency, location) (settla_treasury_balance)
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          slo: treasury-integrity
+        annotations:
+          summary: "CRITICAL: treasury over-reservation for tenant={{ $labels.tenant }} currency={{ $labels.currency }}"
+          description: >
+            The locked (reserved) amount exceeds the total balance for
+            tenant={{ $labels.tenant }}, currency={{ $labels.currency }},
+            location={{ $labels.location }}. This is a critical invariant violation —
+            the system has over-committed liquidity. Immediate investigation required:
+            review recent Reserve() calls, check for concurrent reservation races,
+            and validate the flush goroutine reconciliation logic.
+            Do NOT allow new transfers until this is resolved.
+          runbook: "https://settla.internal/runbooks/treasury-over-reservation"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      # ── Treasury flush lag — balance data at risk ──────────────────────
+      # TigerBeetle is the write authority. The Postgres treasury snapshot is
+      # updated by a 100ms flush goroutine. If the flush lag exceeds 5s the
+      # in-memory positions are at risk of being lost if the pod is killed
+      # before the next flush, which could result in balance inconsistency.
+      #
+      # Metric: settla_treasury_flush_lag_seconds (observability/metrics.go).
+      # Critical threshold: 5s (50× the target 100ms flush interval).
+      - alert: SettlaTreasuryFlushLagCritical
+        expr: settla_treasury_flush_lag_seconds > 5
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          slo: treasury-integrity
+        annotations:
+          summary: "CRITICAL: treasury flush lag {{ $value | humanizeDuration }} — positions at risk"
+          description: >
+            The treasury flush goroutine has not persisted in-memory positions to Postgres
+            for {{ $value | humanizeDuration }}. This is 50× the target 100ms interval.
+            In-memory positions will be lost if the pod is killed before the next flush,
+            causing balance inconsistency between Postgres and TigerBeetle.
+          runbook: "https://settla.internal/runbooks/treasury-flush-lag"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # NATS Queue Depth
+  # Partitioned JetStream consumers drive the transfer saga workers.
+  # High pending counts mean transfers are stalling.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-nats-queue
+    interval: 15s
+    rules:
+      # ── NATS partition queue depth > 10K (warning) ────────────────────
+      # 10K pending messages at 580 TPS means ~17 seconds of backlog.
+      # Workers are falling behind — scale settla-node replicas.
+      #
+      # Metric: settla_nats_partition_queue_depth{partition} (observability/metrics.go).
+      # Partitioned consumers use partition labels 0-7 (8 partitions).
+      - alert: SettlaNATSQueueDepthHigh
+        expr: settla_nats_partition_queue_depth > 10000
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS partition {{ $labels.partition }} queue depth {{ $value | humanize }} — workers falling behind"
+          description: >
+            Partition {{ $labels.partition }} has {{ $value | humanize }} pending messages.
+            Workers are falling behind the ingestion rate. Consider scaling settla-node
+            replicas or investigating slow message processing (provider timeouts, DB latency).
+          runbook: "https://settla.internal/runbooks/nats-queue-depth"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── NATS partition queue depth > 100K (critical) ──────────────────
+      # 100K pending messages at 580 TPS = ~3 minutes of processing backlog.
+      # Pipeline is severely stalled; transfers are visibly delayed to tenants.
+      - alert: SettlaNATSQueueDepthCritical
+        expr: settla_nats_partition_queue_depth > 100000
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "NATS partition {{ $labels.partition }} critically backlogged: {{ $value | humanize }} messages"
+          description: >
+            Partition {{ $labels.partition }} has {{ $value | humanize }} pending messages —
+            approximately {{ printf "%.0f" (div $value 580.0) }} seconds of backlog at
+            sustained TPS. Transfer pipeline is severely stalled. Immediate scaling or
+            manual intervention required. Check settla-node pod health and NATS connectivity.
+          runbook: "https://settla.internal/runbooks/nats-queue-depth-critical"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Outbox Backlog
+  # The transactional outbox (ADR-014) buffers domain events before relay
+  # to NATS. A growing backlog means the relay is falling behind.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-outbox
+    interval: 15s
+    rules:
+      # ── Outbox unpublished entries > 10K (warning) ────────────────────
+      # The outbox relay should drain near-continuously (50ms poll, batch 100).
+      # 10K unpublished entries signals the relay goroutine is falling behind.
+      #
+      # Metric: settla_outbox_unpublished_gauge (node/outbox/relay.go).
+      # This is a Gauge set to the count of unpublished entries in each poll batch.
+      - alert: SettlaOutboxBacklogHigh
+        expr: settla_outbox_unpublished_gauge > 10000
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Outbox backlog {{ $value | humanize }} unpublished entries"
+          description: >
+            The transactional outbox has {{ $value | humanize }} unpublished entries.
+            The relay goroutine is falling behind. Check: NATS connectivity from settla-node,
+            outbox relay goroutine health (pprof), and DB read performance on the outbox table.
+            A growing backlog will delay all downstream saga events.
+          runbook: "https://settla.internal/runbooks/outbox-backlog"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Outbox unpublished entries > 100K (critical) ──────────────────
+      # 100K unpublished entries: relay is completely stalled.
+      # All NATS-driven saga steps are blocked; transfers are frozen.
+      - alert: SettlaOutboxBacklogCritical
+        expr: settla_outbox_unpublished_gauge > 100000
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Outbox backlog critical: {{ $value | humanize }} unpublished entries — relay likely stalled"
+          description: >
+            The transactional outbox has {{ $value | humanize }} unpublished entries.
+            The relay is almost certainly stalled. All saga event processing (transfer state
+            transitions, webhook dispatch) is blocked. Immediate investigation of the outbox
+            relay goroutine, NATS connectivity, and outbox table lock contention.
+          runbook: "https://settla.internal/runbooks/outbox-backlog-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Database Replication Lag
+  # Settla uses 3 Postgres instances with read replicas in production.
+  # Replication lag breaks read-after-write consistency for tenant queries.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-db-replication
+    interval: 15s
+    rules:
+      # ── Replication lag > 60 seconds ──────────────────────────────────
+      # 60 seconds of lag means all read queries (balance checks, transfer status)
+      # are serving data that is at least 1 minute stale. Severity is WARNING per
+      # SLA doc (docs/sla.md) — this is an SLO target breach, not a hard failure.
+      # Source: pg_replication_lag_seconds from postgres_exporter.
+      - alert: SettlaPostgresReplicationLagSLO
+        expr: pg_replication_lag_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Postgres replication lag {{ $value | humanizeDuration }} on {{ $labels.instance }} exceeds 60s SLO"
+          description: >
+            Replication lag on {{ $labels.instance }} is {{ $value | humanizeDuration }}.
+            Read replicas are serving data over 1 minute stale. Tenant balance queries,
+            transfer status checks, and dashboard data are all affected.
+            Check WAL sender throughput, replica I/O, network bandwidth, and primary write load.
+            If lag continues to grow, consider failover or directing reads to primary.
+          runbook: "https://settla.internal/runbooks/postgres-replication-lag-slo"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Disk Usage
+  # Postgres WAL, TigerBeetle data files, and NATS JetStream all consume disk.
+  # Alert on used-space percentage (inverse of available/total).
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-disk
+    interval: 30s
+    rules:
+      # ── Disk usage > 70% (warning) ────────────────────────────────────
+      # At 70% used, plan ahead: expand volume, drop old partitions, or
+      # trigger WAL/JetStream compaction before hitting critical.
+      - alert: SettlaDiskUsageHigh
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+              /
+              node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+            )
+          ) > 0.70
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Disk usage {{ $value | humanizePercentage }} on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          description: >
+            Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is
+            {{ $value | humanizePercentage }} full. At this trajectory:
+            plan WAL segment cleanup, drop completed monthly Postgres partitions,
+            or expand the block volume before reaching 85% (critical threshold).
+          runbook: "https://settla.internal/runbooks/disk-usage-high"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      # ── Disk usage > 85% (critical) ───────────────────────────────────
+      # At 85% used: Postgres WAL generation and TigerBeetle write-ahead may
+      # start failing imminently. Immediate action required.
+      - alert: SettlaDiskUsageCritical
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+              /
+              node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+            )
+          ) > 0.85
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Disk usage critical: {{ $value | humanizePercentage }} on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+          description: >
+            Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is
+            {{ $value | humanizePercentage }} full. Postgres WAL generation and TigerBeetle
+            writes may fail imminently. Immediate action: expand block volume,
+            delete old monthly partitions (transfer/ledger DB), or force WAL archive cleanup.
+          runbook: "https://settla.internal/runbooks/disk-usage-critical"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Infrastructure Health
+  # Covers partition management, gRPC pool, NATS consumer lag,
+  # reconciliation, compensation flows, and webhook dead-letter queue.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-infrastructure
+    interval: 30s
+    rules:
+      # ── Partition creation lagging > 2 days ───────────────────────────
+      # The PartitionManager pre-creates monthly partitions 6 months ahead.
+      # If creation is > 2 days behind schedule, incoming rows risk landing
+      # in the default partition, which degrades DROP TABLE-based pruning.
+      - alert: PartitionCreationLag
+        expr: settla_partition_creation_lag_days > 2
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Partition creation is lagging"
+          description: >
+            Partitions are {{ $value }} days behind schedule. Incoming rows may
+            land in the default partition, breaking monthly DROP TABLE pruning
+            and causing unbounded table growth. Investigate the PartitionManager
+            goroutine and DB connectivity from settla-server.
+
+      # ── gRPC pool near-exhaustion > 80% ───────────────────────────────
+      # The gateway maintains ~50 persistent gRPC connections to settla-server.
+      # Above 80% utilisation, new requests will queue and latency will spike.
+      - alert: GrpcPoolExhaustion
+        expr: settla_grpc_pool_active / settla_grpc_pool_size > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "gRPC connection pool nearly exhausted"
+          description: >
+            gRPC pool is {{ $value | humanizePercentage }} utilized.
+            New gateway requests are competing for connections, risking latency
+            spikes on /v1/quotes and /v1/transfers. Consider increasing
+            SETTLA_GRPC_POOL_SIZE or scaling gateway replicas.
+
+      # ── NATS consumer delivery lag > 10K messages ─────────────────────
+      # Tracks per-consumer pending counts across all 7 Settla streams.
+      # A lag >10K on any single consumer means that worker is stalling;
+      # transfers assigned to that consumer will visibly delay.
+      - alert: NATSConsumerDeliveryLag
+        expr: settla_nats_consumer_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS consumer processing lag is high"
+          description: >
+            Consumer {{ $labels.consumer }} on stream {{ $labels.stream }} has
+            {{ $value }} pending messages. The worker is falling behind.
+            Check settla-node pod health, external provider latency, and DB
+            performance. Scale settla-node replicas if needed.
+
+      # ── Reconciliation check failed ────────────────────────────────────
+      # The reconciliation module runs 5 automated consistency checks
+      # (treasury-ledger balance, transfer state, outbox health, provider tx,
+      # daily volume). Any failure indicates a data integrity issue that
+      # requires immediate investigation.
+      - alert: ReconciliationFailed
+        expr: increase(settla_reconciliation_failed_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Reconciliation check failed"
+          description: >
+            A reconciliation check has failed in the last hour. This may
+            indicate a treasury-ledger balance mismatch, a stuck transfer,
+            an outbox health issue, or a daily volume anomaly. Investigate
+            immediately — do not allow new transfers until the root cause
+            is identified and resolved.
+
+      # ── High compensation failure rate ────────────────────────────────
+      # The compensation module handles refunds and reversals for partial
+      # failures. A failure rate > 0.1/s means automatic recovery is not
+      # keeping up and transfers are stranding in a non-terminal state.
+      - alert: CompensationFailureRate
+        expr: rate(settla_compensation_completed_total{result="failure"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High compensation failure rate"
+          description: >
+            Compensation failure rate is {{ $value | humanize }} per second.
+            Automatic refund and reversal flows are failing. Transfers may be
+            stranded awaiting manual review. Check provider connectivity,
+            treasury reserve availability, and ledger reversal errors.
+
+      # ── Webhook DLQ growth > 100 messages in 1 hour ──────────────────
+      # The outbound webhook dispatcher retries with exponential backoff.
+      # Messages reaching the dead-letter queue have exhausted all retries.
+      # A DLQ spike signals tenant endpoints are unreachable or rejecting.
+      - alert: WebhookDLQGrowth
+        expr: increase(settla_webhook_dlq_total[1h]) > 100
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Webhook DLQ is growing"
+          description: >
+            {{ $value }} messages were added to the webhook dead-letter queue
+            in the last hour. Tenant endpoints may be down or returning errors.
+            Check webhook delivery logs and notify affected tenants.
+            DLQ messages will not be retried automatically.
+
+      # ── Dead Letter Queue (NATS JetStream DLQ) ──────────────────────
+      # Fires when any message is dead-lettered across any stream.
+      # Even a single DLQ message in a payment system warrants investigation.
+
+      - alert: SettlaDLQMessageReceived
+        expr: increase(settla_dlq_messages_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Dead-lettered message detected"
+          description: >
+            {{ $value }} message(s) were dead-lettered from stream
+            {{ $labels.source_stream }} (event_type={{ $labels.event_type }})
+            in the last 5 minutes. These messages exhausted all retry attempts
+            and require manual investigation via the DLQ ops API.
+
+      - alert: SettlaDLQHighVolume
+        expr: increase(settla_dlq_messages_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High DLQ volume — possible systemic failure"
+          description: >
+            {{ $value }} messages were dead-lettered in the last hour from
+            stream {{ $labels.source_stream }}. This may indicate a systemic
+            issue (database down, provider unreachable, schema mismatch).
+            Immediate investigation required.
+
+      - alert: SettlaDLQBufferFilling
+        expr: settla_dlq_buffer_depth > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "DLQ in-memory buffer is filling up"
+          description: >
+            The DLQ monitor buffer currently holds {{ $value }} entries
+            (max 1000). Consider replaying or archiving entries before
+            older ones are evicted from the ring buffer.
+
+      - alert: SettlaTigerBeetleWriteStall
+        expr: rate(settla_ledger_tb_writes_total[5m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "TigerBeetle write throughput has stalled"
+          description: >
+            TigerBeetle write rate has dropped to zero for the last 2 minutes.
+            Check TB cluster health, disk I/O, and network connectivity.
+          runbook: "https://settla.internal/runbooks/tigerbeetle-recovery"
+
+      - alert: SettlaTigerBeetleWriteLatencyHigh
+        expr: histogram_quantile(0.99, sum(rate(settla_ledger_tb_write_latency_seconds_bucket[5m])) by (le)) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TigerBeetle write p99 latency exceeds 50ms"
+          description: >
+            TigerBeetle write p99 latency is {{ $value | humanizeDuration }},
+            exceeding the 50ms threshold. Check disk I/O and cluster health.
+
+      - alert: SettlaProviderCircuitBreakerOpen
+        expr: settla_circuit_breaker_state{name=~"provider-.*"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Provider circuit breaker OPEN: {{ $labels.name }}"
+          description: >
+            Provider circuit breaker {{ $labels.name }} is OPEN. The affected
+            corridor is degraded. Check provider health and wait for half-open
+            reset or manually investigate.
+          runbook: "https://settla.internal/runbooks/provider-circuit-breaker-open"
+
+      - alert: SettlaProviderCircuitBreakerFlapping
+        expr: changes(settla_circuit_breaker_state{name=~"provider-.*"}[10m]) > 4
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Provider circuit breaker flapping: {{ $labels.name }}"
+          description: >
+            Circuit breaker {{ $labels.name }} has changed state {{ $value }}
+            times in the last 10 minutes. It is cycling between open and closed,
+            indicating intermittent provider failures. Investigate the underlying
+            provider issue.
+
+      - alert: SettlaBlockchainPendingTxHigh
+        expr: settla_blockchain_worker_pending_tx_count > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} blockchain transactions pending"
+          description: >
+            Pending blockchain transactions ({{ $value }}) are above the warning
+            threshold of 10. Check chain congestion, gas prices, and node
+            connectivity.
+
+      - alert: SettlaBlockchainPendingTxCritical
+        expr: settla_blockchain_worker_pending_tx_count > 50
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $value }} blockchain transactions critically backlogged"
+          description: >
+            Critical number of pending blockchain transactions ({{ $value }}).
+            Immediate investigation required.
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Production Readiness — additional alerts for 8.2/8.3 hardening.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-production-readiness
+    interval: 15s
+    rules:
+      # ── Provider rate limiting ──────────────────────────────────────────
+      # Fires when a provider is returning rate-limit responses, indicating
+      # we need to back off or scale request distribution.
+      - alert: SettlaProviderRateLimited
+        expr: increase(settla_provider_requests_total{status="rate_limited"}[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Provider {{ $labels.provider }} is rate-limiting requests"
+          description: >
+            Provider {{ $labels.provider }} returned {{ $value }} rate-limited responses
+            in the last 5 minutes. Review request distribution and consider implementing
+            backoff or reducing concurrency for this provider.
+          runbook: "https://settla.internal/runbooks/provider-rate-limited"
+
+      # ── Treasury negative balance ───────────────────────────────────────
+      # A negative balance is a critical invariant violation — the system has
+      # disbursed more than was available.
+      - alert: SettlaTreasuryNegativeBalance
+        expr: settla_treasury_balance < 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "CRITICAL: treasury balance negative for {{ $labels.tenant }} {{ $labels.currency }}"
+          description: >
+            Treasury balance for tenant={{ $labels.tenant }}, currency={{ $labels.currency }},
+            location={{ $labels.location }} is {{ $value }}, which is below zero.
+            This is a critical invariant violation. Halt new transfers immediately
+            and investigate the reserve/release logic.
+          runbook: "https://settla.internal/runbooks/treasury-negative-balance"
+
+      # ── gRPC pool exhaustion (critical) ─────────────────────────────────
+      # Gateway pool is at 95%+ of its 50-connection capacity.
+      # At this level, requests will queue and latency will spike dramatically.
+      - alert: SettlaGrpcPoolExhaustionCritical
+        expr: settla_gateway_grpc_pool_active / 50 > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "CRITICAL: gRPC pool at {{ $value | humanizePercentage }} — near exhaustion"
+          description: >
+            The gateway gRPC connection pool is at {{ $value | humanizePercentage }}
+            of its 50-connection capacity. Requests are likely queueing. Scale gateway
+            replicas or increase SETTLA_GRPC_POOL_SIZE immediately.
+          runbook: "https://settla.internal/runbooks/grpc-pool-exhaustion"
+
+      # ── Webhook signature verification failures ─────────────────────────
+      # Sustained signature failures may indicate a compromised webhook secret
+      # or a provider misconfiguration.
+      - alert: SettlaWebhookSignatureFailures
+        expr: increase(settla_webhook_signature_failures_total[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Webhook signature failures for provider {{ $labels.provider }}"
+          description: >
+            {{ $value }} webhook signature verification failures from provider
+            {{ $labels.provider }} in the last 15 minutes. This could indicate
+            a secret rotation mismatch or a replay attack. Verify the provider's
+            webhook signing secret configuration.
+          runbook: "https://settla.internal/runbooks/webhook-signature-failures"
+
+      # ── Settlement overdue ──────────────────────────────────────────────
+      # No successful settlement tick for > 25 hours (90000s).
+      # The scheduler runs daily; if it hasn't succeeded in 25h, something is wrong.
+      - alert: SettlaSettlementOverdue
+        expr: time() - settla_settlement_last_success_timestamp > 90000
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Settlement scheduler has not completed successfully in over 25 hours"
+          description: >
+            The last successful settlement tick was {{ $value | humanizeDuration }} ago.
+            The scheduler should complete at least once every 24 hours. Check the
+            settlement scheduler goroutine health, database connectivity, and
+            NET_SETTLEMENT tenant configuration.
+          runbook: "https://settla.internal/runbooks/settlement-overdue"
+
+      # ── Ledger batch window stall ───────────────────────────────────────
+      # TigerBeetle writes have stopped while provider traffic continues.
+      # This indicates the ledger write batching pipeline is stalled.
+      - alert: SettlaLedgerBatchWindowStall
+        expr: rate(settla_ledger_tb_writes_total[2m]) == 0 and rate(settla_provider_requests_total[2m]) > 0
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Ledger writes stalled while traffic continues"
+          description: >
+            TigerBeetle write rate has been zero for 3 minutes while provider
+            requests continue. The ledger batch window pipeline is likely stalled.
+            Check the ledger service goroutine, TigerBeetle connectivity, and
+            batch flush logic.
+          runbook: "https://settla.internal/runbooks/ledger-batch-stall"
