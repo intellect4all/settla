@@ -1,0 +1,29 @@
+{
+  "flags": {
+    "enhanced_reconciliation": {
+      "enabled": true,
+      "rollout_pct": 50,
+      "description": "Use new reconciliation engine with auto-correction — canary rollout: increase rollout_pct in 25% increments, monitor settla_reconciliation_failed_total between steps"
+    },
+    "synthetic_canary": {
+      "enabled": true,
+      "rollout_pct": 100,
+      "description": "Run synthetic canary transactions"
+    },
+    "load_shedding": {
+      "enabled": true,
+      "rollout_pct": 100,
+      "description": "Enable adaptive load shedding at gateway"
+    },
+    "deep_health_checks": {
+      "enabled": true,
+      "rollout_pct": 100,
+      "description": "Use deep health checks instead of simple /health"
+    },
+    "circuit_breakers": {
+      "enabled": true,
+      "rollout_pct": 100,
+      "description": "Enable circuit breakers on all external calls"
+    }
+  }
+}

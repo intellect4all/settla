@@ -1,0 +1,53 @@
+# Kustomize strategic merge patch — deep health check probes for settla-node.
+#
+# Five-nines rationale: the original probes used a single /health endpoint
+# that could only detect "process is running."  Deep health checks separate
+# three concerns:
+#
+#   /health/startup — checks that the node has connected to NATS JetStream,
+#     subscribed to its partition's subjects, and is ready to process events.
+#     Without this, Kubernetes may route events to a pod that silently drops
+#     them (it's "healthy" but not yet consuming).
+#
+#   /health/ready — checks that the node is actively consuming from its
+#     partition and all downstream dependencies (Postgres, Redis) are
+#     reachable.  Aggressive failureThreshold=2 (10s) quickly removes a
+#     stuck consumer so NATS can redeliver to another node.
+#
+#   /health/live — checks that the event loop is not deadlocked.
+#     Conservative failureThreshold=3 (30s) avoids killing a node that is
+#     merely slow due to a large batch.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+spec:
+  template:
+    spec:
+      containers:
+        - name: settla-node
+          # startupProbe: up to 60s for NATS subscription + partition assignment
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: 9091
+            periodSeconds: 2
+            failureThreshold: 30   # 60s max startup time
+            timeoutSeconds: 3
+          # readinessProbe: fast removal on consumer stall
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9091
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2    # Remove after 10s of failures
+            successThreshold: 1
+          # livenessProbe: restart only on hard deadlock
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 9091
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3    # Kill after 30s of failures

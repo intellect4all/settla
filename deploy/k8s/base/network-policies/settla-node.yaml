@@ -1,0 +1,89 @@
+# NetworkPolicy for settla-node pods (StatefulSet, 8 replicas).
+#
+# settla-node runs the partitioned NATS JetStream workers and event-driven
+# sagas.  Each pod is assigned one NATS partition (ordinal 0-7) and
+# processes transfer, ledger, provider, treasury, blockchain, and webhook
+# events for that partition.
+#
+# Ingress:
+#   - :9091 HTTP — Prometheus metrics scrape
+#
+# Egress:
+#   - PgBouncer transfer pool (6432) — transfer DB reads/writes
+#   - NATS (4222) — JetStream consume + publish
+#   - Redis (6379) — idempotency, rate limiting
+#   - TigerBeetle (3001) — ledger writes from ledger_worker
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: settla-node-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: settla-node
+  policyTypes:
+    - Ingress
+  ingress:
+    # Prometheus scrapes metrics from :9091
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9091
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: settla-node-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: settla-node
+  policyTypes:
+    - Egress
+  egress:
+    # PgBouncer transfer pool — transfer events, outbox relay, operational tables
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer-transfer
+      ports:
+        - port: 6432
+          protocol: TCP
+    # NATS JetStream — event consumption and publishing across all workers
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    # Redis — idempotency deduplication, distributed locks
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # TigerBeetle — ledger_worker posts accounting entries
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tigerbeetle
+      ports:
+        - port: 3001
+          protocol: TCP

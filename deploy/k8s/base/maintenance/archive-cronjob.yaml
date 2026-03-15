@@ -1,0 +1,134 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: partition-archive
+  labels:
+    app.kubernetes.io/name: partition-archive
+    app.kubernetes.io/component: maintenance
+spec:
+  # Run on the 1st day of each month at 03:00 UTC.
+  # Monthly cadence: partitions from 3+ months ago are eligible (>90-day cutoff).
+  # 03:00 UTC is off-peak for all primary corridors (UK, EU, NG).
+  schedule: "0 3 1 * *"
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid          # never run two archive jobs simultaneously
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 3600      # if missed by >1 hour, skip that run
+  jobTemplate:
+    spec:
+      # Allow up to 6 hours for large archive runs.
+      activeDeadlineSeconds: 21600
+      # Do not retry automatically — a failure mid-run requires operator review
+      # to decide whether to re-run (idempotent only if partition is still attached).
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: partition-archive
+            app.kubernetes.io/component: maintenance
+        spec:
+          restartPolicy: Never
+          serviceAccountName: partition-archive
+          # Run on a dedicated node pool if available (taint: role=maintenance).
+          # Falls back to any schedulable node if no maintenance pool exists.
+          tolerations:
+            - key: "role"
+              operator: "Equal"
+              value: "maintenance"
+              effect: "NoSchedule"
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: role
+                        operator: In
+                        values:
+                          - maintenance
+          containers:
+            - name: archive
+              # settla-archive-tools includes: psql, aws-cli, duckdb.
+              # Built from deploy/docker/archive-tools/Dockerfile.
+              image: settla-archive-tools:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/scripts/archive.sh"]
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "2"
+                  memory: "4Gi"
+              env:
+                # Dry-run mode: set to "true" in staging overlay to validate
+                # without touching data.
+                - name: SETTLA_ARCHIVE_DRY_RUN
+                  value: "false"
+                # Partitions older than 90 days are eligible for archival.
+                - name: SETTLA_ARCHIVE_CUTOFF_DAYS
+                  value: "90"
+                # Scratch space for CSV/Parquet conversion.
+                # Backed by the emptyDir volume below.
+                - name: SETTLA_ARCHIVE_SCRATCH_DIR
+                  value: "/scratch"
+                # S3 configuration — values injected from the archive-env ConfigMap.
+                # Credentials come from IRSA (IAM Roles for Service Accounts).
+              envFrom:
+                - configMapRef:
+                    name: partition-archive-config
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: scratch
+                  mountPath: /scratch
+          volumes:
+            - name: scripts
+              configMap:
+                name: partition-archive-script
+                defaultMode: 0755
+            # Ephemeral scratch volume for CSV/Parquet files during conversion.
+            # 5Gi covers the largest monthly partition (entry_lines ~3-4GB compressed).
+            - name: scratch
+              emptyDir:
+                sizeLimit: 5Gi
+---
+# ConfigMap for S3 and DB connection settings.
+# Credentials (DB passwords, AWS keys) must come from Secrets or IRSA — not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: partition-archive-config
+  labels:
+    app.kubernetes.io/name: partition-archive
+    app.kubernetes.io/component: maintenance
+data:
+  # Database URLs (via PgBouncer in-cluster).
+  # Override per-environment via overlay patches.
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
+
+  # S3 destination for Glacier Deep Archive.
+  # Override in production overlay with the real bucket name.
+  SETTLA_ARCHIVE_S3_BUCKET: "settla-archive-prod"
+  SETTLA_ARCHIVE_S3_PREFIX: "partitions/"
+
+  # AWS region — must match the bucket region.
+  AWS_DEFAULT_REGION: "eu-west-1"
+---
+# ServiceAccount for the CronJob pod.
+# In production, annotate with IRSA role ARN for AWS credentials:
+#   annotations:
+#     eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/settla-archive
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: partition-archive
+  labels:
+    app.kubernetes.io/name: partition-archive
+    app.kubernetes.io/component: maintenance
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/settla-archive-role

@@ -1,0 +1,62 @@
+# Production image references.
+# Replace these with your actual container registry and tags.
+# In CI/CD, use kustomize edit set image to pin digest-based tags.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: settla-server
+          image: ghcr.io/intellect4all/settla/settla-server:latest
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+spec:
+  template:
+    spec:
+      containers:
+        - name: settla-node
+          image: ghcr.io/intellect4all/settla/settla-node:latest
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          image: ghcr.io/intellect4all/settla/gateway:latest
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook
+spec:
+  template:
+    spec:
+      containers:
+        - name: webhook
+          image: ghcr.io/intellect4all/settla/webhook:latest
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+spec:
+  template:
+    spec:
+      containers:
+        - name: dashboard
+          image: ghcr.io/intellect4all/settla/dashboard:latest
+          imagePullPolicy: Always

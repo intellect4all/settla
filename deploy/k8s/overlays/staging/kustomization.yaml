@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: settla-staging
+
+patches:
+  - path: patches/staging-replicas.yaml
+  - path: patches/staging-resources.yaml
+  - path: patches/staging-env.yaml
+  - path: patches/enable-pprof.yaml

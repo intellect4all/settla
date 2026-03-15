@@ -1,0 +1,34 @@
+# PgBouncer configuration reference.
+# The edoburu/pgbouncer image accepts env vars directly, but this ConfigMap
+# documents the full configuration for reference and advanced overrides.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+data:
+  # pool_mode=transaction: connections are returned to pool after each transaction.
+  # This is critical for high connection multiplexing (6+ server replicas x 100 conn each).
+  POOL_MODE: "transaction"
+
+  # Maximum client connections PgBouncer will accept.
+  MAX_CLIENT_CONN: "1000"
+
+  # Number of server connections to keep open per user/database pair.
+  DEFAULT_POOL_SIZE: "100"
+
+  # Minimum server connections to keep (even when idle).
+  MIN_POOL_SIZE: "10"
+
+  # Extra connections allowed when DEFAULT_POOL_SIZE is exhausted.
+  RESERVE_POOL_SIZE: "25"
+
+  # Seconds to wait before using reserve pool connections.
+  RESERVE_POOL_TIMEOUT: "3"
+
+  # Query to run when returning connection to pool (transaction mode).
+  SERVER_RESET_QUERY: "DISCARD ALL"

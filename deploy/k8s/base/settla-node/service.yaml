@@ -1,0 +1,19 @@
+# Headless service for StatefulSet DNS resolution.
+# Each pod is addressable as settla-node-{N}.settla-node.settla.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-node
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless
+  selector:
+    app.kubernetes.io/name: settla-node
+  ports:
+    - name: http
+      port: 9091
+      targetPort: http
+      protocol: TCP

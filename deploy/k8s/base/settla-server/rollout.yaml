@@ -1,0 +1,145 @@
+# Argo Rollout for settla-server canary deployments.
+#
+# Five-nines rationale: Traditional Deployments do all-or-nothing rollouts.
+# A canary strategy with automated SLI analysis catches regressions before
+# they reach 100% of traffic, preventing the cascading failures that eat
+# into the 5.26 minutes/year error budget.
+#
+# Traffic ramp: 5% -> 20% -> 50% -> 100% with 5-minute observation windows
+# at each step.  Argo's AnalysisTemplate gates promotion on error rate,
+# p99 latency, and transfer success rate.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: settla-server
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+spec:
+  replicas: 6
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: settla-server
+  strategy:
+    canary:
+      canaryService: settla-server-canary
+      stableService: settla-server-stable
+      steps:
+        # Step 1: send 5% of traffic to canary — smoke test
+        - setWeight: 5
+        # Step 2: hold for 5 minutes while AnalysisTemplate checks SLIs
+        - pause: {duration: 5m}
+        # Step 3: increase to 20% — broader validation
+        - setWeight: 20
+        - pause: {duration: 5m}
+        # Step 4: increase to 50% — near-production load
+        - setWeight: 50
+        - pause: {duration: 5m}
+        # Step 5: full promotion
+        - setWeight: 100
+      # Automated rollback: if any SLI metric breaches threshold, Argo
+      # automatically rolls back to the stable revision.
+      analysis:
+        templates:
+          - templateName: settla-sli-check
+        startingStep: 1  # Begin analysis after the first setWeight
+        args:
+          - name: service-name
+            value: settla-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: settla-server
+        app.kubernetes.io/component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Increased from 30s to 45s to guarantee treasury in-memory positions
+      # flush to Postgres (100ms interval) and in-flight gRPC streams drain
+      # before the pod is killed.  The preStop hook uses 20s of this budget.
+      terminationGracePeriodSeconds: 45
+      serviceAccountName: settla-server
+      containers:
+        - name: settla-server
+          image: settla-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: grpc
+              protocol: TCP
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+          # --- Probe strategy for five-nines ---
+          #
+          # startupProbe: gates readiness/liveness until the process is fully
+          #   initialised (TigerBeetle connection, NATS streams, treasury
+          #   positions loaded).  Up to 60s (30 * 2s) before Kubernetes
+          #   declares the pod failed.
+          #
+          # readinessProbe: controls Service membership.  Aggressive
+          #   failureThreshold=2 (10s) removes unhealthy pods from the load
+          #   balancer quickly, protecting callers.
+          #
+          # livenessProbe: last resort restart.  Conservative
+          #   failureThreshold=3 (30s) avoids unnecessary restarts during
+          #   transient GC pauses or upstream hiccups.
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            failureThreshold: 30    # 60s max startup time
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2     # Remove from service after 10s of failures
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3     # Kill after 30s of failures
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    # Signal graceful shutdown:
+                    # 1. SIGTERM tells the process to stop accepting new work
+                    # 2. Treasury flush goroutine writes in-memory positions to Postgres
+                    # 3. In-flight gRPC streams and HTTP requests drain
+                    # 4. 20s sleep ensures the pod stays in Terminating state long
+                    #    enough for kube-proxy to remove it from iptables/IPVS rules
+                    #    (avoids connection-reset errors on in-flight requests)
+                    kill -SIGTERM 1
+                    sleep 20
+          envFrom:
+            - configMapRef:
+                name: settla-server-config
+          env:
+            - name: SETTLA_ENV
+              value: "production"
+
+# Note: ServiceAccount settla-server is defined in deployment.yaml.
+# It is intentionally not repeated here to avoid a duplicate-resource
+# error when kustomize merges the base.

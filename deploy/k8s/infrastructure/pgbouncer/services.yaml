@@ -1,0 +1,114 @@
+# PgBouncer services — write (primary) and read (readonly) per bounded context.
+# Write services (port 6432): route to primary PgBouncer -> primary PG pod (-0)
+# Read services (port 6432): route to readonly PgBouncer -> readonly PG service (all replicas)
+---
+# === LEDGER ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-ledger
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-ledger
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-ledger
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-ledger-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-ledger-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-ledger-readonly
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+---
+# === TRANSFER ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-transfer
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-transfer
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-transfer
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-transfer-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-transfer-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-transfer-readonly
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+---
+# === TREASURY ===
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-treasury
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-treasury
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-treasury
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-treasury-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-treasury-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pgbouncer-treasury-readonly
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer

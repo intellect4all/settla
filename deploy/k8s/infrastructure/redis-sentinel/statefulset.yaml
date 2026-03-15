@@ -1,0 +1,117 @@
+# Redis StatefulSet — 1 master + 2 replicas with automatic role assignment.
+#
+# Five-nines rationale: 3 Redis instances provide read redundancy and allow
+# Sentinel to promote a replica within seconds if the master fails.  The
+# init container determines the pod's role based on its ordinal index:
+#   - settla-redis-0 starts as master
+#   - settla-redis-1, settla-redis-2 start as replicas
+# On failover, Sentinel reconfigures roles automatically.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-redis
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  replicas: 3
+  serviceName: settla-redis-headless
+  podManagementPolicy: OrderedReady  # Master (ordinal 0) must be ready first
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+    spec:
+      terminationGracePeriodSeconds: 30
+      # Spread across nodes to survive single-node failure
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: redis
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        # Determine role from pod ordinal and copy the appropriate config.
+        # Pod-0 gets the master config; all others get the replica config
+        # with replicaof pointing to the headless service of pod-0.
+        - name: init-redis
+          image: redis:7-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              ORDINAL=$(echo "$HOSTNAME" | rev | cut -d'-' -f1 | rev)
+              if [ "$ORDINAL" = "0" ]; then
+                echo "Configuring as master"
+                cp /mnt/config/redis.conf /mnt/data/redis.conf
+              else
+                echo "Configuring as replica of settla-redis-0"
+                cp /mnt/config/replica.conf /mnt/data/redis.conf
+              fi
+          volumeMounts:
+            - name: config
+              mountPath: /mnt/config
+            - name: data
+              mountPath: /mnt/data
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["redis-server", "/data/redis.conf"]
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "768Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # Health checks: PING must succeed and the instance must be able
+          # to report its replication role.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "redis-cli ping | grep -q PONG"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "redis-cli ping | grep -q PONG"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: redis
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi

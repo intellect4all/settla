@@ -1,0 +1,24 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    # Let's Encrypt staging endpoint — safe for testing; certificates are not trusted by browsers.
+    # Switch to https://acme-v02.api.letsencrypt.org/directory in production (see overlays/production).
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ops@settla.example.com
+    privateKeySecretRef:
+      # Stores the ACME account private key. Separate secret per issuer.
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+            # For AWS ALB replace class with:
+            # ingressTemplate:
+            #   metadata:
+            #     annotations:
+            #       kubernetes.io/ingress.class: alb
+            #       alb.ingress.kubernetes.io/scheme: internet-facing
+            #       alb.ingress.kubernetes.io/target-type: ip

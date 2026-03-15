@@ -1,0 +1,478 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: settla
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'settla-k8s'
+        environment: 'production'
+
+    alerting:
+      alertmanagers:
+        - kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names: ['settla']
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+              regex: alertmanager
+              action: keep
+            - source_labels: [__meta_kubernetes_pod_ip]
+              target_label: __address__
+              replacement: '${1}:9093'
+          timeout: 10s
+
+    rule_files:
+      - "/etc/prometheus/alerts/*.yml"
+      - "/etc/prometheus/alerts.yml"
+
+    scrape_configs:
+      # Settla Server (Go) — gRPC metrics on :8080
+      - job_name: 'settla-server'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: settla-server
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:8080'
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: instance
+
+      # Settla Node (Go) — worker metrics on :9091
+      - job_name: 'settla-node'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: settla-node
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:9091'
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: instance
+
+      # Gateway (TypeScript/Fastify) — metrics on :3000
+      - job_name: 'gateway'
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: gateway
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:3000'
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: instance
+
+      # Webhook (TypeScript/Fastify) — metrics on :3001
+      - job_name: 'webhook'
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: webhook
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:3001'
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: instance
+
+      # NATS monitoring
+      - job_name: 'nats'
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: nats
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: '${1}:8222'
+
+      # Redis exporter (if deployed alongside Redis)
+      - job_name: 'redis'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['settla']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: redis
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            target_label: __address__
+            replacement: '${1}'
+            action: keep
+
+  # Alerting rules — SLO-aligned rules from deploy/prometheus/alerts.yml.
+  # Mounted at /etc/prometheus/alerts.yml inside the Prometheus container.
+  # Referenced by rule_files above.
+  alerts.yml: |
+    # Settla Prometheus alerting rules — aligned with SLO targets in docs/sla.md.
+    #
+    # Coverage:
+    #   - Availability: error rate > 0.1% over 5m (SLA: 99.9%)
+    #   - Latency: quote p95 > 200ms over 5m (SLA target)
+    #   - Transfer stuck: non-terminal state > 30 min
+    #   - Treasury: over-reservation (reserved > balance)
+    #   - Queue depth: NATS consumer pending > 10K (warn), > 100K (critical)
+    #   - Outbox backlog: unpublished entries > 10K (warn), > 100K (critical)
+    #   - Error budget fast burn: 14.4x — page
+    #   - Error budget slow burn: 3x — notify
+    #   - Database replication lag > 60s
+    #   - Disk usage > 70% (warn), > 85% (critical)
+
+    groups:
+      - name: settla-availability
+        interval: 15s
+        rules:
+          - alert: SettlaAvailabilityBreach
+            expr: |
+              (
+                sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+                /
+                sum(rate(settla_gateway_requests_total[5m]))
+              ) > 0.001
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+              slo: availability
+            annotations:
+              summary: "Gateway error rate {{ $value | humanizePercentage }} exceeds 0.1% SLA threshold"
+              description: >
+                The 5-minute HTTP 5xx error rate is {{ $value | humanizePercentage }},
+                above the 99.9% SLA threshold (0.1% errors allowed).
+              runbook: "https://settla.internal/runbooks/availability-breach"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+          - alert: SettlaErrorBudgetFastBurn
+            expr: |
+              (
+                sum(rate(settla_gateway_requests_total{status=~"5.."}[5m]))
+                /
+                sum(rate(settla_gateway_requests_total[5m]))
+              ) > (14.4 * 0.001)
+              and
+              (
+                sum(rate(settla_gateway_requests_total{status=~"5.."}[1m]))
+                /
+                sum(rate(settla_gateway_requests_total[1m]))
+              ) > (14.4 * 0.001)
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              slo: availability
+            annotations:
+              summary: "Error budget fast burn: consuming at 14.4x — budget exhausted in ~3 hours"
+              description: >
+                Error rate {{ $value | humanizePercentage }} is 14.4x above the SLO budget
+                consumption rate. Monthly error budget exhausted in approximately 3 hours.
+              runbook: "https://settla.internal/runbooks/error-budget-fast-burn"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+          - alert: SettlaErrorBudgetSlowBurn
+            expr: |
+              (
+                sum(rate(settla_gateway_requests_total{status=~"5.."}[6h]))
+                /
+                sum(rate(settla_gateway_requests_total[6h]))
+              ) > (3 * 0.001)
+              and
+              (
+                sum(rate(settla_gateway_requests_total{status=~"5.."}[1h]))
+                /
+                sum(rate(settla_gateway_requests_total[1h]))
+              ) > (3 * 0.001)
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              slo: availability
+            annotations:
+              summary: "Error budget slow burn: consuming at 3x — budget exhausted in ~10 days"
+              description: >
+                Error rate {{ $value | humanizePercentage }} sustained over 6 hours is 3x above
+                the SLO budget consumption rate. Monthly budget exhausted in ~10 days.
+              runbook: "https://settla.internal/runbooks/error-budget-slow-burn"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      - name: settla-latency
+        interval: 15s
+        rules:
+          - alert: SettlaQuoteLatencyP95High
+            expr: |
+              histogram_quantile(0.95,
+                sum(
+                  rate(settla_gateway_request_duration_seconds_bucket{path="/v1/quotes",method="POST"}[5m])
+                ) by (le)
+              ) > 0.2
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+              slo: latency
+            annotations:
+              summary: "Quote p95 latency {{ $value | humanizeDuration }} exceeds 200ms SLA"
+              description: >
+                POST /v1/quotes p95 latency is {{ $value | humanizeDuration }} over the last 5
+                minutes, above the 200ms SLA commitment.
+              runbook: "https://settla.internal/runbooks/quote-latency"
+              dashboard: "https://settla.internal/grafana/d/api-performance"
+
+          - alert: SettlaQuoteLatencyP95Critical
+            expr: |
+              histogram_quantile(0.95,
+                sum(
+                  rate(settla_gateway_request_duration_seconds_bucket{path="/v1/quotes",method="POST"}[5m])
+                ) by (le)
+              ) > 0.5
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+              slo: latency
+            annotations:
+              summary: "Quote p95 latency {{ $value | humanizeDuration }} exceeds 500ms — critical"
+              description: >
+                POST /v1/quotes p95 is {{ $value | humanizeDuration }}. The routing/scoring
+                pipeline is severely degraded.
+              runbook: "https://settla.internal/runbooks/quote-latency-critical"
+              dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      - name: settla-transfer-pipeline
+        interval: 30s
+        rules:
+          - alert: SettlaTransferStuck
+            expr: settla_transfers_stuck_total > 0
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+              slo: transfer-success
+            annotations:
+              summary: "{{ $value }} transfer(s) stuck in non-terminal state for > 30 minutes"
+              description: >
+                {{ $value }} transfer(s) have been in a non-terminal state for more than 30
+                minutes, breaching the SLA commitment of >99.5% completion within 30 minutes.
+              runbook: "https://settla.internal/runbooks/transfer-stuck"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+          - alert: SettlaTransferStuckCritical
+            expr: settla_transfers_stuck_total > 100
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+              slo: transfer-success
+            annotations:
+              summary: "{{ $value }} transfers critically stuck — pipeline likely stalled"
+              description: >
+                {{ $value }} transfers stuck > 30 minutes indicates systemic pipeline failure.
+              runbook: "https://settla.internal/runbooks/transfer-stuck-critical"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+          - alert: SettlaTransferDurationP99Exceeded
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(settla_transfer_duration_seconds_bucket[15m])) by (le)
+              ) > 1800
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              slo: transfer-success
+            annotations:
+              summary: "Transfer p99 E2E duration exceeds 30 minutes"
+              description: >
+                Transfer p99 end-to-end duration is {{ $value | humanizeDuration }}, breaching
+                the 30-minute SLA ceiling.
+              runbook: "https://settla.internal/runbooks/transfer-duration-p99"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      - name: settla-treasury
+        interval: 15s
+        rules:
+          - alert: SettlaTreasuryOverReservation
+            expr: settla_treasury_over_reserved_positions_total > 0
+            for: 1m
+            labels:
+              severity: critical
+              team: platform
+              slo: treasury-integrity
+            annotations:
+              summary: "CRITICAL: {{ $value }} treasury position(s) have reserved > balance"
+              description: >
+                {{ $value }} treasury position(s) have reserved_amount exceeding
+                available_balance. This is a critical invariant violation.
+              runbook: "https://settla.internal/runbooks/treasury-over-reservation"
+              dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+          - alert: SettlaTreasuryBalanceMismatch
+            expr: settla_treasury_balance_mismatch_total > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              slo: treasury-integrity
+            annotations:
+              summary: "{{ $value }} treasury position(s) have balance mismatch between TB and Postgres"
+              description: >
+                {{ $value }} treasury positions show a discrepancy between TigerBeetle ledger
+                balance and the Postgres treasury snapshot.
+              runbook: "https://settla.internal/runbooks/treasury-balance-mismatch"
+              dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      - name: settla-nats-queue
+        interval: 15s
+        rules:
+          - alert: SettlaNATSQueueDepthHigh
+            expr: settla_nats_consumer_pending_messages > 10000
+            for: 2m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "NATS consumer {{ $labels.consumer }} pending {{ $value | humanize }} messages"
+              description: >
+                Consumer {{ $labels.consumer }} on stream {{ $labels.stream }} has
+                {{ $value | humanize }} pending messages. Workers are falling behind.
+              runbook: "https://settla.internal/runbooks/nats-queue-depth"
+              dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+          - alert: SettlaNATSQueueDepthCritical
+            expr: settla_nats_consumer_pending_messages > 100000
+            for: 1m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "NATS consumer {{ $labels.consumer }} critically backlogged: {{ $value | humanize }} messages"
+              description: >
+                Consumer {{ $labels.consumer }} on stream {{ $labels.stream }} has
+                {{ $value | humanize }} pending messages. Transfer pipeline is severely stalled.
+              runbook: "https://settla.internal/runbooks/nats-queue-depth-critical"
+              dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+      - name: settla-outbox
+        interval: 15s
+        rules:
+          - alert: SettlaOutboxBacklogHigh
+            expr: settla_outbox_unpublished_total > 10000
+            for: 3m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Outbox backlog {{ $value | humanize }} unpublished entries"
+              description: >
+                The transactional outbox has {{ $value | humanize }} unpublished entries.
+                The relay goroutine is falling behind.
+              runbook: "https://settla.internal/runbooks/outbox-backlog"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+          - alert: SettlaOutboxBacklogCritical
+            expr: settla_outbox_unpublished_total > 100000
+            for: 1m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Outbox backlog critical: {{ $value | humanize }} unpublished entries — relay likely stalled"
+              description: >
+                The transactional outbox has {{ $value | humanize }} unpublished entries.
+                All saga event processing is blocked.
+              runbook: "https://settla.internal/runbooks/outbox-backlog-critical"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      - name: settla-db-replication
+        interval: 15s
+        rules:
+          - alert: SettlaPostgresReplicationLagSLO
+            expr: pg_replication_lag_seconds > 60
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Postgres replication lag {{ $value | humanizeDuration }} on {{ $labels.instance }} exceeds 60s SLO"
+              description: >
+                Replication lag on {{ $labels.instance }} is {{ $value | humanizeDuration }}.
+                Read replicas are serving data over 1 minute stale.
+              runbook: "https://settla.internal/runbooks/postgres-replication-lag-slo"
+              dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      - name: settla-disk
+        interval: 30s
+        rules:
+          - alert: SettlaDiskUsageHigh
+            expr: |
+              (
+                1 - (
+                  node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+                  /
+                  node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+                )
+              ) > 0.70
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Disk usage {{ $value | humanizePercentage }} on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+              description: >
+                Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is
+                {{ $value | humanizePercentage }} full. Plan expansion before reaching 85%.
+              runbook: "https://settla.internal/runbooks/disk-usage-high"
+              dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
+          - alert: SettlaDiskUsageCritical
+            expr: |
+              (
+                1 - (
+                  node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+                  /
+                  node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+                )
+              ) > 0.85
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Disk usage critical: {{ $value | humanizePercentage }} on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+              description: >
+                Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is
+                {{ $value | humanizePercentage }} full. Postgres WAL and TigerBeetle writes
+                may fail imminently.
+              runbook: "https://settla.internal/runbooks/disk-usage-critical"
+              dashboard: "https://settla.internal/grafana/d/capacity-planning"

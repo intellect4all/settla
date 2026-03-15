@@ -1,0 +1,55 @@
+# Default deny all ingress and egress in the settla namespace.
+#
+# All allowed traffic must be explicitly permitted by a subsequent
+# NetworkPolicy.  This enforces zero-trust inside the cluster: pods
+# cannot communicate with each other or reach the internet unless a
+# more specific policy matches.
+#
+# DNS (UDP/TCP 53) is exempt via the kube-dns egress policy below so
+# that all pods can still resolve service names.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+---
+# Allow all pods to reach kube-dns so service name resolution works.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

@@ -1,0 +1,134 @@
+# Development storage patch — override all StatefulSet PVCs to use the
+# `standard` StorageClass so that development clusters need only one cheap
+# storage class regardless of what the base manifests specify.
+#
+# In a local kind/minikube cluster, replace `standard` with the name of the
+# default storage class provided by that environment (e.g. `standard` for
+# kind, `hostpath` for Docker Desktop).  The StorageClass objects in
+# base/storage/storage-classes.yaml are AWS EBS-specific and will not be
+# present in local clusters; this patch still applies because it only sets
+# storageClassName on the PVC spec — the actual StorageClass object must
+# exist in the target cluster.
+#
+# Strategy: strategic merge patch per StatefulSet.  Each document targets one
+# StatefulSet by name; Kubernetes matches on apiVersion + kind + metadata.name.
+
+# TigerBeetle — base uses fast-ssd; development degrades to standard.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tigerbeetle
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# Patroni — ledger
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-ledger
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# Patroni — transfer
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-transfer
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# Patroni — treasury
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-treasury
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# PostgreSQL — ledger (plain, non-Patroni)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-ledger
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# PostgreSQL — transfer
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-transfer
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# PostgreSQL — treasury
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-treasury
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# NATS JetStream
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# Redis (standalone)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard
+---
+# Redis Sentinel
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-redis-sentinel
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: standard

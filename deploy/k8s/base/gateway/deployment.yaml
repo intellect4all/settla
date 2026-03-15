@@ -1,0 +1,115 @@
+# Gateway Deployment with five-nines probe configuration.
+#
+# Probe strategy:
+#   startupProbe — gates liveness/readiness until the Fastify server is fully
+#     initialized (gRPC connection pool, local tenant cache, Redis connection).
+#     Up to 30s (15 * 2s) before the pod is considered failed.
+#   readinessProbe — aggressive failureThreshold=2 (6s) removes unhealthy
+#     pods from the load balancer quickly.  At 5,000 TPS, every second of
+#     routing to a bad pod costs ~5,000 failed requests.
+#   livenessProbe — conservative failureThreshold=3 (30s) avoids unnecessary
+#     restarts during transient upstream hiccups (e.g., Redis Sentinel failover).
+#
+# maxUnavailable=0 ensures zero-downtime rolling updates: new pods must pass
+# readiness before old pods are terminated.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # Zero-downtime: new pod must be ready before old is killed
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 15
+      serviceAccountName: gateway
+      containers:
+        - name: gateway
+          image: settla-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          # startupProbe gates readiness/liveness until Fastify is accepting
+          # connections (gRPC pool warmed, local cache initialized).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            periodSeconds: 2
+            failureThreshold: 15   # 30s max startup time
+            timeoutSeconds: 3
+          # readinessProbe: fast removal from Service endpoints on failure.
+          # failureThreshold=2 * periodSeconds=3 = 6s to remove a bad pod.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+            successThreshold: 1
+          # livenessProbe: last-resort restart.  Conservative to avoid
+          # restart storms during transient upstream issues.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Wait for kube-proxy to deregister the pod from iptables/IPVS
+                # before the process exits, preventing connection resets on
+                # in-flight requests.
+                command: ["/bin/sh", "-c", "sleep 5"]
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+          env:
+            # Dashboard API key — allows the ops dashboard to authenticate as an admin tenant.
+            # Sourced from the settla-app-secrets ExternalSecret.
+            - name: NUXT_PUBLIC_DASHBOARD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: settla-app-secrets
+                  key: dashboard-api-key
+                  optional: true
+            - name: NODE_ENV
+              value: "production"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api

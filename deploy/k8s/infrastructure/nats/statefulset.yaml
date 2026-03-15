@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: settla
+spec:
+  replicas: 1  # 1 for dev, 3 for production (override via overlay)
+  serviceName: nats
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats
+        app.kubernetes.io/component: messaging
+        app.kubernetes.io/part-of: settla
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          args:
+            - "-js"                   # Enable JetStream
+            - "-sd"
+            - "/data"                 # JetStream storage directory
+            - "-m"
+            - "8222"                  # Monitoring port
+          ports:
+            - containerPort: 4222
+              name: client
+              protocol: TCP
+            - containerPort: 6222
+              name: cluster
+              protocol: TCP
+            - containerPort: 8222
+              name: monitor
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 50Gi

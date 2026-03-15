@@ -1,0 +1,82 @@
+# NetworkPolicy for the gateway (Fastify REST API, TypeScript).
+#
+# The gateway is the public-facing REST API.  External traffic reaches it
+# exclusively via Tyk API Gateway — no pod other than tyk should be able
+# to open a connection directly to :3000.
+#
+# Ingress:
+#   - :3000 HTTP — from Tyk API Gateway pods only
+#
+# Egress:
+#   - settla-server :9090 gRPC — all business logic calls
+#   - Redis :6379          — L1→L2 auth cache, rate limiting (per-tenant)
+#
+# Note: Prometheus is given ingress access to :3000 in its own policy
+# (infrastructure.yaml) because Prometheus scrapes are inbound to the
+# gateway, not outbound from it.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # HTTP traffic routed by Tyk API Gateway
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tyk
+      ports:
+        - port: 3000
+          protocol: TCP
+    # Prometheus scrapes /metrics on :3000
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 3000
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Egress
+  egress:
+    # All business logic calls go to settla-server via gRPC
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+      ports:
+        - port: 9090
+          protocol: TCP
+    # Redis — local tenant cache backing store, rate limit sync
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP

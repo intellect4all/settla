@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api
+data:
+  SETTLA_GATEWAY_PORT: "3000"
+
+  # gRPC connection to settla-server
+  SETTLA_GRPC_HOST: "settla-server"
+  SETTLA_GRPC_PORT: "9090"
+  SETTLA_GRPC_POOL_SIZE: "50"
+
+  # Local in-process tenant auth cache TTL
+  SETTLA_TENANT_CACHE_TTL_SECONDS: "30"
+
+  # Redis for L2 cache, rate limiting, idempotency
+  SETTLA_REDIS_URL: "redis://:$(REDIS_PASSWORD)@redis:6379"
+
+  # Logging
+  SETTLA_LOG_LEVEL: "info"

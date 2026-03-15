@@ -1,0 +1,60 @@
+# Moderate replicas for staging
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+spec:
+  replicas: 4
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+spec:
+  replicas: 1
+---
+# Adjust HPA ranges for staging
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: settla-server
+spec:
+  minReplicas: 2
+  maxReplicas: 4
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+spec:
+  minReplicas: 1
+  maxReplicas: 4
+---
+# Relax PDB for staging
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-server
+spec:
+  minAvailable: 1

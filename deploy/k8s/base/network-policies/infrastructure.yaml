@@ -1,0 +1,417 @@
+# NetworkPolicy for shared infrastructure pods.
+#
+# These policies control ingress into the stateful infrastructure layer:
+# PostgreSQL, PgBouncer, Redis, NATS, and TigerBeetle.  Infrastructure
+# pods are only reachable from the specific application pods that need them.
+# No infrastructure component is reachable from the public internet.
+#
+# Note on PgBouncer:
+#   Application pods connect to PgBouncer (port 6432), not directly to
+#   Postgres (port 5432).  Postgres only accepts connections from PgBouncer.
+#
+# Note on Redis Sentinel:
+#   Redis Sentinel pods run alongside Redis and need to communicate with
+#   each other on :26379 and with Redis on :6379.  Those intra-sentinel
+#   flows are handled by the sentinel-specific egress rules below.
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: settla
+spec:
+  # Matches all three Postgres StatefulSets (ledger, transfer, treasury)
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - postgres-ledger
+          - postgres-transfer
+          - postgres-treasury
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only PgBouncer pools connect to Postgres directly
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - pgbouncer-ledger
+                  - pgbouncer-transfer
+                  - pgbouncer-treasury
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Patroni peer-to-peer replication traffic (primary ↔ replica)
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - postgres-ledger
+                  - postgres-transfer
+                  - postgres-treasury
+      ports:
+        - port: 5432
+          protocol: TCP
+
+# ── PgBouncer ───────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgbouncer-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - pgbouncer-ledger
+          - pgbouncer-transfer
+          - pgbouncer-treasury
+  policyTypes:
+    - Ingress
+  ingress:
+    # settla-server connects to all three PgBouncer pools
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+      ports:
+        - port: 6432
+          protocol: TCP
+    # settla-node connects to the transfer PgBouncer pool only.
+    # The selector here allows ingress from settla-node to all three
+    # pgbouncer deployments; the specific pod-to-service routing is
+    # enforced by the application configuration.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-node
+      ports:
+        - port: 6432
+          protocol: TCP
+
+# ── PgBouncer egress (to Postgres) ─────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgbouncer-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - pgbouncer-ledger
+          - pgbouncer-transfer
+          - pgbouncer-treasury
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - postgres-ledger
+                  - postgres-transfer
+                  - postgres-treasury
+      ports:
+        - port: 5432
+          protocol: TCP
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    # All application pods that use Redis as L2 cache / rate limiter
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-node
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: webhook
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tyk
+      ports:
+        - port: 6379
+          protocol: TCP
+    # Redis Sentinel peers communicate with each other on :26379 and
+    # with the Redis primary/replicas on :6379
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-sentinel
+      ports:
+        - port: 6379
+          protocol: TCP
+
+# ── NATS ────────────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    # settla-node: partitioned JetStream consumer + publisher
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-node
+      ports:
+        - port: 4222
+          protocol: TCP
+    # settla-server: domain event publishing
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+      ports:
+        - port: 4222
+          protocol: TCP
+    # webhook: outbound webhook event consumer
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: webhook
+      ports:
+        - port: 4222
+          protocol: TCP
+    # NATS cluster gossip between NATS StatefulSet peers
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 6222
+          protocol: TCP
+
+# ── TigerBeetle ─────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tigerbeetle-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: tigerbeetle
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tigerbeetle
+  policyTypes:
+    - Ingress
+  ingress:
+    # settla-server: all ledger writes and balance reads
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+      ports:
+        - port: 3001
+          protocol: TCP
+    # settla-node: ledger_worker posts accounting entries
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-node
+      ports:
+        - port: 3001
+          protocol: TCP
+    # TigerBeetle replication between cluster peers
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tigerbeetle
+      ports:
+        - port: 3001
+          protocol: TCP
+
+# ── Prometheus ───────────────────────────────────────────────────────────────
+# Prometheus needs egress to scrape all app pods.  This policy grants it.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes:
+    - Egress
+  egress:
+    # settla-server metrics (:8080) and pprof (:6060)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-server
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 6060
+          protocol: TCP
+    # settla-node metrics (:9091)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: settla-node
+      ports:
+        - port: 9091
+          protocol: TCP
+    # gateway metrics (:3000)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 3000
+          protocol: TCP
+    # webhook metrics (:3001)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: webhook
+      ports:
+        - port: 3001
+          protocol: TCP
+    # alertmanager (:9093)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: alertmanager
+      ports:
+        - port: 9093
+          protocol: TCP
+
+# ── Alertmanager ─────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  policyTypes:
+    - Ingress
+  ingress:
+    # Prometheus fires alerts to alertmanager
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9093
+          protocol: TCP
+    # HA mesh between alertmanager replicas
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: alertmanager
+      ports:
+        - port: 9094
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  policyTypes:
+    - Egress
+  egress:
+    # HA mesh peer communication
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: alertmanager
+      ports:
+        - port: 9094
+          protocol: TCP
+    # External notifications: Slack, PagerDuty
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP

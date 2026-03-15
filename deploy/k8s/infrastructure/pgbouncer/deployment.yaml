@@ -1,0 +1,434 @@
+# PgBouncer deployments — two per bounded context: one for writes (primary), one for reads (readonly).
+# Write pools point to Patroni primary services (role:master label auto-follows leader on failover).
+# Read pools point to Patroni replica services (role:replica label, load-balanced across standbys).
+# pool_mode=transaction for high connection multiplexing.
+# Passwords are sourced from the patroni-credentials Secret (never hardcoded).
+---
+# === LEDGER WRITE (primary) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-ledger
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-ledger
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: write
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-ledger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-ledger
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: write
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            # Points to Patroni primary service (auto-follows leader via role:master label).
+            # Falls back to plain postgres headless DNS in dev (no Patroni).
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-ledger.settla.svc.cluster.local:5433/settla_ledger"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "100"
+            - name: MIN_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_SIZE
+              value: "25"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# === LEDGER READ (readonly replicas) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-ledger-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-ledger-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: read
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-ledger-readonly
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-ledger-readonly
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: read
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            # Points to Patroni replica service (load-balances across replicas via role:replica label)
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-ledger-replica.settla.svc.cluster.local:5433/settla_ledger"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "100"
+            - name: MIN_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_SIZE
+              value: "25"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# === TRANSFER WRITE (primary) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-transfer
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-transfer
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: write
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-transfer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-transfer
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: write
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-transfer.settla.svc.cluster.local:5434/settla_transfer"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "100"
+            - name: MIN_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_SIZE
+              value: "25"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# === TRANSFER READ (readonly replicas) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-transfer-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-transfer-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: read
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-transfer-readonly
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-transfer-readonly
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: read
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-transfer-replica.settla.svc.cluster.local:5434/settla_transfer"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "100"
+            - name: MIN_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_SIZE
+              value: "25"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# === TREASURY WRITE (primary) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-treasury
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-treasury
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: write
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-treasury
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-treasury
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: write
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-treasury.settla.svc.cluster.local:5435/settla_treasury"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "50"
+            - name: MIN_POOL_SIZE
+              value: "5"
+            - name: RESERVE_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# === TREASURY READ (readonly replicas) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-treasury-readonly
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: pgbouncer-treasury-readonly
+    app.kubernetes.io/component: connection-pool
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/role: read
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-treasury-readonly
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer-treasury-readonly
+        app.kubernetes.io/component: connection-pool
+        app.kubernetes.io/part-of: settla
+        app.kubernetes.io/role: read
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:1.22.0
+          ports:
+            - containerPort: 6432
+              name: pgbouncer
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@patroni-treasury-replica.settla.svc.cluster.local:5435/settla_treasury"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: patroni-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "50"
+            - name: MIN_POOL_SIZE
+              value: "5"
+            - name: RESERVE_POOL_SIZE
+              value: "10"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "3"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10

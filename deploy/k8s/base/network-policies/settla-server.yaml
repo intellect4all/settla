@@ -1,0 +1,100 @@
+# NetworkPolicy for settla-server pods.
+#
+# settla-server is the core Go binary that runs the settlement engine,
+# ledger, rail router, and treasury.  It exposes:
+#   - :9090 gRPC  — consumed by the gateway
+#   - :8080 HTTP  — Prometheus scrape endpoint (/metrics)
+#
+# Egress targets (all within the settla namespace):
+#   - PgBouncer pools (6432) for all three databases
+#   - TigerBeetle (3001) as the write-authority ledger engine
+#   - Redis (6379) for L2 cache, rate limiting, and idempotency
+#   - NATS (4222) for publishing domain events to JetStream
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: settla-server-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: settla-server
+  policyTypes:
+    - Ingress
+  ingress:
+    # gRPC traffic from the gateway (Fastify → settla-server gRPC pool)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 9090
+          protocol: TCP
+    # Prometheus scrapes metrics (:8080)
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: settla-server-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: settla-server
+  policyTypes:
+    - Egress
+  egress:
+    # PgBouncer connection pools (all three bounded-context databases)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer-ledger
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer-transfer
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer-treasury
+      ports:
+        - port: 6432
+          protocol: TCP
+    # TigerBeetle — write-authority ledger engine
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tigerbeetle
+      ports:
+        - port: 3001
+          protocol: TCP
+    # Redis — L2 cache, rate limiting, idempotency keys
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP
+    # NATS JetStream — domain event publishing
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP

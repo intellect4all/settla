@@ -1,0 +1,93 @@
+# Production overlay: Patroni PostgreSQL HA — 3 replicas per bounded context.
+#
+# The base Patroni StatefulSets already define 3 replicas, so this patch
+# primarily sets production-grade resource requests/limits and ensures the
+# storage class is correct for EBS gp3.
+#
+# PgBouncer read-only pools are scaled to 2 replicas for production read
+# throughput.
+---
+# Patroni Ledger — production resources
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-ledger
+  namespace: settla
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: patroni
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+---
+# Patroni Transfer — production resources (highest write volume)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-transfer
+  namespace: settla
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: patroni
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+---
+# Patroni Treasury — production resources (lower volume, highest consistency)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: patroni-treasury
+  namespace: settla
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: patroni
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+---
+# Scale PgBouncer read pools to 2 replicas in production
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-ledger-readonly
+  namespace: settla
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-transfer-readonly
+  namespace: settla
+spec:
+  replicas: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-treasury-readonly
+  namespace: settla
+spec:
+  replicas: 2

@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-scripts
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: backup-scripts
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: settla
+# Backup scripts mounted into CronJob pods at /scripts/ (mode 0755).
+# The canonical source files live in deploy/k8s/base/backups/scripts/; keep them
+# in sync. The kustomize configMapGenerator stanza in kustomization.yaml reads
+# the .sh files from that directory so the content here stays DRY — this manifest
+# exists only so `kubectl apply -f` works without kustomize. When deployed via
+# kustomize the configMapGenerator block in kustomization.yaml takes precedence.
+#
+# CronJobs mount this ConfigMap at /scripts and call:
+#   command: ["/bin/bash", "/scripts/<script>.sh"]
+immutable: false
+data:
+  # ----- postgres-backup.sh ------------------------------------------------
+  postgres-backup.sh: |
+    #!/usr/bin/env bash
+    # Full pg_dump for all three Settla PostgreSQL databases, upload to S3.
+    # See inline comments in deploy/k8s/base/backups/scripts/postgres-backup.sh.
+    set -euo pipefail
+    S3_PREFIX="${S3_PREFIX:-postgres}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+    RETENTION_DAYS="${RETENTION_DAYS:-30}"
+    TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+    DATE="$(date -u +%Y-%m-%d)"
+    BACKUP_DIR="/tmp/pg-backups"
+    EXIT_CODE=0
+    DATABASES=("settla_ledger:postgres-ledger:5432" "settla_transfer:postgres-transfer:5432" "settla_treasury:postgres-treasury:5432")
+    log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+    notify_failure() {
+      local subject="$1" detail="$2"
+      log "ERROR: ${subject} — ${detail}"
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+          -d "{\"text\":\":rotating_light: *[${ENVIRONMENT}] PostgreSQL Backup Failed: ${subject}*\",\"attachments\":[{\"color\":\"danger\",\"text\":\"${detail}\"}]}" || true
+      fi
+      if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
+        curl -sf -X POST "https://events.pagerduty.com/v2/enqueue" -H 'Content-Type: application/json' \
+          -d "{\"routing_key\":\"${PAGERDUTY_ROUTING_KEY}\",\"event_action\":\"trigger\",\"payload\":{\"summary\":\"[${ENVIRONMENT}] PG Backup Failed: ${subject}\",\"severity\":\"critical\",\"source\":\"settla-postgres-backup\"},\"dedup_key\":\"settla-pg-backup-${DATE}\"}" || true
+      fi
+    }
+    for bin in pg_dump aws gzip; do command -v "${bin}" &>/dev/null || { notify_failure "Missing binary" "${bin}"; exit 1; }; done
+    mkdir -p "${BACKUP_DIR}"
+    SUCCESSFUL=() FAILED=()
+    for entry in "${DATABASES[@]}"; do
+      IFS=':' read -r dbname host port <<< "${entry}"
+      dump_file="${BACKUP_DIR}/${dbname}_${TIMESTAMP}.pgdump.gz"
+      s3_key="${S3_PREFIX}/${ENVIRONMENT}/${DATE}/${dbname}_${TIMESTAMP}.pgdump.gz"
+      log "Backing up ${dbname} from ${host}:${port} ..."
+      if PGPASSWORD="${POSTGRES_PASSWORD}" pg_dump --host="${host}" --port="${port}" \
+          --username="settla" --dbname="${dbname}" --format=custom --compress=0 \
+          --no-password 2>"/tmp/${dbname}.err" | gzip > "${dump_file}"; then
+        SZ="$(du -sh "${dump_file}" | cut -f1)"
+        if aws s3 cp "${dump_file}" "s3://${S3_BUCKET}/${s3_key}" --storage-class STANDARD_IA 2>/dev/null; then
+          log "OK: ${dbname} -> ${s3_key} (${SZ})"
+          SUCCESSFUL+=("${dbname} -> ${s3_key} (${SZ})")
+          rm -f "${dump_file}"
+        else
+          notify_failure "S3 upload failed" "${dbname}: ${s3_key}"
+          FAILED+=("${dbname}: s3 upload"); EXIT_CODE=1
+        fi
+      else
+        notify_failure "pg_dump failed" "$(cat /tmp/${dbname}.err)"
+        FAILED+=("${dbname}: pg_dump"); EXIT_CODE=1
+      fi
+    done
+    # Retention
+    CUTOFF="$(date -u -d "${RETENTION_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-"${RETENTION_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
+    aws s3api list-objects-v2 --bucket "${S3_BUCKET#s3://}" --prefix "${S3_PREFIX}/${ENVIRONMENT}/" \
+      --query "Contents[?LastModified<='${CUTOFF}'].Key" --output text 2>/dev/null \
+    | tr '\t' '\n' | while read -r k; do [[ -z "${k}" || "${k}" == "None" ]] && continue; aws s3 rm "s3://${S3_BUCKET#s3://}/${k}" || true; done
+    if [[ "${EXIT_CODE}" -eq 0 && -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+      curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+        -d "{\"text\":\":white_check_mark: *[${ENVIRONMENT}] PostgreSQL Backup OK* — ${#SUCCESSFUL[@]} DB(s)\"}" || true
+    fi
+    exit "${EXIT_CODE}"
+
+  # ----- tigerbeetle-backup.sh ---------------------------------------------
+  tigerbeetle-backup.sh: |
+    #!/usr/bin/env bash
+    # Hourly snapshot of TigerBeetle data file(s) to S3.
+    set -euo pipefail
+    TB_DATA_FILE="${TB_DATA_FILE:-/data/0_0.tigerbeetle}"
+    TB_REPLICA_INDEX="${TB_REPLICA_INDEX:-0}"
+    S3_PREFIX="${S3_PREFIX:-tigerbeetle}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+    RETENTION_HOURS="${RETENTION_HOURS:-72}"
+    TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+    BACKUP_DIR="/tmp/tb-backups"
+    EXIT_CODE=0
+    log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+    notify_failure() {
+      local subject="$1" detail="$2"
+      log "ERROR: ${subject} — ${detail}"
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+          -d "{\"text\":\":rotating_light: *[${ENVIRONMENT}] TigerBeetle Backup Failed: ${subject}*\",\"attachments\":[{\"color\":\"danger\",\"text\":\"${detail}\"}]}" || true
+      fi
+      if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
+        curl -sf -X POST "https://events.pagerduty.com/v2/enqueue" -H 'Content-Type: application/json' \
+          -d "{\"routing_key\":\"${PAGERDUTY_ROUTING_KEY}\",\"event_action\":\"trigger\",\"payload\":{\"summary\":\"[${ENVIRONMENT}] TB Backup Failed: ${subject}\",\"severity\":\"critical\",\"source\":\"settla-tigerbeetle-backup\"},\"dedup_key\":\"settla-tb-backup-$(date -u +%Y%m%dT%H)\"}" || true
+      fi
+    }
+    for bin in aws gzip; do command -v "${bin}" &>/dev/null || { notify_failure "Missing binary" "${bin}"; exit 1; }; done
+    [[ -f "${TB_DATA_FILE}" ]] || { notify_failure "Data file not found" "${TB_DATA_FILE}"; exit 1; }
+    mkdir -p "${BACKUP_DIR}"
+    SNAPSHOT="${BACKUP_DIR}/tigerbeetle-replica${TB_REPLICA_INDEX}-${TIMESTAMP}.data"
+    log "Copying ${TB_DATA_FILE} -> ${SNAPSHOT}"
+    cp --reflink=auto "${TB_DATA_FILE}" "${SNAPSHOT}" 2>/dev/null || cp "${TB_DATA_FILE}" "${SNAPSHOT}"
+    SZ="$(du -sh "${SNAPSHOT}" | cut -f1)"
+    log "Snapshot: ${SNAPSHOT} (${SZ}) — compressing ..."
+    gzip "${SNAPSHOT}"; SNAPSHOT="${SNAPSHOT}.gz"
+    CSZ="$(du -sh "${SNAPSHOT}" | cut -f1)"
+    S3_KEY="${S3_PREFIX}/${ENVIRONMENT}/$(date -u +%Y/%m/%d/%H)/tigerbeetle-replica${TB_REPLICA_INDEX}-${TIMESTAMP}.data.gz"
+    log "Uploading to s3://${S3_BUCKET}/${S3_KEY} (${CSZ}) ..."
+    if aws s3 cp "${SNAPSHOT}" "s3://${S3_BUCKET}/${S3_KEY}" --storage-class STANDARD_IA; then
+      rm -f "${SNAPSHOT}"
+      log "Upload OK"
+    else
+      notify_failure "S3 upload failed" "s3://${S3_BUCKET}/${S3_KEY}"
+      EXIT_CODE=1
+    fi
+    # Retention
+    CUTOFF="$(date -u -d "${RETENTION_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-"${RETENTION_HOURS}"H +%Y-%m-%dT%H:%M:%SZ)"
+    aws s3api list-objects-v2 --bucket "${S3_BUCKET}" --prefix "${S3_PREFIX}/${ENVIRONMENT}/" \
+      --query "Contents[?LastModified<='${CUTOFF}'].Key" --output text 2>/dev/null \
+    | tr '\t' '\n' | while read -r k; do [[ -z "${k}" || "${k}" == "None" ]] && continue; aws s3 rm "s3://${S3_BUCKET}/${k}" || true; done
+    if [[ "${EXIT_CODE}" -eq 0 ]]; then
+      [[ -n "${SLACK_WEBHOOK_URL:-}" ]] && curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+        -d "{\"text\":\":white_check_mark: *[${ENVIRONMENT}] TigerBeetle Backup OK* replica-${TB_REPLICA_INDEX} (${CSZ})\"}" || true
+    fi
+    exit "${EXIT_CODE}"
+
+  # ----- nats-backup.sh ----------------------------------------------------
+  nats-backup.sh: |
+    #!/usr/bin/env bash
+    # Every-6-hour NATS JetStream stream snapshot to S3.
+    set -euo pipefail
+    NATS_URL="${NATS_URL:-nats://nats:4222}"
+    S3_PREFIX="${S3_PREFIX:-nats}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+    RETENTION_HOURS="${RETENTION_HOURS:-48}"
+    TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+    BACKUP_DIR="/tmp/nats-backups/${TIMESTAMP}"
+    EXIT_CODE=0
+    # All 7 streams — must stay in sync with node/messaging/streams.go
+    STREAMS=("SETTLA_TRANSFERS" "SETTLA_PROVIDERS" "SETTLA_LEDGER" "SETTLA_TREASURY" "SETTLA_BLOCKCHAIN" "SETTLA_WEBHOOKS" "SETTLA_PROVIDER_WEBHOOKS")
+    log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+    notify_failure() {
+      local subject="$1" detail="$2"
+      log "ERROR: ${subject} — ${detail}"
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+          -d "{\"text\":\":rotating_light: *[${ENVIRONMENT}] NATS Backup Failed: ${subject}*\",\"attachments\":[{\"color\":\"danger\",\"text\":\"${detail}\"}]}" || true
+      fi
+      if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
+        curl -sf -X POST "https://events.pagerduty.com/v2/enqueue" -H 'Content-Type: application/json' \
+          -d "{\"routing_key\":\"${PAGERDUTY_ROUTING_KEY}\",\"event_action\":\"trigger\",\"payload\":{\"summary\":\"[${ENVIRONMENT}] NATS Backup Failed: ${subject}\",\"severity\":\"critical\",\"source\":\"settla-nats-backup\"},\"dedup_key\":\"settla-nats-backup-$(date -u +%Y%m%dT%H)\"}" || true
+      fi
+    }
+    for bin in nats aws tar gzip; do command -v "${bin}" &>/dev/null || { notify_failure "Missing binary" "${bin}"; exit 1; }; done
+    mkdir -p "${BACKUP_DIR}"
+    NATS_FLAGS=("--server=${NATS_URL}")
+    [[ -n "${NATS_CREDS:-}" && -f "${NATS_CREDS}" ]] && NATS_FLAGS+=("--creds=${NATS_CREDS}")
+    log "Checking NATS at ${NATS_URL} ..."
+    nats "${NATS_FLAGS[@]}" server ping --count=1 2>/dev/null || { notify_failure "NATS unreachable" "${NATS_URL}"; exit 1; }
+    SUCCESSFUL=() FAILED=()
+    for stream in "${STREAMS[@]}"; do
+      sdir="${BACKUP_DIR}/${stream}"; mkdir -p "${sdir}"
+      log "Snapshotting ${stream} ..."
+      if nats "${NATS_FLAGS[@]}" stream backup "${stream}" "${sdir}" 2>"/tmp/nats-${stream}.err"; then
+        CNT="$(find "${sdir}" -type f | wc -l)"
+        SUCCESSFUL+=("${stream} (${CNT} files)")
+      else
+        ERR="$(cat /tmp/nats-${stream}.err)"
+        if echo "${ERR}" | grep -qi "not found\|does not exist"; then
+          log "WARNING: Stream ${stream} not found — skipping"
+        else
+          notify_failure "Stream snapshot failed" "${stream}: ${ERR}"
+          FAILED+=("${stream}"); EXIT_CODE=1
+        fi
+      fi
+    done
+    ARCHIVE="${BACKUP_DIR}.tar.gz"
+    tar -czf "${ARCHIVE}" -C "$(dirname "${BACKUP_DIR}")" "$(basename "${BACKUP_DIR}")"
+    ASZ="$(du -sh "${ARCHIVE}" | cut -f1)"
+    log "Archive: ${ARCHIVE} (${ASZ})"
+    S3_KEY="${S3_PREFIX}/${ENVIRONMENT}/$(date -u +%Y/%m/%d)/nats-streams-${TIMESTAMP}.tar.gz"
+    if aws s3 cp "${ARCHIVE}" "s3://${S3_BUCKET}/${S3_KEY}" --storage-class STANDARD_IA; then
+      rm -rf "${BACKUP_DIR}" "${ARCHIVE}"
+      log "Upload OK"
+    else
+      notify_failure "S3 upload failed" "s3://${S3_BUCKET}/${S3_KEY}"
+      EXIT_CODE=1
+    fi
+    CUTOFF="$(date -u -d "${RETENTION_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-"${RETENTION_HOURS}"H +%Y-%m-%dT%H:%M:%SZ)"
+    aws s3api list-objects-v2 --bucket "${S3_BUCKET}" --prefix "${S3_PREFIX}/${ENVIRONMENT}/" \
+      --query "Contents[?LastModified<='${CUTOFF}'].Key" --output text 2>/dev/null \
+    | tr '\t' '\n' | while read -r k; do [[ -z "${k}" || "${k}" == "None" ]] && continue; aws s3 rm "s3://${S3_BUCKET}/${k}" || true; done
+    if [[ "${EXIT_CODE}" -eq 0 && -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+      MSG="$(IFS=', '; echo "${SUCCESSFUL[*]}")"
+      curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+        -d "{\"text\":\":white_check_mark: *[${ENVIRONMENT}] NATS Backup OK* — ${MSG} (${ASZ})\"}" || true
+    fi
+    exit "${EXIT_CODE}"
+
+  # ----- backup-verify.sh --------------------------------------------------
+  backup-verify.sh: |
+    #!/usr/bin/env bash
+    # Daily restore-and-verify of the latest PostgreSQL backup.
+    set -euo pipefail
+    VERIFY_PG_HOST="${VERIFY_PG_HOST:-localhost}"
+    VERIFY_PG_PORT="${VERIFY_PG_PORT:-5432}"
+    VERIFY_PG_USER="${VERIFY_PG_USER:-postgres}"
+    S3_PREFIX="${S3_PREFIX:-postgres}"
+    ENVIRONMENT="${ENVIRONMENT:-production}"
+    TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+    DATE="$(date -u +%Y-%m-%d)"
+    WORK_DIR="/tmp/backup-verify"
+    EXIT_CODE=0
+    REPORT=()
+    MIN_ROWS_LEDGER="${MIN_ROWS_LEDGER:-0}"
+    MIN_ROWS_TRANSFER="${MIN_ROWS_TRANSFER:-0}"
+    MIN_ROWS_TREASURY="${MIN_ROWS_TREASURY:-0}"
+    log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+    psql_super() { PGPASSWORD="${VERIFY_PG_PASSWORD}" psql --host="${VERIFY_PG_HOST}" --port="${VERIFY_PG_PORT}" --username="${VERIFY_PG_USER}" "$@"; }
+    notify_failure() {
+      local subject="$1" detail="$2"
+      log "FAIL: ${subject} — ${detail}"
+      if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+          -d "{\"text\":\":rotating_light: *[${ENVIRONMENT}] Backup Verify FAILED: ${subject}*\",\"attachments\":[{\"color\":\"danger\",\"text\":\"${detail}\"}]}" || true
+      fi
+      if [[ -n "${PAGERDUTY_ROUTING_KEY:-}" ]]; then
+        curl -sf -X POST "https://events.pagerduty.com/v2/enqueue" -H 'Content-Type: application/json' \
+          -d "{\"routing_key\":\"${PAGERDUTY_ROUTING_KEY}\",\"event_action\":\"trigger\",\"payload\":{\"summary\":\"[${ENVIRONMENT}] Backup Verify Failed: ${subject}\",\"severity\":\"critical\",\"source\":\"settla-backup-verify\"},\"dedup_key\":\"settla-backup-verify-${DATE}\"}" || true
+      fi
+    }
+    for bin in aws pg_restore psql gunzip; do command -v "${bin}" &>/dev/null || { notify_failure "Missing binary" "${bin}"; exit 1; }; done
+    mkdir -p "${WORK_DIR}"
+    declare -A DB_TABLE=( ["settla_ledger"]="entry_lines" ["settla_transfer"]="transfers" ["settla_treasury"]="positions" )
+    declare -A DB_MINROWS=( ["settla_ledger"]="${MIN_ROWS_LEDGER}" ["settla_transfer"]="${MIN_ROWS_TRANSFER}" ["settla_treasury"]="${MIN_ROWS_TREASURY}" )
+    for dbname in settla_ledger settla_transfer settla_treasury; do
+      restore_db="verify_${dbname/settla_/}_${TIMESTAMP}"
+      table="${DB_TABLE[${dbname}]}"
+      minrows="${DB_MINROWS[${dbname}]}"
+      log "=== ${dbname} ==="
+      LATEST_KEY="$(aws s3api list-objects-v2 --bucket "${S3_BUCKET}" --prefix "${S3_PREFIX}/${ENVIRONMENT}/" \
+        --query "sort_by(Contents[?contains(Key,'${dbname}')], &LastModified)[-1].Key" --output text 2>/dev/null)"
+      if [[ -z "${LATEST_KEY}" || "${LATEST_KEY}" == "None" ]]; then
+        notify_failure "No backup found" "${dbname}"; EXIT_CODE=1; continue
+      fi
+      log "Latest: s3://${S3_BUCKET}/${LATEST_KEY}"
+      LOCAL_GZ="${WORK_DIR}/${dbname}.pgdump.gz"
+      aws s3 cp "s3://${S3_BUCKET}/${LATEST_KEY}" "${LOCAL_GZ}" || { notify_failure "Download failed" "${dbname}"; EXIT_CODE=1; continue; }
+      LOCAL_DUMP="${WORK_DIR}/${dbname}.pgdump"
+      gunzip -c "${LOCAL_GZ}" > "${LOCAL_DUMP}" && rm -f "${LOCAL_GZ}" || { notify_failure "Decompress failed" "${dbname}"; EXIT_CODE=1; continue; }
+      psql_super --dbname=postgres -c "CREATE DATABASE \"${restore_db}\" WITH OWNER settla;" 2>/dev/null || { notify_failure "Create DB failed" "${restore_db}"; EXIT_CODE=1; rm -f "${LOCAL_DUMP}"; continue; }
+      if ! PGPASSWORD="${VERIFY_PG_PASSWORD}" pg_restore --host="${VERIFY_PG_HOST}" --port="${VERIFY_PG_PORT}" \
+          --username="${VERIFY_PG_USER}" --dbname="${restore_db}" --no-owner --role=settla --exit-on-error \
+          "${LOCAL_DUMP}" 2>/tmp/restore.err; then
+        notify_failure "Restore failed" "$(cat /tmp/restore.err | head -5)"
+        EXIT_CODE=1; psql_super --dbname=postgres -c "DROP DATABASE IF EXISTS \"${restore_db}\";" 2>/dev/null || true; rm -f "${LOCAL_DUMP}"; continue
+      fi
+      rm -f "${LOCAL_DUMP}"
+      ROWS="$(PGPASSWORD="${VERIFY_PG_PASSWORD}" psql --host="${VERIFY_PG_HOST}" --port="${VERIFY_PG_PORT}" \
+        --username="${VERIFY_PG_USER}" --dbname="${restore_db}" -t -c "SELECT COUNT(*) FROM ${table};" 2>/dev/null | tr -d ' \n')"
+      if [[ -z "${ROWS}" || ! "${ROWS}" =~ ^[0-9]+$ ]]; then
+        notify_failure "Row count query failed" "${dbname}.${table}"
+        EXIT_CODE=1
+      elif [[ "${ROWS}" -lt "${minrows}" ]]; then
+        notify_failure "Row count too low" "${dbname}.${table}: got ${ROWS}, min ${minrows}"
+        EXIT_CODE=1
+      else
+        log "OK: ${dbname}.${table} has ${ROWS} rows (min: ${minrows})"
+        REPORT+=("OK: ${dbname} — ${ROWS} rows in ${table}")
+      fi
+      psql_super --dbname=postgres -c "DROP DATABASE IF EXISTS \"${restore_db}\";" 2>/dev/null || log "WARNING: could not drop ${restore_db}"
+    done
+    SUMMARY="$(IFS=$'\n'; echo "${REPORT[*]}")"
+    if [[ "${EXIT_CODE}" -eq 0 && -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+      curl -sf -X POST "${SLACK_WEBHOOK_URL}" -H 'Content-Type: application/json' \
+        -d "{\"text\":\":white_check_mark: *[${ENVIRONMENT}] Backup Verification PASSED*\",\"attachments\":[{\"color\":\"good\",\"text\":\"${SUMMARY}\"}]}" || true
+    fi
+    exit "${EXIT_CODE}"

@@ -1,0 +1,87 @@
+# NetworkPolicy for the Tyk API Gateway pods.
+#
+# Tyk is the single external-facing entry point for all API traffic.
+# It terminates TLS, enforces API-level auth (separate from Settla's own
+# auth), and proxies requests to the internal gateway (:3000) and webhook
+# (:3001) services.
+#
+# Ingress:
+#   - :8080 — external HTTP/HTTPS traffic from any source (internet or
+#             internal load-balancer).  TLS termination happens here.
+#   - :8080 — health checks from the cloud load-balancer (same port).
+#
+# Egress:
+#   - gateway :3000  — REST API requests (quotes, transfers, treasury)
+#   - webhook :3001  — inbound provider webhook forwarding
+#   - Redis :6379    — Tyk uses Redis for rate limiting, OAuth tokens,
+#                      API key storage, and analytics queuing
+#
+# The Tyk Dashboard and Tyk Pump are not modelled here; add separate
+# policies if they are deployed into the settla namespace.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tyk-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: tyk
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tyk
+  policyTypes:
+    - Ingress
+  ingress:
+    # External traffic from internet / cloud load-balancer
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tyk-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: tyk
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tyk
+  policyTypes:
+    - Egress
+  egress:
+    # REST API requests proxied to the internal gateway
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 3000
+          protocol: TCP
+    # Inbound provider webhooks forwarded to the webhook service
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: webhook
+      ports:
+        - port: 3001
+          protocol: TCP
+    # Redis — Tyk rate limiting, key storage, analytics queue
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - port: 6379
+          protocol: TCP

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 8
+  serviceName: settla-node
+  podManagementPolicy: Parallel  # All pods start simultaneously
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: settla-node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: settla-node
+        app.kubernetes.io/component: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: settla-node
+      containers:
+        - name: settla-node
+          image: settla-node:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9091
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          envFrom:
+            - configMapRef:
+                name: settla-node-config
+          env:
+            # Pod name is settla-node-0, settla-node-1, ... settla-node-7
+            # The application parses the ordinal index from this to determine partition assignment.
+            - name: SETTLA_NODE_PARTITION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # DB password injected from the settla-db-credentials ExternalSecret.
+            # ConfigMap DB URLs use $(POSTGRES_PASSWORD) substitution.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            - name: SETTLA_ENV
+              value: "production"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settla-node
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker

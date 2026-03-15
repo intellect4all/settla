@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: settla-server
+  strategy:
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: settla-server
+        app.kubernetes.io/component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: settla-server
+      containers:
+        - name: settla-server
+          image: settla-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: grpc
+              protocol: TCP
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+          readinessProbe:
+            grpc:
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            grpc:
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]  # Drain connections + treasury flush
+          envFrom:
+            - configMapRef:
+                name: settla-server-config
+          env:
+            # DB password injected from the K8s Secret produced by the
+            # settla-db-credentials ExternalSecret (base/secrets/settla-db-secrets.yaml).
+            # The ConfigMap DB URLs reference $(POSTGRES_PASSWORD) which K8s resolves
+            # via dependent env var substitution.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            # Tyk gateway admin secret (used when settla-server calls Tyk admin API).
+            - name: TYK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: settla-app-secrets
+                  key: tyk-secret
+            # Wallet encryption key — required when SETTLA_PROVIDER_MODE=live|testnet.
+            - name: SETTLA_WALLET_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: settla-app-secrets
+                  key: wallet-encryption-key
+            # Master seed for HD wallet derivation — required when SETTLA_PROVIDER_MODE=live|testnet.
+            - name: SETTLA_MASTER_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: settla-app-secrets
+                  key: master-seed
+            # TronGrid API key for higher RPC rate limits (optional).
+            - name: SETTLA_TRON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: settla-app-secrets
+                  key: tron-api-key
+                  optional: true
+            - name: SETTLA_ENV
+              value: "production"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settla-server
+  labels:
+    app.kubernetes.io/name: settla-server
+    app.kubernetes.io/component: server

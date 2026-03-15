@@ -1,0 +1,32 @@
+# Headless Service for NATS StatefulSet pod-stable DNS.
+#
+# Each NATS pod gets a stable DNS record:
+#   nats-{N}.nats-headless.settla.svc.cluster.local
+#
+# The production nats-patch.yaml -routes flag references these names so that
+# every broker can reach its two peers for full-mesh cluster routing.
+# publishNotReadyAddresses: true allows route connections during rolling restarts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: settla
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: nats
+  publishNotReadyAddresses: true
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+    - name: cluster
+      port: 6222
+      targetPort: cluster
+    - name: monitor
+      port: 8222
+      targetPort: monitor

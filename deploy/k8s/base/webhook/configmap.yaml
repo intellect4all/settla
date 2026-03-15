@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-config
+  labels:
+    app.kubernetes.io/name: webhook
+    app.kubernetes.io/component: webhook
+data:
+  SETTLA_WEBHOOK_PORT: "3001"
+
+  # Database for webhook config and dead letter queue
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+
+  # NATS for consuming webhook events
+  SETTLA_NATS_URL: "nats://nats:4222"
+
+  # Redis for deduplication
+  SETTLA_REDIS_URL: "redis://redis:6379"
+
+  # Logging
+  SETTLA_LOG_LEVEL: "info"

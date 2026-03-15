@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: settla-node
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: settla
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["settla-node-config"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # Actual secrets consumed by settla-node pods (via env var injection):
+    #   - settla-db-credentials: POSTGRES_PASSWORD (transfer DB for outbox relay and workers)
+    resourceNames: ["settla-db-credentials"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: settla-node
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-node
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: settla
+subjects:
+  - kind: ServiceAccount
+    name: settla-node
+    namespace: settla
+roleRef:
+  kind: Role
+  name: settla-node
+  apiGroup: rbac.authorization.k8s.io

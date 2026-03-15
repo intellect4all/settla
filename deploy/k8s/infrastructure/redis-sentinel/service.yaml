@@ -1,0 +1,93 @@
+# Redis Sentinel Services — headless for peer discovery + ClusterIP for clients.
+#
+# Five-nines rationale:
+# - The headless service gives each Redis pod a stable DNS name for
+#   Sentinel monitoring and replication (settla-redis-0.settla-redis-headless).
+# - The settla-redis-master service is what application clients connect to.
+#   Sentinel-aware clients (like ioredis) query the Sentinel service first
+#   to discover the current master, then connect directly — this avoids
+#   the 30-60 second DNS cache staleness that plagues VIP-based failover.
+# - The Sentinel headless service enables Sentinel peer discovery.
+
+# =============================================================================
+# Redis data node services
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-redis-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  clusterIP: None  # Headless for StatefulSet pod DNS
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  publishNotReadyAddresses: true  # Required for initial replication setup
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-redis
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+  annotations:
+    # Informational: clients should use Sentinel for master discovery,
+    # not this service directly.  This service exists as a fallback and
+    # for non-Sentinel-aware tools (e.g., redis-cli for debugging).
+    settla.io/note: "Use Sentinel for master discovery in production"
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+
+# =============================================================================
+# Sentinel services
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-redis-sentinel-headless
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis-sentinel
+    app.kubernetes.io/component: cache
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
+  publishNotReadyAddresses: true
+---
+# Sentinel discovery service — application clients connect here to ask
+# "who is the current master?" before establishing their data connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: settla-redis-sentinel
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: redis-sentinel
+    app.kubernetes.io/component: cache
+spec:
+  selector:
+    app.kubernetes.io/name: redis-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: 26379
