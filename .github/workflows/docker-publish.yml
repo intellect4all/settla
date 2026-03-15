@@ -1,0 +1,327 @@
+name: Docker Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  publish:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - image: settla-server
+            dockerfile: deploy/docker/settla-server.Dockerfile
+          - image: settla-node
+            dockerfile: deploy/docker/settla-node.Dockerfile
+          - image: settla-gateway
+            dockerfile: deploy/docker/gateway.Dockerfile
+          - image: settla-webhook
+            dockerfile: deploy/docker/webhook.Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/intellect4all/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: [publish]
+    # Only run smoke tests on main branch pushes (not version tags which go to production)
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull published images
+        run: |
+          SHA=${{ github.sha }}
+          docker pull ghcr.io/intellect4all/settla-server:${SHA}
+          docker pull ghcr.io/intellect4all/settla-node:${SHA}
+          docker pull ghcr.io/intellect4all/settla-gateway:${SHA}
+          docker pull ghcr.io/intellect4all/settla-webhook:${SHA}
+          docker tag ghcr.io/intellect4all/settla-server:${SHA} settla-server:smoke
+          docker tag ghcr.io/intellect4all/settla-node:${SHA} settla-node:smoke
+          docker tag ghcr.io/intellect4all/settla-gateway:${SHA} settla-gateway:smoke
+          docker tag ghcr.io/intellect4all/settla-webhook:${SHA} settla-webhook:smoke
+
+      - name: Start infrastructure
+        run: |
+          docker network create settla-smoke
+          # Start postgres with the primary DB; additional DBs are created below.
+          docker run -d --name smoke-postgres \
+            --network settla-smoke \
+            -e POSTGRES_USER=settla \
+            -e POSTGRES_PASSWORD=settla \
+            -e POSTGRES_DB=settla_transfer \
+            postgres:16-alpine
+          docker run -d --name smoke-redis \
+            --network settla-smoke \
+            redis:7.2-alpine
+          docker run -d --name smoke-nats \
+            --network settla-smoke \
+            nats:2.10-alpine -js
+          # Wait for postgres to be ready before creating additional DBs.
+          for i in $(seq 1 30); do
+            if docker exec smoke-postgres pg_isready -U settla -d settla_transfer >/dev/null 2>&1; then
+              echo "postgres ready"
+              break
+            fi
+            sleep 1
+          done
+          docker exec smoke-postgres psql -U settla -c "CREATE DATABASE settla_ledger;"
+          docker exec smoke-postgres psql -U settla -c "CREATE DATABASE settla_treasury;"
+
+      - name: Run database migrations
+        run: |
+          # Run migrations by piping each *.up.sql file to psql in numeric order.
+          # We use the settla owner role (BYPASSRLS) so all RLS migrations work.
+          for DB in transfer ledger treasury; do
+            echo "=== Running migrations for settla_${DB} ==="
+            for f in $(ls db/migrations/${DB}/*.up.sql 2>/dev/null | sort -V); do
+              echo "  applying: $f"
+              docker exec -i smoke-postgres psql -U settla -d "settla_${DB}" < "$f"
+            done
+          done
+
+      - name: Seed smoke test data
+        run: |
+          # API key: "sk_test_smoke_ci_key_lemfi_001"
+          # Key hash is SHA-256 of the raw key.
+          SMOKE_API_KEY="sk_test_smoke_ci_key_lemfi_001"
+          SMOKE_KEY_HASH=$(printf '%s' "$SMOKE_API_KEY" | sha256sum | awk '{print $1}')
+          echo "Seeding tenant with key_hash=${SMOKE_KEY_HASH:0:16}..."
+
+          # Seed Lemfi tenant in transfer DB
+          docker exec smoke-postgres psql -U settla -d settla_transfer -c "
+            INSERT INTO tenants (
+              id, name, slug, status, fee_schedule, settlement_model,
+              daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at
+            ) VALUES (
+              'a0000000-0000-0000-0000-000000000001',
+              'Lemfi Smoke', 'lemfi', 'ACTIVE',
+              '{\"on_ramp_bps\": 40, \"off_ramp_bps\": 35}',
+              'PREFUNDED',
+              9999999999.00, 1000000.00,
+              'VERIFIED', now()
+            ) ON CONFLICT (id) DO NOTHING;
+          "
+          docker exec smoke-postgres psql -U settla -d settla_transfer -c "
+            INSERT INTO api_keys (
+              id, tenant_id, key_hash, key_prefix, environment, name, is_active
+            ) VALUES (
+              gen_random_uuid(),
+              'a0000000-0000-0000-0000-000000000001',
+              '${SMOKE_KEY_HASH}',
+              'sk_test_smoke', 'TEST', 'smoke-ci', true
+            ) ON CONFLICT (key_hash) DO NOTHING;
+          "
+
+          # Seed GBP treasury position for Lemfi in treasury DB
+          docker exec smoke-postgres psql -U settla -d settla_treasury -c "
+            INSERT INTO positions (
+              id, tenant_id, currency, location, balance, locked
+            ) VALUES (
+              gen_random_uuid(),
+              'a0000000-0000-0000-0000-000000000001',
+              'GBP', 'bank:gbp',
+              999999999.00, 0.00
+            ) ON CONFLICT (tenant_id, currency, location) DO NOTHING;
+          "
+          echo "Seed complete."
+
+      - name: Start settla-server
+        run: |
+          docker run -d --name smoke-server \
+            --network settla-smoke \
+            -p 8080:8080 \
+            -e SETTLA_ENV=test \
+            -e SETTLA_HTTP_PORT=8080 \
+            -e SETTLA_GRPC_PORT=9090 \
+            -e SETTLA_TRANSFER_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_transfer?sslmode=disable" \
+            -e SETTLA_LEDGER_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_ledger?sslmode=disable" \
+            -e SETTLA_TREASURY_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_treasury?sslmode=disable" \
+            -e SETTLA_REDIS_URL=smoke-redis:6379 \
+            -e SETTLA_NATS_URL=nats://smoke-nats:4222 \
+            -e SETTLA_TIGERBEETLE_ADDRESSES='' \
+            -e SETTLA_MOCK_PROVIDERS=true \
+            -e SETTLA_MOCK_DELAY_MS=1 \
+            settla-server:smoke || true
+
+      - name: Start settla-node
+        run: |
+          docker run -d --name smoke-node \
+            --network settla-smoke \
+            -e SETTLA_ENV=test \
+            -e SETTLA_TRANSFER_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_transfer?sslmode=disable" \
+            -e SETTLA_LEDGER_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_ledger?sslmode=disable" \
+            -e SETTLA_TREASURY_DB_URL="postgres://settla:settla@smoke-postgres:5432/settla_treasury?sslmode=disable" \
+            -e SETTLA_REDIS_URL=smoke-redis:6379 \
+            -e SETTLA_NATS_URL=nats://smoke-nats:4222 \
+            -e SETTLA_TIGERBEETLE_ADDRESSES='' \
+            -e SETTLA_MOCK_PROVIDERS=true \
+            -e SETTLA_MOCK_DELAY_MS=1 \
+            settla-node:smoke || true
+
+      - name: Start gateway
+        run: |
+          docker run -d --name smoke-gateway \
+            --network settla-smoke \
+            -p 3000:3000 \
+            -e NODE_ENV=test \
+            -e GATEWAY_PORT=3000 \
+            -e GRPC_SERVER_ADDRESS=smoke-server:9090 \
+            -e REDIS_URL=redis://smoke-redis:6379 \
+            settla-gateway:smoke || true
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for settla-server..."
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "settla-server healthy"
+              break
+            fi
+            sleep 2
+          done
+          echo "Waiting for gateway..."
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:3000/health >/dev/null 2>&1; then
+              echo "gateway healthy"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Health check — settla-server
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: settla-server /health returned HTTP $STATUS"
+            docker logs smoke-server
+            exit 1
+          fi
+          echo "PASS: settla-server /health returned 200"
+
+      - name: Health check — gateway
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "FAIL: gateway /health returned HTTP $STATUS"
+            docker logs smoke-gateway
+            exit 1
+          fi
+          echo "PASS: gateway /health returned 200"
+
+      - name: Transfer smoke test — create and complete a GBP→NGN transfer
+        run: |
+          set -euo pipefail
+          SMOKE_API_KEY="sk_test_smoke_ci_key_lemfi_001"
+          GW="http://localhost:3000"
+          AUTH="Authorization: Bearer ${SMOKE_API_KEY}"
+
+          echo "--- Step 1: Create quote ---"
+          QUOTE_RESP=$(curl -sf -X POST "${GW}/v1/quotes" \
+            -H "${AUTH}" \
+            -H "Content-Type: application/json" \
+            -d '{"source_currency":"GBP","source_amount":"100","dest_currency":"NGN"}')
+          echo "Quote response: ${QUOTE_RESP}"
+          QUOTE_ID=$(echo "$QUOTE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          if [ -z "$QUOTE_ID" ]; then
+            echo "FAIL: no quote ID in response"
+            exit 1
+          fi
+          echo "PASS: quote created — id=${QUOTE_ID}"
+
+          echo "--- Step 2: Create transfer ---"
+          IDEMPOTENCY_KEY="smoke-$(date +%s%N)"
+          TRANSFER_RESP=$(curl -sf -X POST "${GW}/v1/transfers" \
+            -H "${AUTH}" \
+            -H "Content-Type: application/json" \
+            -H "Idempotency-Key: ${IDEMPOTENCY_KEY}" \
+            -d "{
+              \"quote_id\": \"${QUOTE_ID}\",
+              \"external_ref\": \"smoke-test-${IDEMPOTENCY_KEY}\",
+              \"sender\": {\"name\":\"Smoke Test\",\"country\":\"GB\"},
+              \"recipient\": {\"name\":\"Smoke Recipient\",\"country\":\"NG\",\"bank_name\":\"Test Bank\",\"account_number\":\"0123456789\"}
+            }")
+          echo "Transfer response: ${TRANSFER_RESP}"
+          TRANSFER_ID=$(echo "$TRANSFER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          if [ -z "$TRANSFER_ID" ]; then
+            echo "FAIL: no transfer ID in response"
+            exit 1
+          fi
+          echo "PASS: transfer created — id=${TRANSFER_ID}"
+
+          echo "--- Step 3: Poll until COMPLETED (max 120s) ---"
+          DEADLINE=$(($(date +%s) + 120))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            STATUS_RESP=$(curl -sf "${GW}/v1/transfers/${TRANSFER_ID}" -H "${AUTH}")
+            TRANSFER_STATUS=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','UNKNOWN'))")
+            echo "  transfer status: ${TRANSFER_STATUS}"
+            if [ "$TRANSFER_STATUS" = "COMPLETED" ]; then
+              echo "PASS: transfer COMPLETED — smoke test passed"
+              exit 0
+            fi
+            if [ "$TRANSFER_STATUS" = "FAILED" ]; then
+              echo "FAIL: transfer entered FAILED state"
+              echo "Full response: ${STATUS_RESP}"
+              docker logs smoke-server 2>&1 | tail -50
+              docker logs smoke-node 2>&1 | tail -50
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "FAIL: transfer did not reach COMPLETED within 120s (last status: ${TRANSFER_STATUS})"
+          docker logs smoke-server 2>&1 | tail -50
+          docker logs smoke-node 2>&1 | tail -50
+          exit 1
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== smoke-server logs ===" && docker logs smoke-server 2>&1 || true
+          echo "=== smoke-node logs ===" && docker logs smoke-node 2>&1 || true
+          echo "=== smoke-gateway logs ===" && docker logs smoke-gateway 2>&1 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f smoke-postgres smoke-redis smoke-nats smoke-gateway smoke-server smoke-node 2>/dev/null || true
+          docker network rm settla-smoke 2>/dev/null || true

@@ -48,3 +48,7 @@ gen/
 /settla-node
 /loadtest
 /chaos
+
+# Generated reports
+bench-results.txt
+tests/loadtest/reports/

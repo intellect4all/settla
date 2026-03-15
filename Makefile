@@ -1,7 +1,8 @@
 .PHONY: build test lint proto migrate-up migrate-down docker-up docker-down docker-logs docker-reset \
        seed demo clean bench loadtest loadtest-quick loadtest-sustained loadtest-burst loadtest-flood \
        loadtest-multi soak soak-short chaos report test-integration profile \
-       testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet
+       testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet \
+       tyk-setup
 
 # Go
 GO := go
@@ -13,6 +14,11 @@ SERVER_BIN := $(BIN_DIR)/settla-server
 NODE_BIN := $(BIN_DIR)/settla-node
 
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
+
+# Load test gateway URL — override via env or make argument
+GATEWAY_PORT ?= $(shell grep -m1 '^SETTLA_GATEWAY_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')
+GATEWAY_PORT := $(or $(GATEWAY_PORT),3100)
+GATEWAY_URL ?= http://localhost:$(GATEWAY_PORT)
 
 ## build: Compile all Go binaries
 build:
@@ -91,48 +97,54 @@ bench:
 
 ## loadtest: Peak load test (5,000 TPS for 10 minutes)
 loadtest:
-	$(GO) run ./tests/loadtest/ -tps=5000 -duration=10m -tenants=10
+	$(GO) run ./tests/loadtest/ -tps=5000 -duration=10m -tenants=10 -gateway=$(GATEWAY_URL) -drain=300s
 
 ## loadtest-quick: Quick load test (1,000 TPS for 2 minutes, CI-friendly)
+# Passes DB URLs so the post-test verification step can check:
+#   - Outbox fully drained (zero unpublished entries)
+#   - Debits = credits across all ledger accounts
+#   - Zero stuck transfers in non-terminal state
+# Override TRANSFER_DB_URL / LEDGER_DB_URL to point at a remote DB.
+TRANSFER_DB_URL ?= $(shell grep -m1 '^SETTLA_TRANSFER_DB_URL=' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')
+LEDGER_DB_URL   ?= $(shell grep -m1 '^SETTLA_LEDGER_DB_URL=' .env 2>/dev/null | cut -d= -f2 | tr -d ' ')
 loadtest-quick:
-	$(GO) run ./tests/loadtest/ -tps=1000 -duration=2m -tenants=5
+	$(GO) run ./tests/loadtest/ -tps=1000 -duration=2m -tenants=5 -gateway=$(GATEWAY_URL) -drain=300s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
 
 ## loadtest-sustained: Sustained load test (600 TPS for 30 minutes)
 loadtest-sustained:
-	$(GO) run ./tests/loadtest/ -tps=600 -duration=30m -tenants=10
+	$(GO) run ./tests/loadtest/ -tps=600 -duration=30m -tenants=10 -gateway=$(GATEWAY_URL) -drain=300s
 
 ## loadtest-burst: Burst recovery test (ramp 600→8000→600 TPS)
 loadtest-burst:
 	@echo "Burst test: ramping 600→8000→600 TPS"
-	$(GO) run ./tests/loadtest/ -tps=8000 -duration=5m -tenants=20 -rampup=2m
+	$(GO) run ./tests/loadtest/ -tps=8000 -duration=5m -tenants=20 -rampup=2m -gateway=$(GATEWAY_URL) -drain=300s
 
 ## loadtest-flood: Single tenant flood test (3,000 TPS, one tenant)
 loadtest-flood:
-	$(GO) run ./tests/loadtest/ -tps=3000 -duration=5m -tenants=1
+	$(GO) run ./tests/loadtest/ -tps=3000 -duration=5m -tenants=1 -gateway=$(GATEWAY_URL) -drain=300s
 
 ## loadtest-multi: Multi-tenant scale test (50 tenants × 100 TPS)
 loadtest-multi:
-	$(GO) run ./tests/loadtest/ -tps=5000 -duration=10m -tenants=50
+	$(GO) run ./tests/loadtest/ -tps=5000 -duration=10m -tenants=50 -gateway=$(GATEWAY_URL) -drain=300s
 
 ## soak: 2-hour soak test at 1,000 TPS (with health monitoring)
 soak:
-	$(GO) run ./tests/loadtest/ -soak -tps=1000 -duration=2h -tenants=10
+	$(GO) run ./tests/loadtest/ -soak -tps=1000 -duration=2h -tenants=10 -gateway=$(GATEWAY_URL) -drain=600s
 
 ## soak-short: 15-minute soak test at 1,000 TPS (CI-feasible)
 soak-short:
-	$(GO) run ./tests/loadtest/ -soak -tps=1000 -duration=15m -tenants=5
+	$(GO) run ./tests/loadtest/ -soak -tps=1000 -duration=15m -tenants=5 -gateway=$(GATEWAY_URL) -drain=300s
 
 ## chaos: Run all chaos test scenarios
 chaos:
-	$(GO) run ./tests/chaos/
+	$(GO) run ./tests/chaos/ -gateway=$(GATEWAY_URL)
 
-## report: Generate full benchmark report (runs bench + loadtest-quick + soak-short)
+## report: Generate full benchmark report (unit benchmarks + load test + outbox metrics)
 report:
 	@mkdir -p tests/reports
-	$(MAKE) bench
-	$(MAKE) loadtest-quick
-	$(MAKE) soak-short
-	@echo "Report generated at tests/reports/benchmark-report.md"
+	bash scripts/generate-report.sh
 
 ## demo: Run interactive demo scenario
 demo:
@@ -190,6 +202,10 @@ provider-mode-testnet:
 		echo "ERROR: .env file not found. Run: cp .env.example .env"; \
 		exit 1; \
 	fi
+
+## tyk-setup: Create Tyk API keys for seed tenants (run after docker-up)
+tyk-setup:
+	@bash scripts/tyk-setup.sh
 
 ## clean: Remove build artifacts
 clean:

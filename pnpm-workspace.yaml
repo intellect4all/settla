@@ -2,3 +2,4 @@ packages:
   - "api/gateway"
   - "api/webhook"
   - "dashboard"
+  - "portal"

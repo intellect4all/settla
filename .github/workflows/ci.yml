@@ -6,26 +6,539 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  go:
+  lint:
+    name: Lint & Static Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
 
-      - name: Lint
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Go lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
 
-      - name: Test
-        run: go test -race ./...
+      - name: Buf lint
+        uses: bufbuild/buf-setup-action@v1
+      - run: buf lint
 
-  typescript:
+      - name: TypeScript lint
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @settla/gateway lint
+          pnpm --filter @settla/webhook lint
+
+      - name: Module boundary check
+        run: |
+          # Core must not import concrete modules
+          if go list -f '{{join .Imports "\n"}}' ./core/... | grep -E "intellect4all/settla/(ledger|treasury|rail|node)"; then
+            echo "FAIL: core/ imports concrete modules"
+            exit 1
+          fi
+          echo "PASS: core/ respects module boundaries"
+
+      - name: Outbox pattern verification
+        run: |
+          # Core must not have direct side effects (only outbox events)
+          if grep -rn 'nats\.\|\.Publish\|\.SendTransaction\|\.PostEntries\|\.Reserve(' core/*.go | grep -v "_test.go" | grep -v "doc.go"; then
+            echo "FAIL: core/ has direct side effect calls"
+            exit 1
+          fi
+          echo "PASS: core/ uses outbox pattern correctly"
+
+  build:
+    name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Build Go binaries
+        run: go build ./...
+
+      - name: Build TypeScript workspaces
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @settla/gateway build
+          pnpm --filter @settla/webhook build
+
+      - name: Build Docker images
+        run: |
+          docker build -f deploy/docker/settla-server.Dockerfile -t settla-server .
+          docker build -f deploy/docker/settla-node.Dockerfile -t settla-node .
+          docker build -f deploy/docker/gateway.Dockerfile -t settla-gateway .
+          docker build -f deploy/docker/webhook.Dockerfile -t settla-webhook .
+
+      - name: Verify buf generate is in sync
+        uses: bufbuild/buf-setup-action@v1
+      - run: |
+          buf generate
+          if ! git diff --exit-code gen/ api/gateway/src/gen/; then
+            echo "FAIL: generated protobuf code is out of sync. Run 'make proto' and commit."
+            exit 1
+          fi
+
+      - name: Verify sqlc generate is in sync
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+          cd db && sqlc generate
+          if ! git diff --exit-code ../store/; then
+            echo "FAIL: generated SQLC code is out of sync. Run 'make sqlc-generate' and commit."
+            exit 1
+          fi
+
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Go unit tests
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage check
+        run: |
+          # Overall threshold is intentionally modest (25%) because the codebase includes
+          # many 0%-coverage packages: auto-generated protobuf/SQLC, CLI entrypoints, and
+          # test harnesses.  The primary quality signal comes from per-package checks below.
+          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+          echo "Total coverage (all packages): ${TOTAL}%"
+          if (( $(echo "$TOTAL < 25" | bc -l) )); then
+            echo "FAIL: overall coverage ${TOTAL}% dropped below 25% — significant test deletion detected"
+            exit 1
+          fi
+
+          # Per-package gates for critical business logic
+          declare -A THRESHOLDS=(
+            ["core"]=65
+            ["core/compensation"]=85
+            ["core/reconciliation"]=80
+            ["ledger"]=50
+            ["treasury"]=70
+            ["cache"]=80
+          )
+          FAIL=0
+          for pkg in "${!THRESHOLDS[@]}"; do
+            THRESHOLD=${THRESHOLDS[$pkg]}
+            PKG_COV=$(go tool cover -func=coverage.out | grep "github.com/intellect4all/settla/${pkg}/" | awk '{sum += $3; n++} END {if (n>0) printf "%.1f", sum/n; else print "0"}')
+            if [ -n "$PKG_COV" ] && (( $(echo "$PKG_COV < $THRESHOLD" | bc -l) )); then
+              echo "FAIL: ${pkg}/ coverage ${PKG_COV}% is below ${THRESHOLD}% threshold"
+              FAIL=1
+            else
+              echo "PASS: ${pkg}/ coverage ${PKG_COV}%"
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+
+      - name: TypeScript tests
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @settla/gateway test
+          pnpm --filter @settla/webhook test
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build]
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      nats:
+        image: nats:2.10-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          -js
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Start Postgres instances
+        run: |
+          # Ledger DB
+          docker run -d --name pg-ledger \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_ledger \
+            -p 5433:5432 postgres:16-alpine
+          # Transfer DB
+          docker run -d --name pg-transfer \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_transfer \
+            -p 5434:5432 postgres:16-alpine
+          # Treasury DB
+          docker run -d --name pg-treasury \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_treasury \
+            -p 5435:5432 postgres:16-alpine
+
+          # Wait for all Postgres instances to be ready
+          for port in 5433 5434 5435; do
+            for i in $(seq 1 30); do
+              if pg_isready -h localhost -p $port -U settla 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+          done
+
+      - name: Run migrations
+        env:
+          SETTLA_LEDGER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          make migrate-up
+
+      - name: Seed test data
+        env:
+          SETTLA_LEDGER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+        run: |
+          PGPASSWORD=settla psql -h localhost -p 5434 -U settla -d settla_transfer -f db/seed/transfer_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5433 -U settla -d settla_ledger -f db/seed/ledger_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5435 -U settla -d settla_treasury -f db/seed/treasury_seed.sql
+
+      - name: Verify migration rollback
+        env:
+          SETTLA_LEDGER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+        run: |
+          make migrate-down
+          make migrate-up
+          PGPASSWORD=settla psql -h localhost -p 5434 -U settla -d settla_transfer -f db/seed/transfer_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5433 -U settla -d settla_ledger -f db/seed/ledger_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5435 -U settla -d settla_treasury -f db/seed/treasury_seed.sql
+
+      - name: Integration tests
+        env:
+          SETTLA_LEDGER_DB_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+          SETTLA_REDIS_URL: "localhost:6379"
+          SETTLA_NATS_URL: "nats://localhost:4222"
+        run: make test-integration
+
+  loadtest-quick:
+    name: Load Test (Quick)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [test-integration]
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      nats:
+        image: nats:2.10-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          -js
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Start Postgres instances
+        run: |
+          docker run -d --name pg-ledger \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_ledger \
+            -p 5433:5432 postgres:16-alpine
+          docker run -d --name pg-transfer \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_transfer \
+            -p 5434:5432 postgres:16-alpine
+          docker run -d --name pg-treasury \
+            -e POSTGRES_USER=settla -e POSTGRES_PASSWORD=settla -e POSTGRES_DB=settla_treasury \
+            -p 5435:5432 postgres:16-alpine
+
+          for port in 5433 5434 5435; do
+            for i in $(seq 1 30); do
+              if pg_isready -h localhost -p $port -U settla 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+          done
+
+      - name: Run migrations and seed
+        env:
+          SETTLA_LEDGER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          make migrate-up
+          PGPASSWORD=settla psql -h localhost -p 5434 -U settla -d settla_transfer -f db/seed/transfer_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5433 -U settla -d settla_ledger -f db/seed/ledger_seed.sql
+          PGPASSWORD=settla psql -h localhost -p 5435 -U settla -d settla_treasury -f db/seed/treasury_seed.sql
+
+      - name: Build and start services
+        env:
+          SETTLA_LEDGER_DB_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+          SETTLA_REDIS_URL: "localhost:6379"
+          SETTLA_NATS_URL: "nats://localhost:4222"
+          SETTLA_MOCK_DELAY_MS: "1"
+        run: |
+          go build -o bin/settla-server ./cmd/settla-server/...
+          go build -o bin/settla-node ./cmd/settla-node/...
+          bin/settla-server &
+          bin/settla-node &
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run load test (1,000 TPS, 2 min)
+        env:
+          SETTLA_LEDGER_DB_URL: "postgres://settla:settla@localhost:5433/settla_ledger?sslmode=disable"
+          SETTLA_TRANSFER_DB_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
+          SETTLA_TREASURY_DB_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
+          SETTLA_REDIS_URL: "localhost:6379"
+          SETTLA_NATS_URL: "nats://localhost:4222"
+          SETTLA_MOCK_DELAY_MS: "1"
+        run: make loadtest-quick
+
+  bench:
+    name: Benchmark Regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test-unit]
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run benchmarks
+        id: bench
+        run: |
+          go test ./... -bench=Benchmark -benchmem -benchtime=5s -run='^$' -count=1 | tee bench-results.txt
+          {
+            echo 'BENCH_SUMMARY<<EOF'
+            head -100 bench-results.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compare against baseline
+        run: |
+          if [ -f tests/benchmarks/baseline.json ]; then
+            python3 scripts/compare_benchmarks.py \
+              tests/benchmarks/baseline.json bench-results.txt
+          else
+            echo "No baseline found — skipping regression check"
+          fi
+
+      - name: Comment results on PR
+        if: always()
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Benchmark Results
+
+            ```
+            ${{ steps.bench.outputs.BENCH_SUMMARY }}
+            ```
+
+            _Full results available in the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})._
+
+  update-baseline:
+    name: Update Benchmark Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test-unit, test-integration]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run benchmarks
+        run: |
+          go test ./... -bench=Benchmark -benchmem -benchtime=5s -run='^$' -count=1 | tee bench-results.txt
+
+      - name: Parse results to JSON baseline
+        run: |
+          mkdir -p tests/benchmarks
+          python3 scripts/compare_benchmarks.py --update-baseline \
+            tests/benchmarks/baseline.json bench-results.txt || true
+
+      - name: Commit updated baseline
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/benchmarks/baseline.json
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit"
+          else
+            git commit -m "ci: update benchmark baseline [skip ci]"
+            git push
+          fi
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Go vulnerability check
+        run: govulncheck ./...
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Node.js audit
+        run: pnpm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Build Docker images for scanning
+        run: |
+          docker build -f deploy/docker/settla-server.Dockerfile -t settla-server:scan . || true
+          docker build -f deploy/docker/settla-node.Dockerfile -t settla-node:scan . || true
+          docker build -f deploy/docker/gateway.Dockerfile -t settla-gateway:scan . || true
+          docker build -f deploy/docker/webhook.Dockerfile -t settla-webhook:scan . || true
+
+      - name: Trivy scan — settla-server
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: settla-server:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+
+      - name: Trivy scan — settla-node
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: settla-node:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+
+      - name: Trivy scan — settla-gateway
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: settla-gateway:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+
+      - name: Trivy scan — settla-webhook
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: settla-webhook:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+
+  dashboard:
+    name: Dashboard Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: dashboard
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +550,16 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @settla/gateway build
-      - run: pnpm --filter @settla/webhook build
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
