@@ -8,10 +8,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -125,7 +128,6 @@ func runSetup(logger *slog.Logger) error {
 	chains := wallet.ValidChains()
 	ctx := context.Background()
 
-	// Step 1: Create system wallets
 	fmt.Println("--- Creating system wallets ---")
 	var systemWallets []*wallet.Wallet
 	for _, chain := range chains {
@@ -138,7 +140,6 @@ func runSetup(logger *slog.Logger) error {
 	}
 	fmt.Println()
 
-	// Step 2: Create tenant wallets
 	fmt.Println("--- Creating tenant wallets ---")
 	for _, tenant := range seedTenants {
 		fmt.Printf("  Tenant: %s\n", tenant.Slug)
@@ -154,7 +155,6 @@ func runSetup(logger *slog.Logger) error {
 	}
 	fmt.Println()
 
-	// Step 3: Fund system wallets from faucets
 	fmt.Println("--- Funding system wallets from faucets ---")
 	var manualFunding []string
 	for _, w := range systemWallets {
@@ -175,7 +175,6 @@ func runSetup(logger *slog.Logger) error {
 	}
 	fmt.Println()
 
-	// Step 4: Print manual funding instructions
 	if len(manualFunding) > 0 {
 		fmt.Println("--- Manual Faucet Steps Required ---")
 		fmt.Println("The following chains require manual browser-based faucet requests:")
@@ -187,7 +186,6 @@ func runSetup(logger *slog.Logger) error {
 		fmt.Println()
 	}
 
-	// Step 5: Print explorer address links
 	fmt.Println("--- Explorer Address Links ---")
 	for _, w := range systemWallets {
 		url := addressExplorerURL(string(w.Chain), w.Address)
@@ -205,7 +203,6 @@ func runVerify(logger *slog.Logger) error {
 	fmt.Println("=== Settla Testnet Verification ===")
 	fmt.Println()
 
-	// Step 1: Check RPC connectivity
 	fmt.Println("--- Checking RPC connectivity ---")
 	cfg := blockchain.LoadConfigFromEnv()
 	rpcEndpoints := map[string]string{
@@ -227,7 +224,6 @@ func runVerify(logger *slog.Logger) error {
 	}
 	fmt.Println()
 
-	// Step 2: Check wallets exist
 	fmt.Println("--- Checking wallets ---")
 	mgr, err := newWalletManager(logger)
 	if err != nil {
@@ -259,7 +255,6 @@ func runVerify(logger *slog.Logger) error {
 	fmt.Printf("  Found %d system wallets, %d tenant wallets\n", systemCount, tenantCount)
 	fmt.Println()
 
-	// Step 3: Print wallet details
 	fmt.Println("--- Wallet Details ---")
 	for _, w := range wallets {
 		typeStr := "SYSTEM"
@@ -324,9 +319,9 @@ func runStatus(logger *slog.Logger) error {
 	return nil
 }
 
-// checkRPC performs a basic connectivity check against an RPC endpoint.
-func checkRPC(_, url string) error {
-	// Basic URL validation
+// checkRPC performs an actual connectivity check against an RPC endpoint
+// by sending a lightweight JSON-RPC or REST request appropriate for the chain.
+func checkRPC(chain, url string) error {
 	if url == "" {
 		return fmt.Errorf("empty RPC URL")
 	}
@@ -334,9 +329,51 @@ func checkRPC(_, url string) error {
 		return fmt.Errorf("invalid URL scheme")
 	}
 
-	// For now, just validate the URL is configured.
-	// Full RPC health checks would require importing each chain client.
-	return nil
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	switch chain {
+	case "tron":
+		// Tron uses REST-style API — GET /wallet/getnowblock
+		resp, err := client.Get(strings.TrimRight(url, "/") + "/wallet/getnowblock")
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		return nil
+
+	case "solana":
+		// Solana uses JSON-RPC — getHealth
+		body, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "getHealth",
+		})
+		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		return nil
+
+	default:
+		// Ethereum/Base use JSON-RPC — eth_blockNumber
+		body, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []any{},
+		})
+		resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		return nil
+	}
 }
 
 // addressExplorerURL returns the block explorer URL for an address (not tx).
