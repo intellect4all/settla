@@ -10,7 +10,7 @@ Settla is B2B stablecoin settlement infrastructure for fintechs, designed for 50
 
 ## Current Status
 
-Phases 1–6 are complete. See `TODO.md` for the full checklist. Next: Phase 7 (Benchmarking & Capacity Proof).
+Phases 1–6 are complete. Phase 7 (Benchmarking & Capacity Proof) is in progress — component benchmarks (7.1) pass all 76/76 targets. Integration load tests (7.2), soak tests (7.3), chaos tests (7.4), and benchmark reporting (7.5) remain. See `TODO.md` for the full checklist.
 
 ## Architecture
 
@@ -20,14 +20,22 @@ Settla is a polyglot monorepo with a single Go module and pnpm TypeScript worksp
 
 | Module | Package | Purpose |
 |---|---|---|
-| Settla Core | `core` | Settlement engine + state machine |
+| Settla Core | `core` | Pure state machine settlement engine — writes state + outbox entries atomically, zero side effects |
+| Settla Compensation | `core/compensation` | Compensation and refund flows for partial failures (SIMPLE_REFUND, REVERSE_ONRAMP, CREDIT_STABLECOIN, MANUAL_REVIEW) |
+| Settla Recovery | `core/recovery` | Stuck-transfer detector (60s interval) — re-publishes stalled intents via engine, escalates to manual review |
+| Settla Reconciliation | `core/reconciliation` | 5 automated consistency checks: treasury-ledger balance, transfer state, outbox health, provider tx, daily volume |
+| Settla Settlement | `core/settlement` | Net settlement calculator + daily scheduler (00:30 UTC); reduces N transfers → 1 net position per currency pair |
+| Settla Maintenance | `core/maintenance` | Partition manager, vacuum manager, capacity monitor for 50M+ rows/day workloads |
 | Settla Ledger | `ledger` | Dual-backend ledger: TigerBeetle (writes, 1M+ TPS) + Postgres (reads/queries, CQRS) |
 | Settla Rail | `rail` (+ `rail/router`, `rail/provider`, `rail/blockchain`) | Smart router (scoring: cost 40%, speed 30%, liquidity 20%, reliability 10%), provider adapters, blockchain clients |
 | Settla Treasury | `treasury` | In-memory atomic reservation + background DB flush (100ms interval) |
-| Settla Node | `node` (+ `node/worker`, `node/messaging`) | Partitioned NATS JetStream workers + event-driven sagas |
+| Settla Outbox Relay | `node/outbox` | Polls Transfer DB for unpublished outbox entries (20ms, batch 500) and fans them out to the correct NATS JetStream stream |
+| Settla Node Workers | `node/worker` | Dedicated per-domain workers: ProviderWorker, LedgerWorker, TreasuryWorker, BlockchainWorker, WebhookWorker, InboundWebhookWorker, TransferWorker |
+| Settla Messaging | `node/messaging` | NATS JetStream client, publisher, subscriber, and stream definitions for all 7 Settla streams |
 | Settla Cache | `cache` | Two-level cache (local LRU 30s → Redis 5min → DB), rate limiting, idempotency, quote cache |
-| Settla API | `api/gateway` (TS/Fastify), `api/webhook` (TS/Fastify) | REST gateway (local tenant cache, gRPC pool, OpenAPI at /docs) + per-tenant webhook dispatcher (HMAC-SHA256, retry, dead letter) |
-| Settla Dashboard | `dashboard` (Vue 3/Nuxt) | Ops console + capacity monitoring |
+| Settla API | `api/gateway` (TS/Fastify), `api/webhook` (TS/Fastify) | REST gateway (local tenant cache, gRPC pool, OpenAPI at /docs) + per-tenant outbound webhook dispatcher (HMAC-SHA256, retry, dead letter) |
+| Settla Dashboard | `dashboard` (Vue 3/Nuxt) | Ops console + capacity monitoring (settlements, reconciliation, manual reviews) |
+| Settla Portal | `portal` (planned) | Tenant self-service dashboard — API key management, transfer history, fee schedules, webhook configuration |
 
 ### Modular Monolith Pattern
 
@@ -41,9 +49,46 @@ This is a modular monolith — one binary, strict interface boundaries. All modu
 
 Compile-time interface checks (e.g. `var _ domain.LedgerService = (*Service)(nil)`) ensure each module satisfies its contract.
 
+### Outbox Flow
+
+The engine is a pure state machine. All side effects are expressed as outbox entries written atomically with the state transition. The flow is:
+
+```
+API Request
+    │
+    ▼
+Engine.CreateTransfer / Engine.Handle*Result
+    │  writes state change + OutboxEntry rows atomically (single DB transaction)
+    ▼
+Transfer DB (outbox table)
+    │
+    ▼
+node/outbox.Relay  (polls every 20ms, batch 500)
+    │  publishes each entry to the correct NATS JetStream stream
+    │  marks row as published
+    ▼
+NATS JetStream (7 streams — see Communication section)
+    │
+    ├─► ProviderWorker      (SETTLA_PROVIDERS)        — executes on-ramp / off-ramp
+    ├─► LedgerWorker        (SETTLA_LEDGER)            — posts / reverses ledger entries
+    ├─► TreasuryWorker      (SETTLA_TREASURY)          — reserve / release treasury position
+    ├─► BlockchainWorker    (SETTLA_BLOCKCHAIN)        — sends on-chain stablecoin transfer
+    ├─► WebhookWorker       (SETTLA_WEBHOOKS)          — delivers outbound tenant webhooks
+    ├─► InboundWebhookWorker(SETTLA_PROVIDER_WEBHOOKS) — processes async provider callbacks
+    └─► TransferWorker      (SETTLA_TRANSFERS)         — general transfer event fan-out
+          │
+          ▼
+    Worker calls Engine.Handle*Result(IntentResult)
+          │  engine validates result, advances state, writes next OutboxEntry rows
+          ▼
+    (loop continues until terminal state: COMPLETED or FAILED)
+```
+
+Each worker uses the CHECK-BEFORE-CALL pattern: it checks whether the action has already been executed (via a provider_transactions record or idempotency key) before calling the external system, so NATS redelivery never causes double-execution.
+
 ### Shared packages
 
-- `domain` — shared domain types, interfaces (`Ledger`, `TreasuryManager`, `Router`, `ProviderRegistry`, `EventPublisher`), value objects (`Money`, `Posting`), and errors. No external deps beyond stdlib + decimal + uuid.
+- `domain` — shared domain types, interfaces (`Ledger`, `TreasuryManager`, `Router`, `ProviderRegistry`, `EventPublisher`), outbox types (`OutboxEntry`, intent/event constants, all payload structs), value objects (`Money`, `Posting`), and errors. No external deps beyond stdlib + decimal + uuid.
 - `store` — database repositories; sub-packages per bounded context (`store/ledgerdb`, `store/transferdb`, `store/treasurydb`), generated by SQLC
 - `cache` — Two-level cache (local in-process LRU → Redis → DB), rate limiting (sliding window), idempotency deduplication, quote caching
 - `gen` — Generated protobuf Go code (`gen/settla/v1/`)
@@ -54,6 +99,7 @@ These patterns exist because the scale math demands them:
 
 | Problem | Threshold | Solution |
 |---------|-----------|----------|
+| Dual-write bug (state + side effect) | Any failure window between DB write and direct call | Transactional outbox: state + outbox entries written atomically, relay delivers to NATS |
 | Ledger write throughput | >10K writes/sec breaks single Postgres | TigerBeetle for write path, Postgres for read/query path |
 | Ledger write batching | 25K individual INSERTs/sec | Write-ahead batching: collect 5-50ms, flush as bulk insert |
 | Treasury hot-key locking | Thousands of concurrent `SELECT FOR UPDATE` on same row | In-memory atomic reservation with 100ms background flush |
@@ -61,11 +107,24 @@ These patterns exist because the scale math demands them:
 | Gateway auth overhead | 5K TPS × Redis round-trip per request | Local in-process tenant cache (30s TTL, ~100ns lookup) |
 | Event processing parallelism | 580 events/sec with per-tenant ordering | NATS stream partitioning by tenant hash (8 partitions) |
 | gRPC connection overhead | Per-request connection = TCP overhead | gRPC connection pool (~50 persistent, round-robin) |
+| Provider double-execution on NATS redelivery | At-least-once delivery guarantees | CHECK-BEFORE-CALL: worker checks provider_transactions table before calling external system |
+| Outbox table growth at 50M rows/day | Unbounded table → query degradation | Monthly partitions + PartitionManager drops old partitions instantly (DROP TABLE, never DELETE) |
 
 ### Communication
 
 - **gRPC + Protocol Buffers** between TypeScript and Go modules (definitions in `proto/settla/v1/`, generated Go in `gen/settla/v1/`, generated TS in `api/gateway/src/gen/`)
-- **NATS JetStream** for async event-driven sagas, partitioned by tenant hash (8 partitions default)
+- **NATS JetStream** for async worker dispatch via the transactional outbox relay. 7 dedicated streams (WorkQueue retention, 7-day max age, 2-minute dedup window):
+
+| Stream | Subject pattern | Consumer |
+|--------|----------------|----------|
+| `SETTLA_TRANSFERS` | `settla.transfer.partition.*.>` | TransferWorker (8 partitions by tenant hash) |
+| `SETTLA_PROVIDERS` | `settla.provider.command.>` | ProviderWorker (on-ramp, off-ramp) |
+| `SETTLA_LEDGER` | `settla.ledger.>` | LedgerWorker (post, reverse) |
+| `SETTLA_TREASURY` | `settla.treasury.>` | TreasuryWorker (reserve, release) |
+| `SETTLA_BLOCKCHAIN` | `settla.blockchain.>` | BlockchainWorker (send, confirm) |
+| `SETTLA_WEBHOOKS` | `settla.webhook.>` | WebhookWorker (outbound tenant delivery) |
+| `SETTLA_PROVIDER_WEBHOOKS` | `settla.provider.inbound.>` | InboundWebhookWorker (async provider callbacks) |
+
 - **Redis** for L2 caching, rate limiting, idempotency; local in-process LRU as L1
 
 ### Data Layer
@@ -93,6 +152,7 @@ These MUST be preserved in all code changes:
 8. **Module boundaries** — `core/` imports only `domain/`, never `ledger/`, `treasury/`, or `rail/` directly.
 9. **TigerBeetle is write authority** — Postgres ledger tables are the read model, never written to directly for balance mutations.
 10. **Treasury reservations are in-memory** — `Reserve`/`Release` must never hit the database. Only the flush goroutine writes to Postgres.
+11. **Engine writes ONLY to outbox** — The settlement engine (`core.Engine`) makes zero network calls and has zero direct dependencies on ledger, treasury, rail, or node. Every side effect (provider call, ledger post, treasury reserve, blockchain send, webhook delivery) is expressed as an `OutboxEntry` (intent or event) written atomically with the state transition. Workers execute intents and call back via `Engine.Handle*Result`. Bypassing the outbox to call side effects directly from the engine is forbidden.
 
 ## Build & Development Commands
 
@@ -187,10 +247,10 @@ pnpm --filter @settla/dashboard dev   # Dashboard dev server
 
 ## Entrypoints
 
-- `cmd/settla-server/` — main Go server (Core + Ledger + Rail + Treasury), 6+ replicas in production
-- `cmd/settla-node/` — worker process (Node module, partitioned NATS consumers), 8+ instances
+- `cmd/settla-server/` — main Go server (Core + Ledger + Rail + Treasury + core/compensation + core/recovery + core/reconciliation + core/settlement + core/maintenance), 6+ replicas in production
+- `cmd/settla-node/` — worker process (Outbox Relay + all 7 dedicated workers: ProviderWorker, LedgerWorker, TreasuryWorker, BlockchainWorker, WebhookWorker, InboundWebhookWorker, TransferWorker), 8+ instances
 - `api/gateway/` — Fastify REST API (TypeScript), 4+ replicas. Routes: `/v1/quotes`, `/v1/transfers`, `/v1/treasury/*`, `/health`, `/docs` (OpenAPI)
-- `api/webhook/` — Webhook dispatcher (TypeScript), 2+ replicas. HMAC-SHA256 signatures, exponential backoff retry, dead letter queue
+- `api/webhook/` — Inbound provider webhook receiver (TypeScript), 2+ replicas. Normalises raw provider callbacks into `ProviderWebhookPayload` and publishes to `SETTLA_PROVIDER_WEBHOOKS` stream for `InboundWebhookWorker`
 - `api/grpc/` — Go gRPC server implementation (`server.go`)
 - `tests/loadtest/` — Go load test harness (not k6) for capacity proof, multiple scenarios
 - `tests/chaos/` — Chaos test framework for failure recovery proof
