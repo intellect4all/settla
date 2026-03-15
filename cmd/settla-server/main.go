@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,16 +25,24 @@ import (
 
 	settlagrpc "github.com/intellect4all/settla/api/grpc"
 	"github.com/intellect4all/settla/core"
+	"github.com/intellect4all/settla/core/maintenance"
+	"github.com/intellect4all/settla/core/reconciliation"
+	"github.com/intellect4all/settla/core/settlement"
 	"github.com/intellect4all/settla/domain"
 	pb "github.com/intellect4all/settla/gen/settla/v1"
 	"github.com/intellect4all/settla/ledger"
 	"github.com/intellect4all/settla/node/messaging"
 	"github.com/intellect4all/settla/observability"
+	"github.com/intellect4all/settla/observability/healthcheck"
+	"github.com/intellect4all/settla/observability/synthetic"
 	"github.com/intellect4all/settla/rail/blockchain"
 	"github.com/intellect4all/settla/rail/provider"
 	"github.com/intellect4all/settla/rail/provider/mock"
 	settlaprovider "github.com/intellect4all/settla/rail/provider/settla"
 	"github.com/intellect4all/settla/rail/router"
+	"github.com/intellect4all/settla/resilience"
+	"github.com/intellect4all/settla/resilience/drain"
+	"github.com/intellect4all/settla/resilience/featureflag"
 	"github.com/intellect4all/settla/store/ledgerdb"
 	"github.com/intellect4all/settla/store/transferdb"
 	"github.com/intellect4all/settla/store/treasurydb"
@@ -93,8 +100,13 @@ func main() {
 	// NATS JetStream
 	natsURL := envOrDefault("SETTLA_NATS_URL", "nats://localhost:4222")
 	numPartitions := envIntOrDefault("SETTLA_NODE_PARTITIONS", messaging.DefaultPartitions)
+	// SETTLA_NATS_REPLICAS controls JetStream stream replication factor.
+	// 1 = dev/staging (single broker), 3 = production (3-node cluster, R=3).
+	natsReplicas := envIntOrDefault("SETTLA_NATS_REPLICAS", 1)
 	var publisher domain.EventPublisher
-	natsClient, err := messaging.NewClient(natsURL, numPartitions, logger)
+	natsClient, err := messaging.NewClient(natsURL, numPartitions, logger,
+		messaging.WithReplicas(natsReplicas),
+	)
 	if err != nil {
 		logger.Warn("settla-server: NATS unavailable, events will be dropped", "error", err)
 		publisher = &stubPublisher{}
@@ -104,20 +116,52 @@ func main() {
 			logger.Error("settla-server: failed to ensure NATS stream", "error", err)
 			os.Exit(1)
 		}
-		publisher = messaging.NewPublisher(natsClient)
+		rawPublisher := messaging.NewPublisher(natsClient)
+		natsCB := resilience.NewCircuitBreaker("nats-publisher",
+			resilience.WithFailureThreshold(5),
+			resilience.WithResetTimeout(10*time.Second),
+		)
+		publisher = messaging.NewCircuitBreakerPublisher(rawPublisher, natsCB)
 		logger.Info("settla-server: connected to NATS JetStream")
+	}
+
+	// Transfer App DB (RLS-enforced, settla_app role) — optional in dev, required in production
+	var transferAppPool *pgxpool.Pool
+	if appURL := os.Getenv("SETTLA_TRANSFER_APP_DB_URL"); appURL != "" {
+		transferAppPool, err = newPgxPool(ctx, appURL)
+		if err != nil {
+			logger.Warn("settla-server: transfer app DB (RLS) unavailable, using owner pool", "error", err)
+		} else {
+			defer transferAppPool.Close()
+			logger.Info("settla-server: connected to transfer app DB (RLS enforced)")
+		}
+	}
+
+	// In production, RLS enforcement is mandatory — running without it means
+	// all queries bypass row-level security, risking cross-tenant data leakage.
+	if os.Getenv("SETTLA_ENV") == "production" && transferAppPool == nil {
+		logger.Error("settla-server: FATAL — production requires RLS-enforced DB pool (SETTLA_TRANSFER_APP_DB_URL)")
+		os.Exit(1)
+	} else if transferAppPool == nil && os.Getenv("SETTLA_ENV") != "production" {
+		logger.Warn("settla-server: RLS not enforced — SETTLA_TRANSFER_APP_DB_URL is unset, all queries bypass row-level security")
 	}
 
 	// ── Stores ──────────────────────────────────────────────────────
 
 	transferQueries := transferdb.New(transferPool)
-	transferStore := transferdb.NewTransferStoreAdapter(transferQueries)
+	storeOpts := []transferdb.TransferStoreOption{
+		transferdb.WithTxPool(transferPool),
+	}
+	if transferAppPool != nil {
+		storeOpts = append(storeOpts, transferdb.WithAppPool(transferAppPool))
+	}
+	transferStore := transferdb.NewTransferStoreAdapterWithOptions(transferQueries, storeOpts...)
 	tenantStore := transferdb.NewTenantStoreAdapter(transferQueries)
 
 	// Treasury store: real Postgres or in-memory stub
 	var treasuryStore treasury.Store
 	if treasuryPool != nil {
-		treasuryStore = newPostgresTreasuryStore(treasurydb.New(treasuryPool))
+		treasuryStore = newPostgresTreasuryStore(treasurydb.New(treasuryPool), treasuryPool)
 	} else {
 		treasuryStore = &stubTreasuryStore{}
 	}
@@ -126,18 +170,35 @@ func main() {
 	// Each module depends on interfaces from domain/, not concrete types.
 	// Any module can be extracted to a gRPC service by swapping the constructor.
 
-	// Ledger: dual-backend (nil TBClient = stub mode for now)
-	// TODO: wire real TigerBeetle client when available
+	// Ledger: dual-backend (TigerBeetle writes + Postgres reads)
 	batchWindowMs := envIntOrDefault("SETTLA_LEDGER_BATCH_WINDOW_MS", 10)
+	batchMaxSize := envIntOrDefault("SETTLA_LEDGER_BATCH_MAX_SIZE", 500)
+	var tbClient ledger.TBClient
+	if tbAddrs := os.Getenv("SETTLA_TIGERBEETLE_ADDRESSES"); tbAddrs != "" {
+		addresses := ledger.ParseTBAddresses(tbAddrs)
+		var tbErr error
+		tbClient, tbErr = ledger.NewRealTBClient(0, addresses)
+		if tbErr != nil {
+			logger.Error("settla-server: failed to connect to TigerBeetle", "addresses", tbAddrs, "error", tbErr)
+			os.Exit(1)
+		}
+		defer tbClient.Close()
+		logger.Info("settla-server: connected to TigerBeetle", "addresses", addresses)
+	} else {
+		logger.Warn("settla-server: SETTLA_TIGERBEETLE_ADDRESSES not set, ledger running in stub mode")
+	}
+
 	var ledgerSvc *ledger.Service
 	if ledgerPool != nil {
 		pgBackend := ledger.NewPGBackend(ledgerdb.New(ledgerPool), logger)
-		ledgerSvc = ledger.NewService(nil, pgBackend, publisher, logger, metrics,
+		ledgerSvc = ledger.NewService(tbClient, pgBackend, publisher, logger, metrics,
 			ledger.WithBatchWindow(time.Duration(batchWindowMs)*time.Millisecond),
+			ledger.WithBatchMaxSize(batchMaxSize),
 		)
 	} else {
-		ledgerSvc = ledger.NewService(nil, nil, publisher, logger, metrics,
+		ledgerSvc = ledger.NewService(tbClient, nil, publisher, logger, metrics,
 			ledger.WithBatchWindow(time.Duration(batchWindowMs)*time.Millisecond),
+			ledger.WithBatchMaxSize(batchMaxSize),
 		)
 	}
 	ledgerSvc.Start()
@@ -156,8 +217,223 @@ func main() {
 	defer treasurySvc.Stop()
 	logger.Info("settla-server: treasury loaded", "positions", treasurySvc.PositionCount())
 
+	// Partition Manager: runs a background scheduler to create future partitions
+	// and drop expired ones. Runs daily; no-ops if DBs are unavailable.
+	// Transfer DB manages outbox (daily partitions, 48h retention) and transfers/events (monthly).
+	// The partition manager uses the raw pgxpool which satisfies DBExecutor via pgxPoolAdapter.
+	partitionMgr := maintenance.NewPartitionManager(
+		newPgxPoolDBExecutor(transferPool),
+		logger,
+	)
+	partitionSchedulerInterval := envIntOrDefault("SETTLA_PARTITION_SCHEDULE_HOURS", 24)
+	partitionCtx, partitionCancel := context.WithCancel(ctx)
+	defer partitionCancel()
+	go func() {
+		// Run immediately on startup, then on a fixed schedule.
+		if err := partitionMgr.ManagePartitions(partitionCtx); err != nil {
+			logger.Warn("settla-server: partition management startup run failed", "error", err)
+		}
+		ticker := time.NewTicker(time.Duration(partitionSchedulerInterval) * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := partitionMgr.ManagePartitions(partitionCtx); err != nil {
+					logger.Warn("settla-server: partition management run failed", "error", err)
+				}
+			case <-partitionCtx.Done():
+				logger.Info("settla-server: partition manager stopped")
+				return
+			}
+		}
+	}()
+	logger.Info("settla-server: partition manager scheduled",
+		"interval_hours", partitionSchedulerInterval,
+	)
+
+	// Vacuum Manager: runs VACUUM ANALYZE on hot tables at configured intervals.
+	// Uses the Transfer DB executor (outbox + transfers are the hottest tables).
+	// Vacuum for treasury positions runs via the same executor but the SQL
+	// is a no-op on a different DB — the VacuumManager is intentionally
+	// DB-agnostic and targets the executor it is given. In production a
+	// separate VacuumManager instance wired to the treasury pool would be
+	// added; for now one instance covers the Transfer DB hot tables.
+	vacuumMgr := maintenance.NewVacuumManager(
+		newPgxPoolDBExecutor(transferPool),
+		logger,
+	)
+	vacuumCheckInterval := envIntOrDefault("SETTLA_VACUUM_CHECK_INTERVAL_MINUTES", 5)
+	vacuumCtx, vacuumCancel := context.WithCancel(ctx)
+	defer vacuumCancel()
+	go func() {
+		ticker := time.NewTicker(time.Duration(vacuumCheckInterval) * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := vacuumMgr.RunDueVacuums(vacuumCtx); err != nil {
+					logger.Warn("settla-server: vacuum run failed", "error", err)
+				}
+			case <-vacuumCtx.Done():
+				logger.Info("settla-server: vacuum manager stopped")
+				return
+			}
+		}
+	}()
+	logger.Info("settla-server: vacuum manager scheduled",
+		"check_interval_minutes", vacuumCheckInterval,
+	)
+
+	// Capacity Monitor: checks DB sizes every 15 minutes and exports Prometheus
+	// gauges. Alerts are logged; Prometheus alerting rules fire on the gauges.
+	// maxSizeBytes = 10 TiB — appropriate for a 50M tx/day workload.
+	const tenTiB = 10 * 1024 * 1024 * 1024 * 1024
+	capacityMetrics := maintenance.NewCapacityMetrics()
+	capacityMon := maintenance.NewCapacityMonitor(
+		newPgxPoolDBExecutor(transferPool),
+		logger,
+		[]string{"settla_transfer", "settla_ledger", "settla_treasury"},
+		tenTiB,
+		capacityMetrics,
+	)
+	capacityCheckInterval := envIntOrDefault("SETTLA_CAPACITY_CHECK_INTERVAL_MINUTES", 15)
+	capacityCtx, capacityCancel := context.WithCancel(ctx)
+	defer capacityCancel()
+	go func() {
+		// Run immediately on startup.
+		if _, err := capacityMon.CheckCapacity(capacityCtx); err != nil {
+			logger.Warn("settla-server: capacity check startup run failed", "error", err)
+		}
+		ticker := time.NewTicker(time.Duration(capacityCheckInterval) * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := capacityMon.CheckCapacity(capacityCtx); err != nil {
+					logger.Warn("settla-server: capacity check failed", "error", err)
+				}
+			case <-capacityCtx.Done():
+				logger.Info("settla-server: capacity monitor stopped")
+				return
+			}
+		}
+	}()
+	logger.Info("settla-server: capacity monitor scheduled",
+		"check_interval_minutes", capacityCheckInterval,
+	)
+
+	// Reconciler: 6 consistency checks run on a configurable schedule.
+	// Checks cover: transfer state, outbox health, provider tx staleness,
+	// daily volume, settlement fee reconciliation (ENG-8), and — when the
+	// ledger DB is available — treasury-ledger balance alignment.
+	reconAdapter := transferdb.NewReconciliationAdapter(transferPool, transferQueries)
+	reconChecks := []reconciliation.Check{
+		reconciliation.NewTransferStateCheck(reconAdapter, logger, nil),
+		reconciliation.NewOutboxCheck(reconAdapter, logger, 0),
+		reconciliation.NewProviderTxCheck(reconAdapter, logger, 0),
+		reconciliation.NewDailyVolumeCheck(reconAdapter, logger),
+		reconciliation.NewSettlementFeeCheck(reconAdapter, logger, decimal.Zero),
+	}
+	if ledgerPool != nil {
+		ledgerReconAdapter := ledgerdb.NewLedgerReconciliationAdapter(ledgerPool)
+		reconChecks = append(reconChecks, reconciliation.NewTreasuryLedgerCheck(
+			treasurySvc,
+			ledgerReconAdapter,
+			reconAdapter,
+			reconAdapter,
+			logger,
+			decimal.NewFromFloat(0.01),
+		))
+	}
+	reconciler := reconciliation.NewReconciler(reconChecks, reconAdapter, logger)
+
+	// Feature flags: load from config file with background hot-reload (30s).
+	flagConfigPath := envOrDefault("SETTLA_FEATURE_FLAGS_PATH", "deploy/config/features.json")
+	flagManager := featureflag.NewManager(flagConfigPath, logger)
+	go flagManager.Start(ctx)
+	reconciler.WithFeatureFlags(flagManager)
+	logger.Info("settla-server: feature flags loaded", "config_path", flagConfigPath)
+
+	reconIntervalMinutes := envIntOrDefault("SETTLA_RECONCILIATION_INTERVAL_MINUTES", 5)
+	reconCtx, reconCancel := context.WithCancel(ctx)
+	defer reconCancel()
+	go func() {
+		ticker := time.NewTicker(time.Duration(reconIntervalMinutes) * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := reconciler.Run(reconCtx); err != nil {
+					logger.Warn("settla-server: reconciliation run failed", "error", err)
+				}
+			case <-reconCtx.Done():
+				logger.Info("settla-server: reconciler stopped")
+				return
+			}
+		}
+	}()
+	logger.Info("settla-server: reconciler scheduled",
+		"interval_minutes", reconIntervalMinutes,
+		"checks", len(reconChecks),
+	)
+
+	// Settlement scheduler: calculates daily net settlements for NET_SETTLEMENT tenants.
+	// Runs once per day (00:30 UTC default). Gate behind SETTLA_SETTLEMENT_ENABLED.
+	if envOrDefault("SETTLA_SETTLEMENT_ENABLED", "true") == "true" {
+		settlementStore := transferdb.NewSettlementAdapter(transferPool, transferQueries)
+		calculator := settlement.NewCalculator(settlementStore, settlementStore, settlementStore, logger)
+		scheduler := settlement.NewScheduler(calculator, settlementStore, logger)
+		settlementCtx, settlementCancel := context.WithCancel(ctx)
+		defer settlementCancel()
+		go func() {
+			if err := scheduler.Start(settlementCtx); err != nil && err != context.Canceled {
+				logger.Error("settla-server: settlement scheduler stopped with error", "error", err)
+			}
+		}()
+		logger.Info("settla-server: settlement scheduler started")
+	} else {
+		logger.Info("settla-server: settlement scheduler disabled (SETTLA_SETTLEMENT_ENABLED=false)")
+	}
+
+	// Synthetic canary: runs a lightweight test transfer through the full pipeline
+	// to verify end-to-end health. Disabled by default.
+	if envOrDefault("SETTLA_SYNTHETIC_CANARY_ENABLED", "false") == "true" {
+		canaryInterval := time.Duration(envIntOrDefault("SETTLA_SYNTHETIC_INTERVAL_S", 30)) * time.Second
+		canary := synthetic.NewCanary(synthetic.Config{
+			Enabled:     true,
+			GatewayURL:  envOrDefault("SETTLA_SYNTHETIC_GATEWAY_URL", "http://gateway:3000"),
+			APIKey:      os.Getenv("SETTLA_SYNTHETIC_API_KEY"),
+			Interval:    canaryInterval,
+		}, logger)
+		canary.Start()
+		defer canary.Stop()
+		logger.Info("settla-server: synthetic canary started",
+			"interval", canaryInterval,
+			"gateway_url", envOrDefault("SETTLA_SYNTHETIC_GATEWAY_URL", "http://gateway:3000"),
+		)
+	}
+
+	// ── Config validation ──────────────────────────────────────────────
+	if natsReplicas < 1 || natsReplicas > 5 {
+		logger.Error("settla-server: SETTLA_NATS_REPLICAS must be between 1 and 5",
+			"nats_replicas", natsReplicas,
+		)
+		os.Exit(1)
+	}
+
 	// Rail: provider registry — mode-switched via SETTLA_PROVIDER_MODE
 	providerMode := provider.ProviderModeFromEnv()
+	switch providerMode {
+	case provider.ProviderModeMock, provider.ProviderModeTestnet, provider.ProviderModeLive:
+		// valid
+	default:
+		logger.Error("settla-server: unknown SETTLA_PROVIDER_MODE",
+			"mode", string(providerMode),
+			"valid_values", "mock, testnet, live",
+		)
+		os.Exit(1)
+	}
+
 	var providerReg *provider.Registry
 	switch providerMode {
 	case provider.ProviderModeTestnet:
@@ -167,38 +443,74 @@ func main() {
 		registerMockProviders(providerReg)
 	}
 	logger.Info("settla-server: provider mode", "mode", string(providerMode))
-	coreAdapter := &coreRegistryAdapter{reg: providerReg}
-
 	// Router: smart routing with tenant fee schedules
 	railRouter := router.NewRouter(providerReg, tenantStore, logger)
 	coreRouterAdapter := router.NewCoreRouterAdapter(railRouter, tenantStore, logger)
 
-	// Core engine
+	// Core engine (pure state machine — outbox pattern, no side-effect deps)
 	engine := core.NewEngine(
 		transferStore,
 		tenantStore,
-		ledgerSvc,
-		treasurySvc,
 		coreRouterAdapter,
-		coreAdapter,
-		publisher,
 		logger,
 		metrics,
 	)
 
+	// ── Graceful drain ──────────────────────────────────────────────
+	drainTimeout := time.Duration(envIntOrDefault("SETTLA_DRAIN_TIMEOUT_MS", 15000)) * time.Millisecond
+	drainer := drain.NewDrainer(drainTimeout, logger)
+
+	// ── Deep health checks ──────────────────────────────────────────
+	var checks []healthcheck.Check
+	checks = append(checks, healthcheck.NewCallbackCheck("postgres_transfer", false,
+		func(ctx context.Context) error { return transferPool.Ping(ctx) },
+	))
+	if ledgerPool != nil {
+		checks = append(checks, healthcheck.NewCallbackCheck("postgres_ledger", false,
+			func(ctx context.Context) error { return ledgerPool.Ping(ctx) },
+		))
+	}
+	if treasuryPool != nil {
+		checks = append(checks, healthcheck.NewCallbackCheck("postgres_treasury", false,
+			func(ctx context.Context) error { return treasuryPool.Ping(ctx) },
+		))
+	}
+	if natsClient != nil {
+		checks = append(checks, healthcheck.NewNATSCheck(func(_ context.Context) error {
+			if !natsClient.Conn.IsConnected() {
+				return fmt.Errorf("NATS connection not active")
+			}
+			return nil
+		}))
+	}
+	// TigerBeetle health check: wired when the TB client is connected.
+	if tbClient != nil {
+		checks = append(checks, healthcheck.NewCallbackCheck("tigerbeetle", true,
+			func(ctx context.Context) error {
+				// LookupAccounts with a zero ID returns empty (not an error),
+				// confirming the client can reach the cluster.
+				_, err := tbClient.LookupAccounts([]ledger.ID128{{}})
+				return err
+			},
+		))
+	}
+	checks = append(checks, healthcheck.NewGoroutineCheck(100000))
+	checker := healthcheck.NewChecker(logger, checks, healthcheck.WithVersion(version))
+	healthHandler := healthcheck.NewHandler(checker, 100000)
+
 	// ── HTTP health/readiness server ────────────────────────────────
 	httpPort := envOrDefault("SETTLA_SERVER_HTTP_PORT", "8080")
 
+	opsStore := transferdb.NewOpsAdapter(transferPool, transferQueries)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
+	healthHandler.Register(mux)
 	mux.Handle("/metrics", promhttp.Handler())
+	settlagrpc.RegisterOpsHandlers(mux, opsStore, logger)
 
 	httpServer := &http.Server{
 		Addr:    net.JoinHostPort("0.0.0.0", httpPort),
-		Handler: mux,
+		Handler: drain.HTTPMiddleware(drainer, mux),
 	}
 
 	go func() {
@@ -213,7 +525,11 @@ func main() {
 	grpcPort := envOrDefault("SETTLA_SERVER_GRPC_PORT", "9090")
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(observability.UnaryServerInterceptor(metrics)),
+		grpc.ChainUnaryInterceptor(
+			drain.GRPCUnaryInterceptor(drainer),
+			observability.UnaryServerInterceptor(metrics),
+		),
+		grpc.StreamInterceptor(drain.GRPCStreamInterceptor(drainer)),
 		grpc.MaxConcurrentStreams(1000),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    30 * time.Second,
@@ -226,13 +542,26 @@ func main() {
 	)
 
 	authStore := &apiKeyValidatorAdapter{q: transferQueries}
-	grpcSvc := settlagrpc.NewServer(engine, treasurySvc, ledgerSvc, logger,
+	portalStore := transferdb.NewPortalStoreAdapter(transferQueries)
+	webhookMgmtStore := transferdb.NewWebhookAdapter(transferQueries)
+	analyticsStore := transferdb.NewAnalyticsAdapter(transferQueries)
+	// Wrap ledger with circuit breaker for gRPC callers.
+	ledgerCB := resilience.NewCircuitBreaker("ledger",
+		resilience.WithFailureThreshold(5),
+		resilience.WithResetTimeout(30*time.Second),
+	)
+	ledgerWithCB := resilience.NewCircuitBreakerLedger(ledgerSvc, ledgerCB)
+	grpcSvc := settlagrpc.NewServer(engine, treasurySvc, ledgerWithCB, logger,
 		settlagrpc.WithAuthStore(authStore),
+		settlagrpc.WithTenantPortalStore(portalStore),
+		settlagrpc.WithWebhookManagementStore(webhookMgmtStore),
+		settlagrpc.WithAnalyticsStore(analyticsStore),
 	)
 	pb.RegisterSettlementServiceServer(grpcServer, grpcSvc)
 	pb.RegisterTreasuryServiceServer(grpcServer, grpcSvc)
 	pb.RegisterLedgerServiceServer(grpcServer, grpcSvc)
 	pb.RegisterAuthServiceServer(grpcServer, grpcSvc)
+	pb.RegisterTenantPortalServiceServer(grpcServer, grpcSvc)
 
 	// Health check service
 	healthSvc := health.NewServer()
@@ -240,8 +569,11 @@ func main() {
 	healthSvc.SetServingStatus("settla.v1.SettlementService", healthpb.HealthCheckResponse_SERVING)
 	healthSvc.SetServingStatus("settla.v1.TreasuryService", healthpb.HealthCheckResponse_SERVING)
 	healthSvc.SetServingStatus("settla.v1.LedgerService", healthpb.HealthCheckResponse_SERVING)
+	healthSvc.SetServingStatus("settla.v1.TenantPortalService", healthpb.HealthCheckResponse_SERVING)
 
-	reflection.Register(grpcServer)
+	if os.Getenv("SETTLA_ENV") != "production" {
+		reflection.Register(grpcServer)
+	}
 
 	grpcLis, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", grpcPort))
 	if err != nil {
@@ -257,6 +589,9 @@ func main() {
 		}
 	}()
 
+	// Signal that startup is complete — enables readiness/startup probes.
+	checker.MarkStartupComplete()
+
 	logger.Info("settla-server ready",
 		"http_port", httpPort,
 		"grpc_port", grpcPort,
@@ -268,12 +603,22 @@ func main() {
 	logger.Info("settla-server shutting down...")
 
 	// Graceful shutdown order:
-	// 1. Stop accepting new RPCs
-	// 2. Treasury final flush (persists in-flight reservations)
-	// 3. Stop ledger sync/batcher
-	// 4. Close DB pools (handled by defers)
+	// 1. Drain: reject new requests, wait for in-flight to complete
+	// 2. Set gRPC health to NOT_SERVING so LB stops sending traffic
+	// 3. Stop gRPC + HTTP servers
+	// 4. Treasury final flush (persists in-flight reservations)
+	// 5. Stop ledger sync/batcher
+	// 6. Close DB pools (handled by defers)
+	if err := drainer.Drain(); err != nil {
+		logger.Warn("settla-server: drain incomplete", "error", err)
+	}
+	healthSvc.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	grpcServer.GracefulStop()
-	httpServer.Shutdown(context.Background())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("settla-server: HTTP server shutdown error", "error", err)
+	}
 
 	logger.Info("settla-server shutdown complete")
 }
@@ -379,46 +724,15 @@ func envIntOrDefault(key string, fallback int) int {
 	return n
 }
 
-// ── Adapters ────────────────────────────────────────────────────────────────
-
-// coreRegistryAdapter wraps provider.Registry to satisfy core.ProviderRegistry.
-// core.ProviderRegistry returns nil on not-found, provider.Registry returns error.
-type coreRegistryAdapter struct {
-	reg *provider.Registry
-}
-
-func (a *coreRegistryAdapter) GetOnRampProvider(id string) domain.OnRampProvider {
-	p, err := a.reg.GetOnRamp(id)
-	if err != nil {
-		return nil
-	}
-	return p
-}
-
-func (a *coreRegistryAdapter) GetOffRampProvider(id string) domain.OffRampProvider {
-	p, err := a.reg.GetOffRamp(id)
-	if err != nil {
-		return nil
-	}
-	return p
-}
-
-func (a *coreRegistryAdapter) GetBlockchainClient(chain string) domain.BlockchainClient {
-	c, err := a.reg.GetBlockchainClient(chain)
-	if err != nil {
-		return nil
-	}
-	return c
-}
-
 // ── Postgres Treasury Store ─────────────────────────────────────────────────
 
 type postgresTreasuryStore struct {
-	q *treasurydb.Queries
+	q    *treasurydb.Queries
+	pool *pgxpool.Pool
 }
 
-func newPostgresTreasuryStore(q *treasurydb.Queries) *postgresTreasuryStore {
-	return &postgresTreasuryStore{q: q}
+func newPostgresTreasuryStore(q *treasurydb.Queries, pool *pgxpool.Pool) *postgresTreasuryStore {
+	return &postgresTreasuryStore{q: q, pool: pool}
 }
 
 func (s *postgresTreasuryStore) LoadAllPositions(ctx context.Context) ([]domain.Position, error) {
@@ -460,6 +774,76 @@ func (s *postgresTreasuryStore) RecordHistory(ctx context.Context, positionID, t
 		TriggerType: pgtype.Text{String: triggerType, Valid: true},
 		TriggerRef:  pgtype.UUID{},
 	})
+	return err
+}
+
+func (s *postgresTreasuryStore) LogReserveOp(ctx context.Context, op treasury.ReserveOp) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO reserve_ops (id, tenant_id, currency, location, amount, reference, op_type, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT DO NOTHING`,
+		op.ID, op.TenantID, string(op.Currency), op.Location, op.Amount.String(), op.Reference, string(op.OpType), op.CreatedAt,
+	)
+	return err
+}
+
+func (s *postgresTreasuryStore) LogReserveOps(ctx context.Context, ops []treasury.ReserveOp) error {
+	for _, op := range ops {
+		if err := s.LogReserveOp(ctx, op); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *postgresTreasuryStore) GetUncommittedOps(ctx context.Context) ([]treasury.ReserveOp, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.tenant_id, r.currency, r.location, r.amount, r.reference, r.op_type, r.created_at
+		 FROM reserve_ops r
+		 WHERE r.op_type = 'reserve'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM reserve_ops c
+		       WHERE c.reference = r.reference
+		         AND c.op_type IN ('commit', 'release')
+		   )
+		 ORDER BY r.created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("settla-treasury: loading uncommitted ops: %w", err)
+	}
+	defer rows.Close()
+
+	var ops []treasury.ReserveOp
+	for rows.Next() {
+		var op treasury.ReserveOp
+		var currency, opType, amount string
+		if err := rows.Scan(&op.ID, &op.TenantID, &currency, &op.Location, &amount, &op.Reference, &opType, &op.CreatedAt); err != nil {
+			return nil, err
+		}
+		op.Currency = domain.Currency(currency)
+		op.OpType = treasury.ReserveOpType(opType)
+		op.Amount, _ = decimal.NewFromString(amount)
+		ops = append(ops, op)
+	}
+	return ops, rows.Err()
+}
+
+func (s *postgresTreasuryStore) MarkOpCompleted(ctx context.Context, opID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE reserve_ops SET completed = true WHERE id = $1`, opID)
+	return err
+}
+
+func (s *postgresTreasuryStore) CleanupOldOps(ctx context.Context, before time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM reserve_ops
+		WHERE created_at < $1
+		  AND (
+		      op_type IN ('commit', 'release')
+		      OR EXISTS (
+		          SELECT 1 FROM reserve_ops c
+		          WHERE c.reference = reserve_ops.reference
+		            AND c.op_type IN ('commit', 'release')
+		      )
+		  )`, before)
 	return err
 }
 
