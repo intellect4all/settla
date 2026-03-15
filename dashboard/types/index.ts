@@ -234,3 +234,90 @@ export interface Column<T = any> {
   align?: 'left' | 'center' | 'right'
   render?: (value: any, row: T) => string
 }
+
+// ─── Manual Reviews ──────────────────────────────────────────────────────────
+
+export type ReviewStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'ESCALATED'
+
+export interface ManualReview {
+  id: string
+  transfer_id: string
+  tenant_id: string
+  tenant_name: string
+  status: ReviewStatus
+  reason: string
+  failure_code?: string
+  source_amount: string
+  source_currency: string
+  dest_currency: string
+  escalated_at: string
+  reviewed_at?: string
+  reviewed_by?: string
+  notes?: string
+}
+
+// ─── Reconciliation ──────────────────────────────────────────────────────────
+
+export type ReconciliationCheckStatus = 'OK' | 'WARNING' | 'CRITICAL' | 'SKIPPED'
+
+export interface ReconciliationDiscrepancy {
+  id: string
+  entity_type: string
+  entity_id: string
+  expected: string
+  actual: string
+  delta: string
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+}
+
+export interface ReconciliationCheck {
+  name: string
+  status: ReconciliationCheckStatus
+  description: string
+  discrepancy_count: number
+  details: ReconciliationDiscrepancy[]
+  ran_at: string
+  duration_ms: number
+}
+
+export interface ReconciliationReport {
+  id: string
+  ran_at: string
+  duration_ms: number
+  status: 'OK' | 'WARNING' | 'CRITICAL'
+  checks: ReconciliationCheck[]
+}
+
+// ─── Net Settlement ──────────────────────────────────────────────────────────
+
+export interface SettlementLeg {
+  corridor: string
+  source_currency: string
+  dest_currency: string
+  total_sent: string
+  total_received: string
+  net_usd: string
+  transfer_count: number
+  fee_revenue_usd: string
+}
+
+export interface TenantSettlement {
+  tenant_id: string
+  tenant_name: string
+  legs: SettlementLeg[]
+  total_receivable_usd: string
+  total_payable_usd: string
+  net_position_usd: string
+  due_date: string
+  payment_status: 'PENDING' | 'SCHEDULED' | 'PAID' | 'OVERDUE'
+  payment_ref?: string
+}
+
+export interface SettlementReport {
+  period_start: string
+  period_end: string
+  generated_at: string
+  tenants: TenantSettlement[]
+  total_volume_usd: string
+  total_fee_revenue_usd: string
+}

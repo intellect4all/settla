@@ -12,19 +12,19 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "nuxt": "^3.15.0",
-    "vue": "^3.5.0",
+    "decimal.js": "^10.4.0",
     "echarts": "^5.5.0",
-    "vue-echarts": "^7.0.0",
-    "decimal.js": "^10.4.0"
+    "nuxt": "^3.21.1",
+    "vue": "^3.5.30",
+    "vue-echarts": "^7.0.0"
   },
   "devDependencies": {
-    "@nuxtjs/tailwindcss": "^6.12.0",
     "@nuxtjs/color-mode": "^3.5.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "tailwindcss": "^3.4.0",
+    "@nuxtjs/tailwindcss": "^6.12.0",
     "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0"
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }
