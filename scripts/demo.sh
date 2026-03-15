@@ -38,11 +38,17 @@ echo ""
 # --- Scenario definitions -------------------------------------------------
 # Each entry is "TestFunctionName|Human-readable description"
 SCENARIOS=(
+  # Core corridor flows
   "TestLemfiGBPtoNGN|GBP -> NGN Corridor (Lemfi) — Primary corridor, full pipeline"
   "TestFincraNGNtoGBP|NGN -> GBP Corridor (Fincra) — Reverse corridor, different fees"
   "TestTenantIsolation|Tenant Isolation — Cross-tenant data isolation proof"
   "TestTreasuryReservationConsistency|Burst Concurrency — 100 concurrent transfers, no over-reservation"
   "TestPerTenantFees|Per-Tenant Fees — Different fee schedules per fintech"
+  # Extended scenarios (outbox architecture)
+  "TestTreasuryPositionTracking|Consumer USDC Payout — Full on-ramp → settlement → off-ramp pipeline"
+  "TestLedgerTBWritePath|Enterprise Auto-Settlement — TigerBeetle write authority + ledger sync"
+  "TestFailedTransferAndRefund|Failure Recovery — Provider failure → refund initiation + ledger reversal"
+  "TestConcurrentMultiTenant|Operational Resilience — Multi-tenant concurrency, per-tenant ordering"
 )
 
 PASS_COUNT=0
