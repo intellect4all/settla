@@ -1,4 +1,4 @@
-import type { TransferListResponse, Transfer, Position, PositionsResponse, LiquidityReport, Quote, DashboardSummary, CapacityMetrics, TenantVolume, Tenant, TransferEvent, LedgerAccount, JournalEntry, RouteComparison, ChainStatus } from '~/types'
+import type { TransferListResponse, Transfer, Position, PositionsResponse, LiquidityReport, Quote, DashboardSummary, CapacityMetrics, TenantVolume, Tenant, TransferEvent, LedgerAccount, JournalEntry, RouteComparison, ChainStatus, ManualReview, ReconciliationReport, SettlementReport } from '~/types'
 
 interface ApiError {
   error: string
@@ -13,11 +13,17 @@ export function useApi(options: UseApiOptions = {}) {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase as string
 
-  // For the internal dashboard, we use an admin API key
-  // In production this would come from a session/auth
-  const apiKey = options.tenantApiKey || 'sk_live_settla_admin_dashboard'
+  // API key must be provided via options or NUXT_PUBLIC_DASHBOARD_API_KEY env var.
+  // Never hardcode secrets in client-side code.
+  const apiKey = options.tenantApiKey || (config.public.dashboardApiKey as string)
+
+  // Expose whether the key is missing so callers can show a warning instead of crashing.
+  const apiKeyMissing = !apiKey
 
   async function request<T>(path: string, opts: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<T> {
+    if (apiKeyMissing) {
+      throw new Error('Dashboard API key not configured. Set NUXT_PUBLIC_DASHBOARD_API_KEY environment variable.')
+    }
     const url = `${baseURL}${path}`
     const res = await $fetch<T>(url, {
       method: (opts.method ?? 'GET') as any,
@@ -121,7 +127,50 @@ export function useApi(options: UseApiOptions = {}) {
     return request<{ status: string }>('/health')
   }
 
+  // Manual Reviews
+  async function listManualReviews(status?: string) {
+    const qs = status ? `?status=${status}` : ''
+    return request<{ reviews: ManualReview[] }>(`/v1/ops/manual-reviews${qs}`)
+  }
+
+  async function approveReview(id: string, notes?: string) {
+    return request<{ ok: boolean }>(`/v1/ops/manual-reviews/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes ?? '' }),
+    })
+  }
+
+  async function rejectReview(id: string, notes?: string) {
+    return request<{ ok: boolean }>(`/v1/ops/manual-reviews/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes ?? '' }),
+    })
+  }
+
+  // Reconciliation
+  async function getReconciliationReport() {
+    return request<ReconciliationReport>('/v1/ops/reconciliation/latest')
+  }
+
+  async function runReconciliation() {
+    return request<ReconciliationReport>('/v1/ops/reconciliation/run', { method: 'POST' })
+  }
+
+  // Net Settlement
+  async function getSettlementReport(period?: string) {
+    const qs = period ? `?period=${period}` : ''
+    return request<SettlementReport>(`/v1/ops/settlements/report${qs}`)
+  }
+
+  async function markSettlementPaid(tenantId: string, paymentRef: string) {
+    return request<{ ok: boolean }>(`/v1/ops/settlements/${tenantId}/mark-paid`, {
+      method: 'POST',
+      body: JSON.stringify({ payment_ref: paymentRef }),
+    })
+  }
+
   return {
+    apiKeyMissing,
     listTransfers,
     getTransfer,
     getTransferEvents,
@@ -141,5 +190,12 @@ export function useApi(options: UseApiOptions = {}) {
     getRouteComparisons,
     getChainStatuses,
     checkHealth,
+    listManualReviews,
+    approveReview,
+    rejectReview,
+    getReconciliationReport,
+    runReconciliation,
+    getSettlementReport,
+    markSettlementPaid,
   }
 }

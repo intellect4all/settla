@@ -19,6 +19,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBase: 'http://localhost:3000',
+      dashboardApiKey: '', // Set via NUXT_PUBLIC_DASHBOARD_API_KEY env var
       prometheusBase: process.env.SETTLA_PROMETHEUS_URL || 'http://localhost:9092',
       pollIntervalTransfers: 5000,
       pollIntervalTreasury: 10000,

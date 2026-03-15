@@ -66,6 +66,9 @@ const navItems = [
   { path: '/ledger', label: 'Ledger', icon: '&#9776;' },
   { path: '/routes', label: 'Routes', icon: '&#9741;' },
   { path: '/capacity', label: 'Capacity', icon: '&#9881;' },
+  { path: '/manual-reviews', label: 'Manual Reviews', icon: '&#9998;' },
+  { path: '/reconciliation', label: 'Reconciliation', icon: '&#9878;' },
+  { path: '/settlements', label: 'Settlements', icon: '&#9884;' },
 ]
 
 function isActive(path: string) {
