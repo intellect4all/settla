@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,9 +23,10 @@ type OutboxEntry struct {
 	AggregateType string // "transfer", "position"
 	AggregateID   uuid.UUID
 	TenantID      uuid.UUID
-	EventType     string // e.g., "transfer.created", "provider.onramp.execute"
-	Payload       []byte // JSON-encoded intent/event data
-	IsIntent      bool   // true = worker should execute this; false = notification only
+	CorrelationID uuid.UUID // traces multi-step flows across partition boundaries
+	EventType     string    // e.g., "transfer.created", "provider.onramp.execute"
+	Payload       []byte    // JSON-encoded intent/event data
+	IsIntent      bool      // true = worker should execute this; false = notification only
 	Published     bool
 	PublishedAt   *time.Time
 	RetryCount    int
@@ -34,7 +36,11 @@ type OutboxEntry struct {
 
 // NewOutboxEvent creates a notification outbox entry (not an intent).
 // The relay publishes these to NATS for subscribers, but no worker action is required.
-func NewOutboxEvent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) OutboxEntry {
+// Returns an error if the eventType is not a known outbox event/intent constant.
+func NewOutboxEvent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) (OutboxEntry, error) {
+	if err := ValidateEventType(eventType); err != nil {
+		return OutboxEntry{}, err
+	}
 	return OutboxEntry{
 		ID:            uuid.Must(uuid.NewV7()),
 		AggregateType: aggregateType,
@@ -45,13 +51,17 @@ func NewOutboxEvent(aggregateType string, aggregateID, tenantID uuid.UUID, event
 		IsIntent:      false,
 		MaxRetries:    5,
 		CreatedAt:     time.Now().UTC(),
-	}
+	}, nil
 }
 
 // NewOutboxIntent creates an intent outbox entry that a worker should execute.
 // The relay publishes these to NATS, where a dedicated worker picks them up,
 // executes the side effect, and publishes a result event.
-func NewOutboxIntent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) OutboxEntry {
+// Returns an error if the eventType is not a known outbox event/intent constant.
+func NewOutboxIntent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) (OutboxEntry, error) {
+	if err := ValidateEventType(eventType); err != nil {
+		return OutboxEntry{}, err
+	}
 	return OutboxEntry{
 		ID:            uuid.Must(uuid.NewV7()),
 		AggregateType: aggregateType,
@@ -62,19 +72,47 @@ func NewOutboxIntent(aggregateType string, aggregateID, tenantID uuid.UUID, even
 		IsIntent:      true,
 		MaxRetries:    5,
 		CreatedAt:     time.Now().UTC(),
+	}, nil
+}
+
+// MustNewOutboxEvent is like NewOutboxEvent but logs and returns a zero entry
+// on invalid event types instead of panicking. Callers should check err from
+// NewOutboxEvent directly when possible; this variant is kept for backward
+// compatibility but no longer panics in production code paths.
+func MustNewOutboxEvent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) OutboxEntry {
+	entry, err := NewOutboxEvent(aggregateType, aggregateID, tenantID, eventType, payload)
+	if err != nil {
+		slog.Error("settla-domain: invalid outbox event type",
+			"event_type", eventType, "error", err)
+		return OutboxEntry{} // Zero entry — will be filtered by relay
 	}
+	return entry
+}
+
+// MustNewOutboxIntent is like NewOutboxIntent but logs and returns a zero entry
+// on invalid intent types instead of panicking.
+func MustNewOutboxIntent(aggregateType string, aggregateID, tenantID uuid.UUID, eventType string, payload []byte) OutboxEntry {
+	entry, err := NewOutboxIntent(aggregateType, aggregateID, tenantID, eventType, payload)
+	if err != nil {
+		slog.Error("settla-domain: invalid outbox intent type",
+			"event_type", eventType, "error", err)
+		return OutboxEntry{} // Zero entry — will be filtered by relay
+	}
+	return entry
 }
 
 // Intent type constants — workers consume these from NATS and execute the side effect.
 const (
-	IntentTreasuryReserve  = "treasury.reserve"
-	IntentTreasuryRelease  = "treasury.release"
-	IntentProviderOnRamp   = "provider.onramp.execute"
-	IntentProviderOffRamp  = "provider.offramp.execute"
-	IntentLedgerPost       = "ledger.post"
-	IntentLedgerReverse    = "ledger.reverse"
-	IntentBlockchainSend   = "blockchain.send"
-	IntentWebhookDeliver   = "webhook.deliver"
+	IntentTreasuryReserve       = "treasury.reserve"
+	IntentTreasuryRelease       = "treasury.release"
+	IntentProviderOnRamp        = "provider.onramp.execute"
+	IntentProviderOffRamp       = "provider.offramp.execute"
+	IntentProviderReverseOnRamp = "provider.reverse_onramp"
+	IntentLedgerPost            = "ledger.post"
+	IntentLedgerReverse         = "ledger.reverse"
+	IntentBlockchainSend        = "blockchain.send"
+	IntentWebhookDeliver        = "webhook.deliver"
+	IntentPositionCredit        = "position.credit"
 )
 
 // Result event types — workers publish these after executing intents.
@@ -99,7 +137,8 @@ var knownEventTypes = map[string]struct{}{
 	IntentTreasuryReserve: {}, IntentTreasuryRelease: {},
 	IntentProviderOnRamp: {}, IntentProviderOffRamp: {},
 	IntentLedgerPost: {}, IntentLedgerReverse: {},
-	IntentBlockchainSend: {}, IntentWebhookDeliver: {},
+	IntentBlockchainSend: {}, IntentWebhookDeliver: {}, IntentEmailNotify: {},
+	IntentProviderReverseOnRamp: {}, IntentPositionCredit: {},
 	// Result events
 	EventTreasuryReserved: {}, EventTreasuryReleased: {}, EventTreasuryFailed: {},
 	EventProviderOnRampDone: {}, EventProviderOnRampFailed: {},
@@ -108,6 +147,26 @@ var knownEventTypes = map[string]struct{}{
 	EventBlockchainConfirmed: {}, EventBlockchainFailed: {},
 	// Inbound provider webhooks
 	EventProviderOnRampWebhook: {}, EventProviderOffRampWebhook: {},
+	// Deposit intents
+	IntentMonitorAddress: {}, IntentCreditDeposit: {}, IntentSettleDeposit: {},
+	// Deposit events
+	EventDepositSessionCreated: {}, EventDepositTxDetected: {}, EventDepositTxConfirmed: {},
+	EventDepositSessionCrediting: {}, EventDepositSessionCredited: {},
+	EventDepositSessionSettling: {}, EventDepositSessionSettled: {},
+	EventDepositSessionHeld: {}, EventDepositSessionExpired: {},
+	EventDepositSessionFailed: {}, EventDepositSessionCancelled: {},
+	EventDepositLatePayment: {},
+	// Bank deposit intents
+	IntentBankDepositCredit: {}, IntentBankDepositSettle: {},
+	IntentBankDepositRefund: {}, IntentRecycleVirtualAccount: {},
+	// Bank deposit events
+	EventBankDepositSessionCreated: {}, EventBankDepositPaymentReceived: {},
+	EventBankDepositSessionCrediting: {}, EventBankDepositSessionCredited: {},
+	EventBankDepositSessionSettling: {}, EventBankDepositSessionSettled: {},
+	EventBankDepositSessionHeld: {}, EventBankDepositSessionExpired: {},
+	EventBankDepositSessionFailed: {}, EventBankDepositSessionCancelled: {},
+	EventBankDepositUnderpaid: {}, EventBankDepositOverpaid: {},
+	EventBankDepositLatePayment: {},
 	// Lifecycle events (from domain/events.go)
 	EventTransferCreated: {}, EventTransferFunded: {},
 	EventOnRampInitiated: {}, EventOnRampCompleted: {},
@@ -233,11 +292,26 @@ type BlockchainSendPayload struct {
 }
 
 // WebhookDeliverPayload is the payload for IntentWebhookDeliver.
+// For transfer webhooks, TransferID is set. For deposit webhooks, SessionID is set.
 type WebhookDeliverPayload struct {
-	TransferID uuid.UUID `json:"transfer_id"`
+	TransferID uuid.UUID `json:"transfer_id,omitempty"`
+	SessionID  uuid.UUID `json:"session_id,omitempty"`
 	TenantID   uuid.UUID `json:"tenant_id"`
 	EventType  string    `json:"event_type"`
 	Data       []byte    `json:"data"` // JSON-encoded webhook body
+}
+
+// IntentEmailNotify instructs the email worker to send a notification email.
+const IntentEmailNotify = "email.notify"
+
+// EmailNotifyPayload is the payload for IntentEmailNotify.
+type EmailNotifyPayload struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	SessionID  uuid.UUID `json:"session_id,omitempty"`
+	TransferID uuid.UUID `json:"transfer_id,omitempty"`
+	EventType  string    `json:"event_type"`
+	Subject    string    `json:"subject"`
+	Data       []byte    `json:"data"` // JSON-encoded template data
 }
 
 // Inbound provider webhook event types — the webhook HTTP handler normalizes
@@ -255,11 +329,19 @@ type ProviderWebhookPayload struct {
 	TenantID    uuid.UUID `json:"tenant_id"`
 	ProviderID  string    `json:"provider_id"`
 	ProviderRef string    `json:"provider_ref"`
-	Status      string    `json:"status"`     // "completed", "failed"
+	Status      string    `json:"status"` // "completed", "failed"
 	TxHash      string    `json:"tx_hash,omitempty"`
 	Error       string    `json:"error,omitempty"`
 	ErrorCode   string    `json:"error_code,omitempty"`
-	TxType      string    `json:"tx_type"`    // "onramp", "offramp"
+	TxType      string    `json:"tx_type"` // "onramp", "offramp"
+}
+
+// WithCorrelationID returns a copy of the OutboxEntry with the CorrelationID set.
+// This avoids changing the signatures of NewOutboxEvent / NewOutboxIntent which
+// have 122 call sites across 11 files.
+func (e OutboxEntry) WithCorrelationID(id uuid.UUID) OutboxEntry {
+	e.CorrelationID = id
+	return e
 }
 
 // IntentResult carries the outcome of a worker-executed intent back to the engine.
@@ -267,8 +349,8 @@ type ProviderWebhookPayload struct {
 type IntentResult struct {
 	Success     bool              `json:"success"`
 	ProviderRef string            `json:"provider_ref,omitempty"` // external reference from provider
-	TxHash      string            `json:"tx_hash,omitempty"`     // blockchain transaction hash
-	Error       string            `json:"error,omitempty"`       // error message on failure
-	ErrorCode   string            `json:"error_code,omitempty"`  // machine-readable error code
-	Metadata    map[string]string `json:"metadata,omitempty"`    // extra data from the worker
+	TxHash      string            `json:"tx_hash,omitempty"`      // blockchain transaction hash
+	Error       string            `json:"error,omitempty"`        // error message on failure
+	ErrorCode   string            `json:"error_code,omitempty"`   // machine-readable error code
+	Metadata    map[string]string `json:"metadata,omitempty"`     // extra data from the worker
 }

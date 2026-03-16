@@ -67,6 +67,9 @@ type Account struct {
 // TenantAccountCode builds a tenant-scoped account code.
 // Format: tenant:{slug}:{path}
 // Example: TenantAccountCode("lemfi", "assets:bank:gbp:clearing") → "tenant:lemfi:assets:bank:gbp:clearing"
+//
+// Caller responsibility: tenantSlug must not be empty or contain colons.
+// Use ValidateSlug() at system boundaries; this function trusts internal callers.
 func TenantAccountCode(tenantSlug, path string) string {
 	return fmt.Sprintf("tenant:%s:%s", tenantSlug, path)
 }
@@ -97,9 +100,25 @@ func NewAccountCode(code string) (AccountCode, error) {
 	return AccountCode(code), nil
 }
 
+// ValidateSlug returns an error if the slug is empty or contains colons.
+// Slugs with colons would corrupt the colon-delimited account code format.
+func ValidateSlug(slug string) error {
+	if slug == "" {
+		return fmt.Errorf("settla-domain: tenant slug must not be empty")
+	}
+	if strings.Contains(slug, ":") {
+		return fmt.Errorf("settla-domain: tenant slug must not contain colons, got %q", slug)
+	}
+	return nil
+}
+
 // NewTenantAccountCode builds a tenant-scoped AccountCode value object.
-func NewTenantAccountCode(slug, path string) AccountCode {
-	return AccountCode(fmt.Sprintf("tenant:%s:%s", slug, path))
+// Returns an error if the slug is invalid.
+func NewTenantAccountCode(slug, path string) (AccountCode, error) {
+	if err := ValidateSlug(slug); err != nil {
+		return "", err
+	}
+	return AccountCode(fmt.Sprintf("tenant:%s:%s", slug, path)), nil
 }
 
 // IsSystem returns true if the account code does NOT have a "tenant:" prefix.

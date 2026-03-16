@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,6 +73,42 @@ type FeeBreakdown struct {
 	TotalFeeUSD decimal.Decimal
 }
 
+// Validate checks that TotalFeeUSD equals the sum of component fees and that
+// no individual fee is negative. Returns an error describing any inconsistency.
+func (f FeeBreakdown) Validate() error {
+	if f.OnRampFee.IsNegative() {
+		return fmt.Errorf("settla-domain: FeeBreakdown.OnRampFee must be non-negative, got %s", f.OnRampFee.String())
+	}
+	if f.NetworkFee.IsNegative() {
+		return fmt.Errorf("settla-domain: FeeBreakdown.NetworkFee must be non-negative, got %s", f.NetworkFee.String())
+	}
+	if f.OffRampFee.IsNegative() {
+		return fmt.Errorf("settla-domain: FeeBreakdown.OffRampFee must be non-negative, got %s", f.OffRampFee.String())
+	}
+	expectedTotal := f.OnRampFee.Add(f.NetworkFee).Add(f.OffRampFee)
+	if !f.TotalFeeUSD.Equal(expectedTotal) {
+		return fmt.Errorf("settla-domain: FeeBreakdown.TotalFeeUSD (%s) does not equal sum of components (%s + %s + %s = %s)",
+			f.TotalFeeUSD.String(), f.OnRampFee.String(), f.NetworkFee.String(), f.OffRampFee.String(), expectedTotal.String())
+	}
+	return nil
+}
+
+// ValidateWithSchedule validates the fee breakdown against the tenant's fee schedule bounds.
+func (f FeeBreakdown) ValidateWithSchedule(schedule FeeSchedule) error {
+	if err := f.Validate(); err != nil {
+		return err
+	}
+	if !schedule.MinFeeUSD.IsZero() && f.TotalFeeUSD.LessThan(schedule.MinFeeUSD) {
+		return fmt.Errorf("settla-domain: FeeBreakdown.TotalFeeUSD (%s) is below schedule minimum (%s)",
+			f.TotalFeeUSD.String(), schedule.MinFeeUSD.String())
+	}
+	if !schedule.MaxFeeUSD.IsZero() && f.TotalFeeUSD.GreaterThan(schedule.MaxFeeUSD) {
+		return fmt.Errorf("settla-domain: FeeBreakdown.TotalFeeUSD (%s) exceeds schedule maximum (%s)",
+			f.TotalFeeUSD.String(), schedule.MaxFeeUSD.String())
+	}
+	return nil
+}
+
 // BlockchainTx records a single blockchain transaction associated with a transfer.
 type BlockchainTx struct {
 	Chain       string // e.g. "tron", "ethereum"
@@ -100,8 +137,9 @@ type Transfer struct {
 	StableAmount decimal.Decimal
 	Chain        string
 
-	FXRate decimal.Decimal
-	Fees   FeeBreakdown
+	FXRate              decimal.Decimal
+	Fees                FeeBreakdown
+	FeeScheduleSnapshot *FeeSchedule `json:"fee_schedule_snapshot,omitempty"`
 
 	OnRampProviderID  string
 	OffRampProviderID string
@@ -189,6 +227,63 @@ func NewIdempotencyKey(key string) (IdempotencyKey, error) {
 
 // String returns the underlying string value.
 func (k IdempotencyKey) String() string { return string(k) }
+
+// Validate checks that the sender has the minimum required fields populated.
+func (s Sender) Validate() error {
+	if s.Name == "" {
+		return fmt.Errorf("settla-domain: sender name is required")
+	}
+	if s.Email != "" && !strings.Contains(s.Email, "@") {
+		return fmt.Errorf("settla-domain: sender email %q is not a valid email address", s.Email)
+	}
+	return nil
+}
+
+// SupportedChains is the set of blockchain chains supported by Settla.
+var SupportedChains = map[string]struct{}{
+	"ethereum": {},
+	"tron":     {},
+	"solana":   {},
+	"polygon":  {},
+	"base":     {},
+	"arbitrum": {},
+}
+
+// ValidateChain returns an error if chain is not in SupportedChains.
+func ValidateChain(chain string) error {
+	if _, ok := SupportedChains[chain]; !ok {
+		return fmt.Errorf("settla-domain: unsupported blockchain chain %q", chain)
+	}
+	return nil
+}
+
+// Validate checks that the recipient has the minimum required fields populated.
+// Returns an error describing any missing or invalid field.
+func (r Recipient) Validate() error {
+	if r.Name == "" {
+		return fmt.Errorf("settla-domain: recipient name is required")
+	}
+	if r.Country == "" {
+		return fmt.Errorf("settla-domain: recipient country is required")
+	}
+	if len(r.BankName) > 128 {
+		return fmt.Errorf("settla-domain: recipient bank_name must be at most 128 characters, got %d", len(r.BankName))
+	}
+	if r.AccountNumber != "" {
+		if len(r.AccountNumber) < 4 || len(r.AccountNumber) > 34 {
+			return fmt.Errorf("settla-domain: recipient account_number must be 4-34 characters, got %d", len(r.AccountNumber))
+		}
+		for _, c := range r.AccountNumber {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-') {
+				return fmt.Errorf("settla-domain: recipient account_number contains invalid character %q", string(c))
+			}
+		}
+		if r.BankName == "" {
+			return fmt.Errorf("settla-domain: recipient bank_name is required when account_number is provided")
+		}
+	}
+	return nil
+}
 
 // TransferStore persists transfer aggregates.
 type TransferStore interface {

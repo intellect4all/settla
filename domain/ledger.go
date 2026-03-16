@@ -100,8 +100,10 @@ func ValidateEntries(lines []EntryLine) error {
 		return ErrLedgerImbalance(fmt.Sprintf("need at least 2 lines, got %d", len(lines)))
 	}
 
-	// Check all amounts are positive and collect IDs for duplicate check
+	// Check all amounts are positive, collect IDs for duplicate check,
+	// and detect duplicate account+entry-type combinations within the same entry.
 	seenIDs := make(map[uuid.UUID]bool, len(lines))
+	seenAccountEntry := make(map[string]bool, len(lines))
 	for _, line := range lines {
 		if !line.Amount.IsPositive() {
 			return ErrLedgerImbalance(fmt.Sprintf("line amount must be positive, got %s", line.Amount))
@@ -112,6 +114,11 @@ func ValidateEntries(lines []EntryLine) error {
 			}
 			seenIDs[line.ID] = true
 		}
+		aeKey := line.AccountCode + ":" + string(line.EntryType)
+		if seenAccountEntry[aeKey] {
+			return ErrLedgerImbalance(fmt.Sprintf("duplicate account %s with entry type %s", line.AccountCode, line.EntryType))
+		}
+		seenAccountEntry[aeKey] = true
 	}
 
 	// Check debits == credits per currency
