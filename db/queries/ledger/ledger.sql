@@ -39,7 +39,7 @@ WHERE id = $1 AND posted_at = $2;
 
 -- name: GetJournalEntryByIdempotencyKey :one
 SELECT * FROM journal_entries
-WHERE idempotency_key = $1
+WHERE tenant_id = $1 AND idempotency_key = $2
 LIMIT 1;
 
 -- name: ListJournalEntriesByReference :many
@@ -116,3 +116,12 @@ FROM balance_snapshots bs
 JOIN accounts a ON a.id = bs.account_id
 WHERE a.tenant_id = $1
 ORDER BY a.code;
+
+-- name: GetAccountBalanceByCode :one
+-- Get balance for an account by its code from balance_snapshots.
+-- Returns NULL if no snapshot exists yet (handled as zero by caller).
+SELECT bs.balance
+FROM balance_snapshots bs
+JOIN accounts a ON a.id = bs.account_id
+WHERE a.code = $1
+LIMIT 1;

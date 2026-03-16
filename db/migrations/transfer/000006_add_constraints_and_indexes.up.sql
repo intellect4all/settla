@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_relay_covering
   WHERE published = false;
 
 -- Provider transaction unique index for exactly-once semantics (from 000012)
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uk_provider_txns_transfer_type
+CREATE UNIQUE INDEX IF NOT EXISTS uk_provider_txns_transfer_type
   ON provider_transactions(tenant_id, transfer_id, tx_type);
 
 -- Analytics covering index for GROUP BY tenant_id + time range + status (from 000016)

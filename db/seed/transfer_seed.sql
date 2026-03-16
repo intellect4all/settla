@@ -8,7 +8,7 @@ INSERT INTO tenants (id, name, slug, status, fee_schedule, settlement_model,
 VALUES (
     'a0000000-0000-0000-0000-000000000001',
     'Lemfi', 'lemfi', 'ACTIVE',
-    '{"onramp_bps": 40, "offramp_bps": 25, "min_fee_usd": "0.50", "max_fee_usd": "500.00"}'::jsonb,
+    '{"onramp_bps": 40, "offramp_bps": 25, "min_fee_usd": "0.50", "max_fee_usd": "500.00", "bank_collection_bps": 30, "bank_collection_min_fee_usd": "0.50", "bank_collection_max_fee_usd": "250.00"}'::jsonb,
     'PREFUNDED',
     'https://webhooks.lemfi.example/settla',
     'whsec_lemfi_demo_secret_key_2024',
@@ -25,7 +25,7 @@ INSERT INTO tenants (id, name, slug, status, fee_schedule, settlement_model,
 VALUES (
     'b0000000-0000-0000-0000-000000000002',
     'Fincra', 'fincra', 'ACTIVE',
-    '{"onramp_bps": 50, "offramp_bps": 30, "min_fee_usd": "1.00", "max_fee_usd": "1000.00"}'::jsonb,
+    '{"onramp_bps": 50, "offramp_bps": 30, "min_fee_usd": "1.00", "max_fee_usd": "1000.00", "bank_collection_bps": 25, "bank_collection_min_fee_usd": "1.00", "bank_collection_max_fee_usd": "500.00"}'::jsonb,
     'PREFUNDED',
     'https://webhooks.fincra.example/settla',
     'whsec_fincra_demo_secret_key_2024',
@@ -904,3 +904,29 @@ INSERT INTO api_keys (tenant_id, key_hash, key_prefix, environment, name) VALUES
     ('50000000-0000-0000-0000-000000000049', encode(sha256('sk_live_mfsafrica_demo_key'::bytea), 'hex'),    'sk_live_', 'LIVE', 'MFS Africa Production Key'),
     ('50000000-0000-0000-0000-000000000050', encode(sha256('sk_live_heritage_demo_key'::bytea), 'hex'),     'sk_live_', 'LIVE', 'Heritage Production Key')
 ON CONFLICT (key_hash) DO NOTHING;
+
+-- ── Portal users for seed tenants ──────────────────────────────────────────
+-- Password for all seed users: "settla-demo-2024" (bcrypt cost 12)
+-- bcrypt hash: $2a$12$LJ3m4ys4Kz5VHjKXx5Wz7OQyBz6u1q7XbZTsWFsLBqLvJrXYKvPa
+INSERT INTO portal_users (tenant_id, email, password_hash, display_name, role, email_verified)
+VALUES
+    ('a0000000-0000-0000-0000-000000000001', 'admin@lemfi.example', '$2a$12$LJ3m4ys4Kz5VHjKXx5Wz7OQyBz6u1q7XbZTsWFsLBqLvJrXYKvPa', 'Lemfi Admin', 'OWNER', true),
+    ('b0000000-0000-0000-0000-000000000002', 'admin@fincra.example', '$2a$12$LJ3m4ys4Kz5VHjKXx5Wz7OQyBz6u1q7XbZTsWFsLBqLvJrXYKvPa', 'Fincra Admin', 'OWNER', true)
+ON CONFLICT (email) DO NOTHING;
+
+-- ── Additional portal users for test tenants (TestFintech1–10) ────────────
+-- Password for all test users: "password"
+-- bcrypt hash: $2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy
+INSERT INTO portal_users (id, tenant_id, email, password_hash, display_name, role, email_verified)
+VALUES
+    ('c0000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000003', 'admin@testfintech1.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech1 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000004', 'd0000000-0000-0000-0000-000000000004', 'admin@testfintech2.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech2 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000005', 'e0000000-0000-0000-0000-000000000005', 'admin@testfintech3.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech3 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000006', 'f0000000-0000-0000-0000-000000000006', 'admin@testfintech4.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech4 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000007', 'admin@testfintech5.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech5 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000008', '20000000-0000-0000-0000-000000000008', 'admin@testfintech6.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech6 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000009', '30000000-0000-0000-0000-000000000009', 'admin@testfintech7.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech7 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000010', '40000000-0000-0000-0000-000000000010', 'admin@testfintech8.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech8 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000011', '50000000-0000-0000-0000-000000000011', 'admin@testfintech9.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech9 Admin', 'OWNER', true),
+    ('c0000000-0000-0000-0000-000000000012', '50000000-0000-0000-0000-000000000012', 'admin@testfintech10.example', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'TestFintech10 Admin', 'OWNER', true)
+ON CONFLICT (email) DO NOTHING;

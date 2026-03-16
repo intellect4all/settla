@@ -1,5 +1,5 @@
 -- name: ListCompletedTransfersByPeriod :many
-SELECT source_currency, source_amount, dest_currency, dest_amount,
+SELECT id, source_currency, source_amount, dest_currency, dest_amount,
        COALESCE((fees->>'total_usd')::NUMERIC(28,8), 0) AS fees_usd
 FROM transfers
 WHERE tenant_id = $1
@@ -20,6 +20,16 @@ INSERT INTO net_settlements (
 SELECT * FROM net_settlements WHERE id = $1;
 
 -- name: ListPendingSettlements :many
+SELECT ns.*, t.name AS tenant_name
+FROM net_settlements ns
+JOIN tenants t ON t.id = ns.tenant_id
+WHERE ns.tenant_id = $1
+  AND ns.status IN ('pending', 'overdue')
+ORDER BY ns.due_date ASC;
+
+-- name: ListAllPendingSettlements :many
+-- Admin-only: returns pending settlements across all tenants.
+-- Callers MUST verify admin authorization before invoking.
 SELECT ns.*, t.name AS tenant_name
 FROM net_settlements ns
 JOIN tenants t ON t.id = ns.tenant_id
