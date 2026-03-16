@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetQuoteRequest, GetQuoteResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferRequest, GetTransferResponse, ListTransfersRequest, ListTransfersResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
+import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetQuoteRequest, GetQuoteResponse, GetRoutingOptionsRequest, GetRoutingOptionsResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferByExternalRefRequest, GetTransferByExternalRefResponse, GetTransferRequest, GetTransferResponse, ListTransferEventsRequest, ListTransferEventsResponse, ListTransfersRequest, ListTransfersResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -49,6 +49,15 @@ export const SettlementService = {
       kind: MethodKind.Unary,
     },
     /**
+     * @generated from rpc settla.v1.SettlementService.GetTransferByExternalRef
+     */
+    getTransferByExternalRef: {
+      name: "GetTransferByExternalRef",
+      I: GetTransferByExternalRefRequest,
+      O: GetTransferByExternalRefResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * @generated from rpc settla.v1.SettlementService.ListTransfers
      */
     listTransfers: {
@@ -64,6 +73,24 @@ export const SettlementService = {
       name: "CancelTransfer",
       I: CancelTransferRequest,
       O: CancelTransferResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.SettlementService.ListTransferEvents
+     */
+    listTransferEvents: {
+      name: "ListTransferEvents",
+      I: ListTransferEventsRequest,
+      O: ListTransferEventsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.SettlementService.GetRoutingOptions
+     */
+    getRoutingOptions: {
+      name: "GetRoutingOptions",
+      I: GetRoutingOptionsRequest,
+      O: GetRoutingOptionsResponse,
       kind: MethodKind.Unary,
     },
   }

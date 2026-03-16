@@ -19,12 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SettlementService_CreateQuote_FullMethodName    = "/settla.v1.SettlementService/CreateQuote"
-	SettlementService_GetQuote_FullMethodName       = "/settla.v1.SettlementService/GetQuote"
-	SettlementService_CreateTransfer_FullMethodName = "/settla.v1.SettlementService/CreateTransfer"
-	SettlementService_GetTransfer_FullMethodName    = "/settla.v1.SettlementService/GetTransfer"
-	SettlementService_ListTransfers_FullMethodName  = "/settla.v1.SettlementService/ListTransfers"
-	SettlementService_CancelTransfer_FullMethodName = "/settla.v1.SettlementService/CancelTransfer"
+	SettlementService_CreateQuote_FullMethodName              = "/settla.v1.SettlementService/CreateQuote"
+	SettlementService_GetQuote_FullMethodName                 = "/settla.v1.SettlementService/GetQuote"
+	SettlementService_CreateTransfer_FullMethodName           = "/settla.v1.SettlementService/CreateTransfer"
+	SettlementService_GetTransfer_FullMethodName              = "/settla.v1.SettlementService/GetTransfer"
+	SettlementService_GetTransferByExternalRef_FullMethodName = "/settla.v1.SettlementService/GetTransferByExternalRef"
+	SettlementService_ListTransfers_FullMethodName            = "/settla.v1.SettlementService/ListTransfers"
+	SettlementService_CancelTransfer_FullMethodName           = "/settla.v1.SettlementService/CancelTransfer"
+	SettlementService_ListTransferEvents_FullMethodName       = "/settla.v1.SettlementService/ListTransferEvents"
+	SettlementService_GetRoutingOptions_FullMethodName        = "/settla.v1.SettlementService/GetRoutingOptions"
 )
 
 // SettlementServiceClient is the client API for SettlementService service.
@@ -35,8 +38,11 @@ type SettlementServiceClient interface {
 	GetQuote(ctx context.Context, in *GetQuoteRequest, opts ...grpc.CallOption) (*GetQuoteResponse, error)
 	CreateTransfer(ctx context.Context, in *CreateTransferRequest, opts ...grpc.CallOption) (*CreateTransferResponse, error)
 	GetTransfer(ctx context.Context, in *GetTransferRequest, opts ...grpc.CallOption) (*GetTransferResponse, error)
+	GetTransferByExternalRef(ctx context.Context, in *GetTransferByExternalRefRequest, opts ...grpc.CallOption) (*GetTransferByExternalRefResponse, error)
 	ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error)
 	CancelTransfer(ctx context.Context, in *CancelTransferRequest, opts ...grpc.CallOption) (*CancelTransferResponse, error)
+	ListTransferEvents(ctx context.Context, in *ListTransferEventsRequest, opts ...grpc.CallOption) (*ListTransferEventsResponse, error)
+	GetRoutingOptions(ctx context.Context, in *GetRoutingOptionsRequest, opts ...grpc.CallOption) (*GetRoutingOptionsResponse, error)
 }
 
 type settlementServiceClient struct {
@@ -87,6 +93,16 @@ func (c *settlementServiceClient) GetTransfer(ctx context.Context, in *GetTransf
 	return out, nil
 }
 
+func (c *settlementServiceClient) GetTransferByExternalRef(ctx context.Context, in *GetTransferByExternalRefRequest, opts ...grpc.CallOption) (*GetTransferByExternalRefResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTransferByExternalRefResponse)
+	err := c.cc.Invoke(ctx, SettlementService_GetTransferByExternalRef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *settlementServiceClient) ListTransfers(ctx context.Context, in *ListTransfersRequest, opts ...grpc.CallOption) (*ListTransfersResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListTransfersResponse)
@@ -107,6 +123,26 @@ func (c *settlementServiceClient) CancelTransfer(ctx context.Context, in *Cancel
 	return out, nil
 }
 
+func (c *settlementServiceClient) ListTransferEvents(ctx context.Context, in *ListTransferEventsRequest, opts ...grpc.CallOption) (*ListTransferEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTransferEventsResponse)
+	err := c.cc.Invoke(ctx, SettlementService_ListTransferEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *settlementServiceClient) GetRoutingOptions(ctx context.Context, in *GetRoutingOptionsRequest, opts ...grpc.CallOption) (*GetRoutingOptionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRoutingOptionsResponse)
+	err := c.cc.Invoke(ctx, SettlementService_GetRoutingOptions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SettlementServiceServer is the server API for SettlementService service.
 // All implementations must embed UnimplementedSettlementServiceServer
 // for forward compatibility.
@@ -115,8 +151,11 @@ type SettlementServiceServer interface {
 	GetQuote(context.Context, *GetQuoteRequest) (*GetQuoteResponse, error)
 	CreateTransfer(context.Context, *CreateTransferRequest) (*CreateTransferResponse, error)
 	GetTransfer(context.Context, *GetTransferRequest) (*GetTransferResponse, error)
+	GetTransferByExternalRef(context.Context, *GetTransferByExternalRefRequest) (*GetTransferByExternalRefResponse, error)
 	ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error)
 	CancelTransfer(context.Context, *CancelTransferRequest) (*CancelTransferResponse, error)
+	ListTransferEvents(context.Context, *ListTransferEventsRequest) (*ListTransferEventsResponse, error)
+	GetRoutingOptions(context.Context, *GetRoutingOptionsRequest) (*GetRoutingOptionsResponse, error)
 	mustEmbedUnimplementedSettlementServiceServer()
 }
 
@@ -139,11 +178,20 @@ func (UnimplementedSettlementServiceServer) CreateTransfer(context.Context, *Cre
 func (UnimplementedSettlementServiceServer) GetTransfer(context.Context, *GetTransferRequest) (*GetTransferResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTransfer not implemented")
 }
+func (UnimplementedSettlementServiceServer) GetTransferByExternalRef(context.Context, *GetTransferByExternalRefRequest) (*GetTransferByExternalRefResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTransferByExternalRef not implemented")
+}
 func (UnimplementedSettlementServiceServer) ListTransfers(context.Context, *ListTransfersRequest) (*ListTransfersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTransfers not implemented")
 }
 func (UnimplementedSettlementServiceServer) CancelTransfer(context.Context, *CancelTransferRequest) (*CancelTransferResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelTransfer not implemented")
+}
+func (UnimplementedSettlementServiceServer) ListTransferEvents(context.Context, *ListTransferEventsRequest) (*ListTransferEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTransferEvents not implemented")
+}
+func (UnimplementedSettlementServiceServer) GetRoutingOptions(context.Context, *GetRoutingOptionsRequest) (*GetRoutingOptionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRoutingOptions not implemented")
 }
 func (UnimplementedSettlementServiceServer) mustEmbedUnimplementedSettlementServiceServer() {}
 func (UnimplementedSettlementServiceServer) testEmbeddedByValue()                           {}
@@ -238,6 +286,24 @@ func _SettlementService_GetTransfer_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SettlementService_GetTransferByExternalRef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTransferByExternalRefRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).GetTransferByExternalRef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_GetTransferByExternalRef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).GetTransferByExternalRef(ctx, req.(*GetTransferByExternalRefRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SettlementService_ListTransfers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListTransfersRequest)
 	if err := dec(in); err != nil {
@@ -274,6 +340,42 @@ func _SettlementService_CancelTransfer_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SettlementService_ListTransferEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTransferEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).ListTransferEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_ListTransferEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).ListTransferEvents(ctx, req.(*ListTransferEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SettlementService_GetRoutingOptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRoutingOptionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SettlementServiceServer).GetRoutingOptions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SettlementService_GetRoutingOptions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SettlementServiceServer).GetRoutingOptions(ctx, req.(*GetRoutingOptionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SettlementService_ServiceDesc is the grpc.ServiceDesc for SettlementService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -298,12 +400,24 @@ var SettlementService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SettlementService_GetTransfer_Handler,
 		},
 		{
+			MethodName: "GetTransferByExternalRef",
+			Handler:    _SettlementService_GetTransferByExternalRef_Handler,
+		},
+		{
 			MethodName: "ListTransfers",
 			Handler:    _SettlementService_ListTransfers_Handler,
 		},
 		{
 			MethodName: "CancelTransfer",
 			Handler:    _SettlementService_CancelTransfer_Handler,
+		},
+		{
+			MethodName: "ListTransferEvents",
+			Handler:    _SettlementService_ListTransferEvents_Handler,
+		},
+		{
+			MethodName: "GetRoutingOptions",
+			Handler:    _SettlementService_GetRoutingOptions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
