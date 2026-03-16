@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetQuoteRequest, GetQuoteResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferRequest, GetTransferResponse, ListTransfersRequest, ListTransfersResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
+import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetQuoteRequest, GetQuoteResponse, GetRoutingOptionsRequest, GetRoutingOptionsResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferByExternalRefRequest, GetTransferByExternalRefResponse, GetTransferRequest, GetTransferResponse, ListTransferEventsRequest, ListTransferEventsResponse, ListTransfersRequest, ListTransfersResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -49,6 +49,15 @@ export declare const SettlementService: {
       readonly kind: MethodKind.Unary,
     },
     /**
+     * @generated from rpc settla.v1.SettlementService.GetTransferByExternalRef
+     */
+    readonly getTransferByExternalRef: {
+      readonly name: "GetTransferByExternalRef",
+      readonly I: typeof GetTransferByExternalRefRequest,
+      readonly O: typeof GetTransferByExternalRefResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
      * @generated from rpc settla.v1.SettlementService.ListTransfers
      */
     readonly listTransfers: {
@@ -64,6 +73,24 @@ export declare const SettlementService: {
       readonly name: "CancelTransfer",
       readonly I: typeof CancelTransferRequest,
       readonly O: typeof CancelTransferResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.SettlementService.ListTransferEvents
+     */
+    readonly listTransferEvents: {
+      readonly name: "ListTransferEvents",
+      readonly I: typeof ListTransferEventsRequest,
+      readonly O: typeof ListTransferEventsResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.SettlementService.GetRoutingOptions
+     */
+    readonly getRoutingOptions: {
+      readonly name: "GetRoutingOptions",
+      readonly I: typeof GetRoutingOptionsRequest,
+      readonly O: typeof GetRoutingOptionsResponse,
       readonly kind: MethodKind.Unary,
     },
   }

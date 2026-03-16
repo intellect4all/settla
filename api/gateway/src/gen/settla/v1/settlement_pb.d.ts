@@ -551,6 +551,45 @@ export declare type GetTransferResponse = Message<"settla.v1.GetTransferResponse
 export declare const GetTransferResponseSchema: GenMessage<GetTransferResponse>;
 
 /**
+ * @generated from message settla.v1.GetTransferByExternalRefRequest
+ */
+export declare type GetTransferByExternalRefRequest = Message<"settla.v1.GetTransferByExternalRefRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string external_ref = 2;
+   */
+  externalRef: string;
+};
+
+/**
+ * Describes the message settla.v1.GetTransferByExternalRefRequest.
+ * Use `create(GetTransferByExternalRefRequestSchema)` to create a new message.
+ */
+export declare const GetTransferByExternalRefRequestSchema: GenMessage<GetTransferByExternalRefRequest>;
+
+/**
+ * @generated from message settla.v1.GetTransferByExternalRefResponse
+ */
+export declare type GetTransferByExternalRefResponse = Message<"settla.v1.GetTransferByExternalRefResponse"> & {
+  /**
+   * @generated from field: settla.v1.Transfer transfer = 1;
+   */
+  transfer?: Transfer;
+};
+
+/**
+ * Describes the message settla.v1.GetTransferByExternalRefResponse.
+ * Use `create(GetTransferByExternalRefResponseSchema)` to create a new message.
+ */
+export declare const GetTransferByExternalRefResponseSchema: GenMessage<GetTransferByExternalRefResponse>;
+
+/**
  * @generated from message settla.v1.ListTransfersRequest
  */
 export declare type ListTransfersRequest = Message<"settla.v1.ListTransfersRequest"> & {
@@ -574,6 +613,20 @@ export declare type ListTransfersRequest = Message<"settla.v1.ListTransfersReque
    * @generated from field: string page_token = 3;
    */
   pageToken: string;
+
+  /**
+   * Optional — exact match on transfer status (e.g. "COMPLETED")
+   *
+   * @generated from field: string status_filter = 4;
+   */
+  statusFilter: string;
+
+  /**
+   * Optional — substring match on id, external_ref, or idempotency_key
+   *
+   * @generated from field: string search_query = 5;
+   */
+  searchQuery: string;
 };
 
 /**
@@ -659,6 +712,89 @@ export declare type CancelTransferResponse = Message<"settla.v1.CancelTransferRe
  * Use `create(CancelTransferResponseSchema)` to create a new message.
  */
 export declare const CancelTransferResponseSchema: GenMessage<CancelTransferResponse>;
+
+/**
+ * @generated from message settla.v1.TransferEvent
+ */
+export declare type TransferEvent = Message<"settla.v1.TransferEvent"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: string transfer_id = 2;
+   */
+  transferId: string;
+
+  /**
+   * @generated from field: string from_status = 3;
+   */
+  fromStatus: string;
+
+  /**
+   * @generated from field: string to_status = 4;
+   */
+  toStatus: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp occurred_at = 5;
+   */
+  occurredAt?: Timestamp;
+
+  /**
+   * @generated from field: string provider_ref = 6;
+   */
+  providerRef: string;
+
+  /**
+   * @generated from field: map<string, string> metadata = 7;
+   */
+  metadata: { [key: string]: string };
+};
+
+/**
+ * Describes the message settla.v1.TransferEvent.
+ * Use `create(TransferEventSchema)` to create a new message.
+ */
+export declare const TransferEventSchema: GenMessage<TransferEvent>;
+
+/**
+ * @generated from message settla.v1.ListTransferEventsRequest
+ */
+export declare type ListTransferEventsRequest = Message<"settla.v1.ListTransferEventsRequest"> & {
+  /**
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string transfer_id = 2;
+   */
+  transferId: string;
+};
+
+/**
+ * Describes the message settla.v1.ListTransferEventsRequest.
+ * Use `create(ListTransferEventsRequestSchema)` to create a new message.
+ */
+export declare const ListTransferEventsRequestSchema: GenMessage<ListTransferEventsRequest>;
+
+/**
+ * @generated from message settla.v1.ListTransferEventsResponse
+ */
+export declare type ListTransferEventsResponse = Message<"settla.v1.ListTransferEventsResponse"> & {
+  /**
+   * @generated from field: repeated settla.v1.TransferEvent events = 1;
+   */
+  events: TransferEvent[];
+};
+
+/**
+ * Describes the message settla.v1.ListTransferEventsResponse.
+ * Use `create(ListTransferEventsResponseSchema)` to create a new message.
+ */
+export declare const ListTransferEventsResponseSchema: GenMessage<ListTransferEventsResponse>;
 
 /**
  * @generated from message settla.v1.Position
@@ -1251,6 +1387,167 @@ export declare type GetTransactionsResponse = Message<"settla.v1.GetTransactions
 export declare const GetTransactionsResponseSchema: GenMessage<GetTransactionsResponse>;
 
 /**
+ * @generated from message settla.v1.ScoreBreakdown
+ */
+export declare type ScoreBreakdown = Message<"settla.v1.ScoreBreakdown"> & {
+  /**
+   * 0-1 decimal
+   *
+   * @generated from field: string cost = 1;
+   */
+  cost: string;
+
+  /**
+   * 0-1 decimal
+   *
+   * @generated from field: string speed = 2;
+   */
+  speed: string;
+
+  /**
+   * 0-1 decimal
+   *
+   * @generated from field: string liquidity = 3;
+   */
+  liquidity: string;
+
+  /**
+   * 0-1 decimal
+   *
+   * @generated from field: string reliability = 4;
+   */
+  reliability: string;
+};
+
+/**
+ * Describes the message settla.v1.ScoreBreakdown.
+ * Use `create(ScoreBreakdownSchema)` to create a new message.
+ */
+export declare const ScoreBreakdownSchema: GenMessage<ScoreBreakdown>;
+
+/**
+ * @generated from message settla.v1.RoutingOption
+ */
+export declare type RoutingOption = Message<"settla.v1.RoutingOption"> & {
+  /**
+   * on-ramp provider ID
+   *
+   * @generated from field: string provider = 1;
+   */
+  provider: string;
+
+  /**
+   * @generated from field: string off_ramp_provider = 2;
+   */
+  offRampProvider: string;
+
+  /**
+   * @generated from field: string chain = 3;
+   */
+  chain: string;
+
+  /**
+   * @generated from field: string stablecoin = 4;
+   */
+  stablecoin: string;
+
+  /**
+   * composite score, decimal string
+   *
+   * @generated from field: string score = 5;
+   */
+  score: string;
+
+  /**
+   * decimal string
+   *
+   * @generated from field: string estimated_fee_usd = 6;
+   */
+  estimatedFeeUsd: string;
+
+  /**
+   * @generated from field: int32 estimated_settlement_seconds = 7;
+   */
+  estimatedSettlementSeconds: number;
+
+  /**
+   * @generated from field: settla.v1.ScoreBreakdown score_breakdown = 8;
+   */
+  scoreBreakdown?: ScoreBreakdown;
+};
+
+/**
+ * Describes the message settla.v1.RoutingOption.
+ * Use `create(RoutingOptionSchema)` to create a new message.
+ */
+export declare const RoutingOptionSchema: GenMessage<RoutingOption>;
+
+/**
+ * @generated from message settla.v1.GetRoutingOptionsRequest
+ */
+export declare type GetRoutingOptionsRequest = Message<"settla.v1.GetRoutingOptionsRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * source currency (ISO 4217 or stablecoin)
+   *
+   * @generated from field: string from_currency = 2;
+   */
+  fromCurrency: string;
+
+  /**
+   * dest currency
+   *
+   * @generated from field: string to_currency = 3;
+   */
+  toCurrency: string;
+
+  /**
+   * decimal string
+   *
+   * @generated from field: string amount = 4;
+   */
+  amount: string;
+};
+
+/**
+ * Describes the message settla.v1.GetRoutingOptionsRequest.
+ * Use `create(GetRoutingOptionsRequestSchema)` to create a new message.
+ */
+export declare const GetRoutingOptionsRequestSchema: GenMessage<GetRoutingOptionsRequest>;
+
+/**
+ * @generated from message settla.v1.GetRoutingOptionsResponse
+ */
+export declare type GetRoutingOptionsResponse = Message<"settla.v1.GetRoutingOptionsResponse"> & {
+  /**
+   * @generated from field: repeated settla.v1.RoutingOption routes = 1;
+   */
+  routes: RoutingOption[];
+
+  /**
+   * @generated from field: google.protobuf.Timestamp quoted_at = 2;
+   */
+  quotedAt?: Timestamp;
+
+  /**
+   * @generated from field: int32 valid_for_seconds = 3;
+   */
+  validForSeconds: number;
+};
+
+/**
+ * Describes the message settla.v1.GetRoutingOptionsResponse.
+ * Use `create(GetRoutingOptionsResponseSchema)` to create a new message.
+ */
+export declare const GetRoutingOptionsResponseSchema: GenMessage<GetRoutingOptionsResponse>;
+
+/**
  * TransferStatus mirrors the domain state machine.
  *
  * @generated from enum settla.v1.TransferStatus
@@ -1418,6 +1715,14 @@ export declare const SettlementService: GenService<{
     output: typeof GetTransferResponseSchema;
   },
   /**
+   * @generated from rpc settla.v1.SettlementService.GetTransferByExternalRef
+   */
+  getTransferByExternalRef: {
+    methodKind: "unary";
+    input: typeof GetTransferByExternalRefRequestSchema;
+    output: typeof GetTransferByExternalRefResponseSchema;
+  },
+  /**
    * @generated from rpc settla.v1.SettlementService.ListTransfers
    */
   listTransfers: {
@@ -1432,6 +1737,22 @@ export declare const SettlementService: GenService<{
     methodKind: "unary";
     input: typeof CancelTransferRequestSchema;
     output: typeof CancelTransferResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.SettlementService.ListTransferEvents
+   */
+  listTransferEvents: {
+    methodKind: "unary";
+    input: typeof ListTransferEventsRequestSchema;
+    output: typeof ListTransferEventsResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.SettlementService.GetRoutingOptions
+   */
+  getRoutingOptions: {
+    methodKind: "unary";
+    input: typeof GetRoutingOptionsRequestSchema;
+    output: typeof GetRoutingOptionsResponseSchema;
   },
 }>;
 
