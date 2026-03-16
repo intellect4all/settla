@@ -16,8 +16,11 @@ service SettlementService {
   rpc GetQuote(GetQuoteRequest) returns (GetQuoteResponse);
   rpc CreateTransfer(CreateTransferRequest) returns (CreateTransferResponse);
   rpc GetTransfer(GetTransferRequest) returns (GetTransferResponse);
+  rpc GetTransferByExternalRef(GetTransferByExternalRefRequest) returns (GetTransferByExternalRefResponse);
   rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
   rpc CancelTransfer(CancelTransferRequest) returns (CancelTransferResponse);
+  rpc ListTransferEvents(ListTransferEventsRequest) returns (ListTransferEventsResponse);
+  rpc GetRoutingOptions(GetRoutingOptionsRequest) returns (GetRoutingOptionsResponse);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -180,10 +183,21 @@ message GetTransferResponse {
   Transfer transfer = 1;
 }
 
+message GetTransferByExternalRefRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string external_ref = 2;
+}
+
+message GetTransferByExternalRefResponse {
+  Transfer transfer = 1;
+}
+
 message ListTransfersRequest {
   string tenant_id = 1;                       // UUID — required, tenant scope
   int32 page_size = 2;                        // Max results per page (default 50, max 1000)
   string page_token = 3;                      // Opaque token for cursor-based pagination
+  string status_filter = 4;                   // Optional — exact match on transfer status (e.g. "COMPLETED")
+  string search_query = 5;                    // Optional — substring match on id, external_ref, or idempotency_key
 }
 
 message ListTransfersResponse {
@@ -200,6 +214,25 @@ message CancelTransferRequest {
 
 message CancelTransferResponse {
   Transfer transfer = 1;
+}
+
+message TransferEvent {
+  string id = 1;
+  string transfer_id = 2;
+  string from_status = 3;
+  string to_status = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  string provider_ref = 6;
+  map<string, string> metadata = 7;
+}
+
+message ListTransferEventsRequest {
+  string tenant_id = 1;
+  string transfer_id = 2;
+}
+
+message ListTransferEventsResponse {
+  repeated TransferEvent events = 1;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -344,4 +377,39 @@ message GetTransactionsResponse {
   repeated EntryLine entries = 1;
   string next_page_token = 2;
   int32 total_count = 3;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Routing options messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+message ScoreBreakdown {
+  string cost = 1;        // 0-1 decimal
+  string speed = 2;       // 0-1 decimal
+  string liquidity = 3;   // 0-1 decimal
+  string reliability = 4; // 0-1 decimal
+}
+
+message RoutingOption {
+  string provider = 1;                    // on-ramp provider ID
+  string off_ramp_provider = 2;
+  string chain = 3;
+  string stablecoin = 4;
+  string score = 5;                       // composite score, decimal string
+  string estimated_fee_usd = 6;           // decimal string
+  int32 estimated_settlement_seconds = 7;
+  ScoreBreakdown score_breakdown = 8;
+}
+
+message GetRoutingOptionsRequest {
+  string tenant_id = 1;                   // UUID — required, tenant scope
+  string from_currency = 2;              // source currency (ISO 4217 or stablecoin)
+  string to_currency = 3;               // dest currency
+  string amount = 4;                     // decimal string
+}
+
+message GetRoutingOptionsResponse {
+  repeated RoutingOption routes = 1;
+  google.protobuf.Timestamp quoted_at = 2;
+  int32 valid_for_seconds = 3;
 }

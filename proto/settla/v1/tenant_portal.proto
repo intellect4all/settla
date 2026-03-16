@@ -134,7 +134,7 @@ message RevokeAPIKeyRequest {
 
 message RevokeAPIKeyResponse {
   // SHA-256 hex hash of the revoked key — returned so the gateway can
-  // immediately flush it from L1/L2 auth caches (SEC-2).
+  // immediately flush it from L1/L2 auth caches.
   string key_hash = 1;
 }
 
