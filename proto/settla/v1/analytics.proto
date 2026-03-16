@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+
+// AnalyticsService provides tenant-scoped analytics data.
+service AnalyticsService {
+    rpc GetTransferAnalytics(GetTransferAnalyticsRequest) returns (GetTransferAnalyticsResponse);
+    rpc GetFeeAnalytics(GetFeeAnalyticsRequest) returns (GetFeeAnalyticsResponse);
+    rpc GetProviderAnalytics(GetProviderAnalyticsRequest) returns (GetProviderAnalyticsResponse);
+    rpc GetReconciliationAnalytics(GetReconciliationAnalyticsRequest) returns (GetReconciliationAnalyticsResponse);
+    rpc GetDepositAnalytics(GetDepositAnalyticsRequest) returns (GetDepositAnalyticsResponse);
+    rpc CreateExportJob(CreateExportJobRequest) returns (CreateExportJobResponse);
+    rpc GetExportJob(GetExportJobRequest) returns (GetExportJobResponse);
+}
+
+// ── Transfer Analytics ──────────────────────────────────────────────────────
+
+message GetTransferAnalyticsRequest {
+    string tenant_id = 1;
+    string period = 2;  // "24h", "7d", "30d"
+    google.protobuf.Timestamp from = 3;
+    google.protobuf.Timestamp to = 4;
+}
+
+message TransferAnalyticsCorridor {
+    string source_currency = 1;
+    string dest_currency = 2;
+    int64 transfer_count = 3;
+    string volume_usd = 4;
+    string fees_usd = 5;
+    int64 completed = 6;
+    int64 failed = 7;
+    string success_rate = 8;
+    int32 avg_latency_ms = 9;
+}
+
+message TransferAnalyticsStatus {
+    string status = 1;
+    int64 count = 2;
+}
+
+message GetTransferAnalyticsResponse {
+    repeated TransferAnalyticsCorridor corridors = 1;
+    repeated TransferAnalyticsStatus statuses = 2;
+    int64 total_count = 3;
+    string total_volume_usd = 4;
+    string total_fees_usd = 5;
+    int64 sample_count = 6;
+    int32 p50_ms = 7;
+    int32 p90_ms = 8;
+    int32 p95_ms = 9;
+    int32 p99_ms = 10;
+}
+
+// ── Fee Analytics ───────────────────────────────────────────────────────────
+
+message GetFeeAnalyticsRequest {
+    string tenant_id = 1;
+    string period = 2;
+    google.protobuf.Timestamp from = 3;
+    google.protobuf.Timestamp to = 4;
+}
+
+message FeeAnalyticsEntry {
+    string source_currency = 1;
+    string dest_currency = 2;
+    int64 transfer_count = 3;
+    string volume_usd = 4;
+    string on_ramp_fees_usd = 5;
+    string off_ramp_fees_usd = 6;
+    string network_fees_usd = 7;
+    string total_fees_usd = 8;
+}
+
+message GetFeeAnalyticsResponse {
+    repeated FeeAnalyticsEntry entries = 1;
+    string total_fees_usd = 2;
+}
+
+// ── Provider Analytics ──────────────────────────────────────────────────────
+
+message GetProviderAnalyticsRequest {
+    string tenant_id = 1;
+    string period = 2;
+    google.protobuf.Timestamp from = 3;
+    google.protobuf.Timestamp to = 4;
+}
+
+message ProviderAnalyticsEntry {
+    string provider = 1;
+    string source_currency = 2;
+    string dest_currency = 3;
+    int64 transaction_count = 4;
+    int64 completed = 5;
+    int64 failed = 6;
+    string success_rate = 7;
+    int32 avg_settlement_ms = 8;
+    string total_volume = 9;
+}
+
+message GetProviderAnalyticsResponse {
+    repeated ProviderAnalyticsEntry providers = 1;
+}
+
+// ── Reconciliation Analytics ────────────────────────────────────────────────
+
+message GetReconciliationAnalyticsRequest {
+    string tenant_id = 1;
+}
+
+message GetReconciliationAnalyticsResponse {
+    int64 total_runs = 1;
+    int64 checks_passed = 2;
+    int64 checks_failed = 3;
+    string pass_rate = 4;
+    google.protobuf.Timestamp last_run_at = 5;
+    int64 needs_review_count = 6;
+}
+
+// ── Deposit Analytics ───────────────────────────────────────────────────────
+
+message GetDepositAnalyticsRequest {
+    string tenant_id = 1;
+    string period = 2;
+    google.protobuf.Timestamp from = 3;
+    google.protobuf.Timestamp to = 4;
+}
+
+message DepositAnalyticsData {
+    int64 total_sessions = 1;
+    int64 completed_sessions = 2;
+    int64 expired_sessions = 3;
+    int64 failed_sessions = 4;
+    string conversion_rate = 5;
+    string total_received = 6;
+    string total_fees = 7;
+    string total_net = 8;
+}
+
+message GetDepositAnalyticsResponse {
+    DepositAnalyticsData crypto = 1;
+    DepositAnalyticsData bank = 2;
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+message CreateExportJobRequest {
+    string tenant_id = 1;
+    string export_type = 2;  // "transfers", "fees", "providers", "deposits"
+    string period = 3;
+    google.protobuf.Timestamp from = 4;
+    google.protobuf.Timestamp to = 5;
+    string format = 6;  // "csv" (default), "json"
+}
+
+message CreateExportJobResponse {
+    AnalyticsExportJob job = 1;
+}
+
+message GetExportJobRequest {
+    string tenant_id = 1;
+    string job_id = 2;
+}
+
+message GetExportJobResponse {
+    AnalyticsExportJob job = 1;
+}
+
+message AnalyticsExportJob {
+    string id = 1;
+    string tenant_id = 2;
+    string status = 3;
+    string export_type = 4;
+    int64 row_count = 5;
+    string download_url = 6;
+    google.protobuf.Timestamp download_expires_at = 7;
+    string error_message = 8;
+    google.protobuf.Timestamp created_at = 9;
+    google.protobuf.Timestamp completed_at = 10;
+}

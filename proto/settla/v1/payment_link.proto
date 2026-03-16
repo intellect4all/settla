@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+import "settla/v1/deposit.proto";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PaymentLinkService — payment link CRUD and redemption
+// ──────────────────────────────────────────────────────────────────────────────
+
+service PaymentLinkService {
+  // CreatePaymentLink creates a new shareable payment link.
+  rpc CreatePaymentLink(CreatePaymentLinkRequest) returns (CreatePaymentLinkResponse);
+
+  // GetPaymentLink retrieves a payment link by ID (authenticated, tenant-scoped).
+  rpc GetPaymentLink(GetPaymentLinkRequest) returns (GetPaymentLinkResponse);
+
+  // ListPaymentLinks lists payment links for a tenant with pagination.
+  rpc ListPaymentLinks(ListPaymentLinksRequest) returns (ListPaymentLinksResponse);
+
+  // ResolvePaymentLink resolves a payment link by short code (public, no auth).
+  rpc ResolvePaymentLink(ResolvePaymentLinkRequest) returns (ResolvePaymentLinkResponse);
+
+  // RedeemPaymentLink creates a deposit session from a payment link (public, no auth).
+  rpc RedeemPaymentLink(RedeemPaymentLinkRequest) returns (RedeemPaymentLinkResponse);
+
+  // DisablePaymentLink disables a payment link (authenticated, tenant-scoped).
+  rpc DisablePaymentLink(DisablePaymentLinkRequest) returns (DisablePaymentLinkResponse);
+}
+
+// ── Messages ─────────────────────────────────────────────────────────────────
+
+message PaymentLink {
+  string id = 1;                          // UUID
+  string tenant_id = 2;                  // UUID
+  string short_code = 3;
+  string description = 4;
+  string redirect_url = 5;
+  string status = 6;                     // ACTIVE, EXPIRED, DISABLED
+  PaymentLinkSessionConfig session_config = 7;
+  int32 use_limit = 8;                   // 0 = unlimited
+  bool has_use_limit = 9;
+  int32 use_count = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  bool has_expires_at = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  string url = 15;                       // Constructed payment URL
+}
+
+message PaymentLinkSessionConfig {
+  string amount = 1;                     // decimal string
+  string currency = 2;
+  string chain = 3;
+  string token = 4;
+  string settlement_pref = 5;           // AUTO_CONVERT, HOLD, THRESHOLD
+  int32 ttl_seconds = 6;
+}
+
+// ── Request/Response ─────────────────────────────────────────────────────────
+
+message CreatePaymentLinkRequest {
+  string tenant_id = 1;
+  string description = 2;
+  string redirect_url = 3;
+  int32 use_limit = 4;                  // 0 = unlimited
+  int64 expires_at_unix = 5;            // Unix timestamp, 0 = never
+  string amount = 6;                    // decimal string
+  string currency = 7;
+  string chain = 8;
+  string token = 9;
+  string settlement_pref = 10;         // optional
+  int32 ttl_seconds = 11;              // optional
+}
+
+message CreatePaymentLinkResponse {
+  PaymentLink link = 1;
+}
+
+message GetPaymentLinkRequest {
+  string tenant_id = 1;
+  string link_id = 2;                  // UUID
+}
+
+message GetPaymentLinkResponse {
+  PaymentLink link = 1;
+}
+
+message ListPaymentLinksRequest {
+  string tenant_id = 1;
+  int32 limit = 2;                     // max 100, default 20
+  int32 offset = 3;
+}
+
+message ListPaymentLinksResponse {
+  repeated PaymentLink links = 1;
+  int64 total = 2;
+}
+
+message ResolvePaymentLinkRequest {
+  string short_code = 1;
+}
+
+message ResolvePaymentLinkResponse {
+  PaymentLink link = 1;
+}
+
+message RedeemPaymentLinkRequest {
+  string short_code = 1;
+}
+
+message RedeemPaymentLinkResponse {
+  DepositSession session = 1;
+  PaymentLink link = 2;
+}
+
+message DisablePaymentLinkRequest {
+  string tenant_id = 1;
+  string link_id = 2;                 // UUID
+}
+
+message DisablePaymentLinkResponse {}
