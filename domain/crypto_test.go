@@ -37,6 +37,15 @@ func (m *inMemoryKeyManager) GetDEK(tenantID uuid.UUID) ([]byte, error) {
 	return dek, nil
 }
 
+func (m *inMemoryKeyManager) GetDEKVersion(tenantID uuid.UUID, _ int) ([]byte, error) {
+	// In-memory test helper: all versions return the same key.
+	return m.GetDEK(tenantID)
+}
+
+func (m *inMemoryKeyManager) CurrentKeyVersion(_ uuid.UUID) (int, error) {
+	return 1, nil
+}
+
 func (m *inMemoryKeyManager) DeleteDEK(tenantID uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

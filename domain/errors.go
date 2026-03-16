@@ -28,6 +28,19 @@ func (e *DomainError) Unwrap() error {
 	return e.err
 }
 
+// IsRetriable returns true if the error represents a transient condition that
+// may resolve on retry. Workers use this to decide whether to NAK (retry) or
+// ACK (permanent failure) an event.
+func (e *DomainError) IsRetriable() bool {
+	switch e.code {
+	case CodeProviderError, CodeProviderUnavailable, CodeNetworkError,
+		CodeReservationLockTimeout, CodeOptimisticLock, CodeRateLimitExceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Error code constants.
 const (
 	CodeQuoteExpired        = "QUOTE_EXPIRED"
@@ -46,7 +59,9 @@ const (
 	CodeTenantNotFound      = "TENANT_NOT_FOUND"
 	CodeDailyLimitExceeded  = "DAILY_LIMIT_EXCEEDED"
 	CodeUnauthorized        = "UNAUTHORIZED"
-	CodeReservationFailed   = "RESERVATION_FAILED"
+	CodeReservationFailed           = "RESERVATION_FAILED"            // Deprecated: use CodeReservationLockTimeout or CodeReservationInsufficientFunds
+	CodeReservationLockTimeout      = "RESERVATION_LOCK_TIMEOUT"      // retryable — temporary lock contention
+	CodeReservationInsufficientFunds = "RESERVATION_INSUFFICIENT_FUNDS" // NOT retryable — insufficient treasury balance
 	CodeCurrencyMismatch    = "CURRENCY_MISMATCH"
 	CodeAccountNotFound     = "ACCOUNT_NOT_FOUND"
 	CodeTransferNotFound      = "TRANSFER_NOT_FOUND"
@@ -55,6 +70,25 @@ const (
 	CodeBlockchainReorg       = "BLOCKCHAIN_REORG"
 	CodeCompensationFailed    = "COMPENSATION_FAILED"
 	CodeRateLimitExceeded     = "RATE_LIMIT_EXCEEDED"
+	CodeEmailAlreadyExists  = "EMAIL_ALREADY_EXISTS"
+	CodeInvalidCredentials  = "INVALID_CREDENTIALS"
+	CodeEmailNotVerified    = "EMAIL_NOT_VERIFIED"
+	CodeTokenExpired        = "TOKEN_EXPIRED"
+	CodeSlugConflict        = "SLUG_CONFLICT"
+	CodeDepositNotFound     = "DEPOSIT_NOT_FOUND"
+	CodeDepositExpired      = "DEPOSIT_EXPIRED"
+	CodeCryptoDisabled      = "CRYPTO_DISABLED"
+	CodeChainNotSupported   = "CHAIN_NOT_SUPPORTED"
+	CodeAddressPoolEmpty        = "ADDRESS_POOL_EMPTY"
+	CodeBankDepositsDisabled    = "BANK_DEPOSITS_DISABLED"
+	CodeCurrencyNotSupported    = "CURRENCY_NOT_SUPPORTED"
+	CodeVirtualAccountPoolEmpty = "VIRTUAL_ACCOUNT_POOL_EMPTY"
+	CodeBankDepositNotFound     = "BANK_DEPOSIT_NOT_FOUND"
+	CodePaymentMismatch         = "PAYMENT_MISMATCH"
+	CodePaymentLinkNotFound     = "PAYMENT_LINK_NOT_FOUND"
+	CodePaymentLinkExpired      = "PAYMENT_LINK_EXPIRED"
+	CodePaymentLinkExhausted    = "PAYMENT_LINK_EXHAUSTED"
+	CodePaymentLinkDisabled     = "PAYMENT_LINK_DISABLED"
 )
 
 // ErrQuoteExpired creates a domain error for an expired quote.
@@ -138,8 +172,22 @@ func ErrUnauthorized(reason string) *DomainError {
 }
 
 // ErrReservationFailed creates a domain error for a failed treasury reservation.
+// Deprecated: use ErrReservationLockTimeout or ErrReservationInsufficientFunds for
+// more precise retriability semantics.
 func ErrReservationFailed(reason string) *DomainError {
 	return &DomainError{code: CodeReservationFailed, message: fmt.Sprintf("settla-domain: reservation failed: %s", reason)}
+}
+
+// ErrReservationLockTimeout creates a retryable domain error for temporary lock
+// contention on a treasury position. Workers should NAK and retry.
+func ErrReservationLockTimeout(currency, location string) *DomainError {
+	return &DomainError{code: CodeReservationLockTimeout, message: fmt.Sprintf("settla-domain: reservation lock timeout for %s at %s", currency, location)}
+}
+
+// ErrReservationInsufficientFunds creates a non-retryable domain error when a
+// treasury position does not have enough available balance to cover the reservation.
+func ErrReservationInsufficientFunds(currency, location string) *DomainError {
+	return &DomainError{code: CodeReservationInsufficientFunds, message: fmt.Sprintf("settla-domain: insufficient treasury balance for %s at %s", currency, location)}
 }
 
 // ErrCurrencyMismatch creates a domain error for a currency mismatch.
@@ -180,4 +228,99 @@ func ErrCompensationFailed(transferID string, err error) *DomainError {
 // ErrRateLimitExceeded creates a domain error when a tenant exceeds their rate limit.
 func ErrRateLimitExceeded(tenantID string) *DomainError {
 	return &DomainError{code: CodeRateLimitExceeded, message: fmt.Sprintf("settla-domain: rate limit exceeded for tenant %s", tenantID)}
+}
+
+// ErrEmailAlreadyExists creates a domain error for a duplicate email registration.
+func ErrEmailAlreadyExists(email string) *DomainError {
+	return &DomainError{code: CodeEmailAlreadyExists, message: fmt.Sprintf("settla-domain: email %s is already registered", email)}
+}
+
+// ErrInvalidCredentials creates a domain error for failed authentication.
+func ErrInvalidCredentials() *DomainError {
+	return &DomainError{code: CodeInvalidCredentials, message: "settla-domain: invalid email or password"}
+}
+
+// ErrEmailNotVerified creates a domain error when login is attempted with unverified email.
+func ErrEmailNotVerified(email string) *DomainError {
+	return &DomainError{code: CodeEmailNotVerified, message: fmt.Sprintf("settla-domain: email %s is not verified", email)}
+}
+
+// ErrTokenExpired creates a domain error for an expired verification token.
+func ErrTokenExpired() *DomainError {
+	return &DomainError{code: CodeTokenExpired, message: "settla-domain: verification token has expired"}
+}
+
+// ErrSlugConflict creates a domain error when a generated slug already exists.
+func ErrSlugConflict(slug string) *DomainError {
+	return &DomainError{code: CodeSlugConflict, message: fmt.Sprintf("settla-domain: slug %s is already taken", slug)}
+}
+
+// ErrDepositNotFound creates a domain error for a missing deposit session.
+func ErrDepositNotFound(sessionID string) *DomainError {
+	return &DomainError{code: CodeDepositNotFound, message: fmt.Sprintf("settla-domain: deposit session %s not found", sessionID)}
+}
+
+// ErrDepositExpired creates a domain error for an expired deposit session.
+func ErrDepositExpired(sessionID string) *DomainError {
+	return &DomainError{code: CodeDepositExpired, message: fmt.Sprintf("settla-domain: deposit session %s has expired", sessionID)}
+}
+
+// ErrCryptoDisabled creates a domain error when crypto is not enabled for a tenant.
+func ErrCryptoDisabled(tenantID string) *DomainError {
+	return &DomainError{code: CodeCryptoDisabled, message: fmt.Sprintf("settla-domain: crypto deposits not enabled for tenant %s", tenantID)}
+}
+
+// ErrChainNotSupported creates a domain error when a chain is not supported by a tenant.
+func ErrChainNotSupported(chain, tenantID string) *DomainError {
+	return &DomainError{code: CodeChainNotSupported, message: fmt.Sprintf("settla-domain: chain %s not supported for tenant %s", chain, tenantID)}
+}
+
+// ErrAddressPoolEmpty creates a domain error when no addresses are available in the pool.
+func ErrAddressPoolEmpty(chain, tenantID string) *DomainError {
+	return &DomainError{code: CodeAddressPoolEmpty, message: fmt.Sprintf("settla-domain: no available addresses for chain %s tenant %s", chain, tenantID)}
+}
+
+// ErrBankDepositsDisabled creates a domain error when bank deposits are not enabled for a tenant.
+func ErrBankDepositsDisabled(tenantID string) *DomainError {
+	return &DomainError{code: CodeBankDepositsDisabled, message: fmt.Sprintf("settla-domain: bank deposits not enabled for tenant %s", tenantID)}
+}
+
+// ErrCurrencyNotSupported creates a domain error when a currency is not supported by a tenant or partner.
+func ErrCurrencyNotSupported(currency, tenantID string) *DomainError {
+	return &DomainError{code: CodeCurrencyNotSupported, message: fmt.Sprintf("settla-domain: currency %s not supported for tenant %s", currency, tenantID)}
+}
+
+// ErrVirtualAccountPoolEmpty creates a domain error when no virtual accounts are available in the pool.
+func ErrVirtualAccountPoolEmpty(currency, tenantID string) *DomainError {
+	return &DomainError{code: CodeVirtualAccountPoolEmpty, message: fmt.Sprintf("settla-domain: no available virtual accounts for currency %s tenant %s", currency, tenantID)}
+}
+
+// ErrBankDepositNotFound creates a domain error for a missing bank deposit session.
+func ErrBankDepositNotFound(sessionID string) *DomainError {
+	return &DomainError{code: CodeBankDepositNotFound, message: fmt.Sprintf("settla-domain: bank deposit session %s not found", sessionID)}
+}
+
+// ErrPaymentLinkNotFound creates a domain error for a missing payment link.
+func ErrPaymentLinkNotFound(linkID string) *DomainError {
+	return &DomainError{code: CodePaymentLinkNotFound, message: fmt.Sprintf("settla-domain: payment link %s not found", linkID)}
+}
+
+// ErrPaymentLinkExpired creates a domain error for an expired payment link.
+func ErrPaymentLinkExpired(linkID string) *DomainError {
+	return &DomainError{code: CodePaymentLinkExpired, message: fmt.Sprintf("settla-domain: payment link %s has expired", linkID)}
+}
+
+// ErrPaymentLinkExhausted creates a domain error when a payment link has reached its use limit.
+func ErrPaymentLinkExhausted(linkID string) *DomainError {
+	return &DomainError{code: CodePaymentLinkExhausted, message: fmt.Sprintf("settla-domain: payment link %s has reached its use limit", linkID)}
+}
+
+// ErrPaymentLinkDisabled creates a domain error for a disabled payment link.
+func ErrPaymentLinkDisabled(linkID string) *DomainError {
+	return &DomainError{code: CodePaymentLinkDisabled, message: fmt.Sprintf("settla-domain: payment link %s is disabled", linkID)}
+}
+
+// ErrPaymentMismatch creates a domain error when the received amount does not match the expected amount.
+func ErrPaymentMismatch(sessionID, expected, received string) *DomainError {
+	return &DomainError{code: CodePaymentMismatch, message: fmt.Sprintf("settla-domain: payment mismatch for session %s: expected %s, received %s", sessionID, expected, received)}
 }

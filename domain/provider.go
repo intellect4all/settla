@@ -44,10 +44,11 @@ type ProviderTx struct {
 
 // OnRampRequest is the input for executing an on-ramp (fiat→stablecoin) transaction.
 type OnRampRequest struct {
-	Amount       decimal.Decimal
-	FromCurrency Currency
-	ToCurrency   Currency
-	Reference    string
+	Amount         decimal.Decimal
+	FromCurrency   Currency
+	ToCurrency     Currency
+	Reference      string
+	IdempotencyKey string // prevents double-execution on retry; scoped per provider+tenant
 	// QuotedRate is the FX rate presented to the user at quote time. When set,
 	// the provider must reject execution if the live rate has moved more than
 	// the configured slippage tolerance (default 2%).
@@ -56,11 +57,12 @@ type OnRampRequest struct {
 
 // OffRampRequest is the input for executing an off-ramp (stablecoin→fiat) transaction.
 type OffRampRequest struct {
-	Amount       decimal.Decimal
-	FromCurrency Currency
-	ToCurrency   Currency
-	Recipient    Recipient
-	Reference    string
+	Amount         decimal.Decimal
+	FromCurrency   Currency
+	ToCurrency     Currency
+	Recipient      Recipient
+	Reference      string
+	IdempotencyKey string // prevents double-execution on retry; scoped per provider+tenant
 	// QuotedRate is the FX rate presented to the user at quote time. When set,
 	// the provider must reject execution if the live rate has moved more than
 	// the configured slippage tolerance (default 2%).
@@ -183,6 +185,15 @@ type RouteRequest struct {
 	Amount         decimal.Decimal
 }
 
+// ScoreBreakdown contains the individual component scores that make up the
+// composite route score. Each component is normalized to [0, 1].
+type ScoreBreakdown struct {
+	Cost        decimal.Decimal `json:"cost"`
+	Speed       decimal.Decimal `json:"speed"`
+	Liquidity   decimal.Decimal `json:"liquidity"`
+	Reliability decimal.Decimal `json:"reliability"`
+}
+
 // RouteAlternative represents a fallback route that can be tried if the primary
 // route's provider fails. Alternatives travel in the outbox payload so the
 // worker can retry without round-tripping back through the engine.
@@ -195,6 +206,7 @@ type RouteAlternative struct {
 	Rate            decimal.Decimal `json:"rate"`
 	StableAmount    decimal.Decimal `json:"stable_amount"`
 	Score           decimal.Decimal `json:"score"`
+	ScoreBreakdown  ScoreBreakdown  `json:"score_breakdown"`
 }
 
 // RouteResult is the router's decision.
@@ -208,5 +220,7 @@ type RouteResult struct {
 	StableAmount     decimal.Decimal        // intermediate stablecoin amount (e.g., USDT on-chain)
 	ExplorerURL      string                 // block explorer base URL for the chain (testnet)
 	EstimatedSeconds int                    // total estimated settlement time (on-ramp + off-ramp)
+	Score            decimal.Decimal        // composite score of the primary route
+	ScoreBreakdown   ScoreBreakdown         // individual score components of the primary route
 	Alternatives     []RouteAlternative     // fallback routes, ordered by score descending
 }

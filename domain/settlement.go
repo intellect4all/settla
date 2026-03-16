@@ -18,9 +18,10 @@ type NetSettlement struct {
 	NetByCurrency []CurrencyNet           `json:"net_by_currency"`
 	TotalFeesUSD  decimal.Decimal         `json:"total_fees_usd"`
 	Instructions  []SettlementInstruction `json:"instructions"`
-	Status        string                  `json:"status"`   // "pending", "approved", "settled", "overdue"
-	DueDate       *time.Time              `json:"due_date"` // when payment is expected
-	CreatedAt     time.Time               `json:"created_at"`
+	FeeScheduleSnapshot *FeeSchedule           `json:"fee_schedule_snapshot,omitempty"` // tenant fee schedule at time of calculation, for audit trail
+	Status              string                  `json:"status"`                          // "pending", "approved", "settled", "overdue"
+	DueDate             *time.Time              `json:"due_date"`                        // when payment is expected
+	CreatedAt           time.Time               `json:"created_at"`
 }
 
 // CorridorPosition aggregates transfer volume for a single corridor (e.g., GBP->NGN).

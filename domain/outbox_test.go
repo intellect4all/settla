@@ -13,7 +13,10 @@ func TestNewOutboxEvent(t *testing.T) {
 	tenantID := uuid.New()
 	payload := []byte(`{"transfer_id":"abc"}`)
 
-	entry := NewOutboxEvent("transfer", aggregateID, tenantID, EventTransferCreated, payload)
+	entry, err := NewOutboxEvent("transfer", aggregateID, tenantID, EventTransferCreated, payload)
+	if err != nil {
+		t.Fatalf("NewOutboxEvent returned unexpected error: %v", err)
+	}
 
 	if entry.IsIntent {
 		t.Error("expected IsIntent=false for event")
@@ -55,7 +58,10 @@ func TestNewOutboxIntent(t *testing.T) {
 	tenantID := uuid.New()
 	payload := []byte(`{"amount":"100.00"}`)
 
-	entry := NewOutboxIntent("transfer", aggregateID, tenantID, IntentTreasuryReserve, payload)
+	entry, err := NewOutboxIntent("transfer", aggregateID, tenantID, IntentTreasuryReserve, payload)
+	if err != nil {
+		t.Fatalf("NewOutboxIntent returned unexpected error: %v", err)
+	}
 
 	if !entry.IsIntent {
 		t.Error("expected IsIntent=true for intent")

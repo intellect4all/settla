@@ -29,11 +29,11 @@ const (
 // Event is the envelope for all domain events published via NATS JetStream.
 // Events are partitioned by tenant hash: settla.transfer.partition.{N}.{event_type}
 type Event struct {
-	ID        uuid.UUID
-	TenantID  uuid.UUID
-	Type      string
-	Timestamp time.Time
-	Data      any
+	ID        uuid.UUID `json:"id"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+	Data      any       `json:"data,omitempty"`
 }
 
 // EventPublisher emits domain events for async processing by Settla Node.
