@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// BankDepositService — bank deposit session lifecycle
+// ──────────────────────────────────────────────────────────────────────────────
+
+service BankDepositService {
+  // CreateBankDepositSession creates a new bank deposit session with a virtual account.
+  rpc CreateBankDepositSession(CreateBankDepositSessionRequest) returns (CreateBankDepositSessionResponse);
+
+  // GetBankDepositSession retrieves a bank deposit session by ID.
+  rpc GetBankDepositSession(GetBankDepositSessionRequest) returns (GetBankDepositSessionResponse);
+
+  // ListBankDepositSessions lists bank deposit sessions for a tenant with pagination.
+  rpc ListBankDepositSessions(ListBankDepositSessionsRequest) returns (ListBankDepositSessionsResponse);
+
+  // CancelBankDepositSession cancels a pending bank deposit session.
+  rpc CancelBankDepositSession(CancelBankDepositSessionRequest) returns (CancelBankDepositSessionResponse);
+
+  // ListVirtualAccounts lists virtual accounts assigned to a tenant.
+  rpc ListVirtualAccounts(ListVirtualAccountsRequest) returns (ListVirtualAccountsResponse);
+
+  // GetBankingPartner retrieves a banking partner's configuration (for webhook signature verification).
+  rpc GetBankingPartner(GetBankingPartnerRequest) returns (GetBankingPartnerResponse);
+}
+
+// ── Messages ─────────────────────────────────────────────────────────────────
+
+message BankDepositSession {
+  string id = 1;                          // UUID
+  string tenant_id = 2;                  // UUID
+  string status = 3;                     // PENDING_PAYMENT, PAYMENT_RECEIVED, CREDITING, etc.
+  string banking_partner_id = 4;         // e.g. "modulr", "railsr"
+  string account_number = 5;             // virtual account number
+  string account_name = 6;               // name on the virtual account
+  string sort_code = 7;                  // UK sort code or routing number
+  string iban = 8;                       // International Bank Account Number
+  string account_type = 9;              // PERMANENT or TEMPORARY
+  string currency = 10;                  // e.g. "GBP", "EUR"
+  string expected_amount = 11;           // decimal string
+  string min_amount = 12;               // decimal string — minimum acceptable
+  string max_amount = 13;               // decimal string — maximum acceptable
+  string received_amount = 14;           // decimal string — actual received
+  string fee_amount = 15;               // decimal string
+  string net_amount = 16;               // decimal string
+  string mismatch_policy = 17;          // ACCEPT, REJECT
+  int32  collection_fee_bps = 18;
+  string settlement_pref = 19;          // AUTO_CONVERT, HOLD, THRESHOLD
+  string idempotency_key = 20;
+  string payer_name = 21;
+  string payer_reference = 22;
+  string bank_reference = 23;
+  google.protobuf.Timestamp expires_at = 24;
+  google.protobuf.Timestamp created_at = 25;
+  google.protobuf.Timestamp updated_at = 26;
+  google.protobuf.Timestamp payment_received_at = 27;
+  google.protobuf.Timestamp credited_at = 28;
+  google.protobuf.Timestamp settled_at = 29;
+  google.protobuf.Timestamp expired_at = 30;
+  google.protobuf.Timestamp failed_at = 31;
+  string failure_reason = 32;
+  string failure_code = 33;
+  repeated BankDepositTransaction transactions = 34;
+}
+
+message BankDepositTransaction {
+  string id = 1;                          // UUID
+  string session_id = 2;                 // UUID
+  string bank_reference = 3;
+  string payer_name = 4;
+  string payer_account_number = 5;
+  string amount = 6;                     // decimal string
+  string currency = 7;
+  google.protobuf.Timestamp received_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message VirtualAccount {
+  string id = 1;                          // UUID
+  string tenant_id = 2;                  // UUID
+  string banking_partner_id = 3;
+  string account_number = 4;
+  string account_name = 5;
+  string sort_code = 6;
+  string iban = 7;
+  string currency = 8;
+  string account_type = 9;              // PERMANENT or TEMPORARY
+  bool   available = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+// ── Request/Response ─────────────────────────────────────────────────────────
+
+message CreateBankDepositSessionRequest {
+  string tenant_id = 1;                  // Set by gateway from auth context
+  string currency = 2;                   // e.g. "GBP"
+  string banking_partner_id = 3;        // optional, uses tenant default
+  string account_type = 4;             // PERMANENT or TEMPORARY (default: TEMPORARY)
+  string expected_amount = 5;            // decimal string
+  string min_amount = 6;                // optional — defaults to expected_amount
+  string max_amount = 7;                // optional — defaults to expected_amount
+  string mismatch_policy = 8;          // ACCEPT, REJECT (optional, uses tenant default)
+  string settlement_pref = 9;          // AUTO_CONVERT, HOLD (optional, uses tenant default)
+  string idempotency_key = 10;
+  int32  ttl_seconds = 11;             // optional, 0 = use tenant default
+}
+
+message CreateBankDepositSessionResponse {
+  BankDepositSession session = 1;
+}
+
+message GetBankDepositSessionRequest {
+  string tenant_id = 1;
+  string session_id = 2;                // UUID
+}
+
+message GetBankDepositSessionResponse {
+  BankDepositSession session = 1;
+}
+
+message ListBankDepositSessionsRequest {
+  string tenant_id = 1;
+  int32  limit = 2;                     // max 100, default 20
+  int32  offset = 3;
+}
+
+message ListBankDepositSessionsResponse {
+  repeated BankDepositSession sessions = 1;
+  int32 total = 2;
+}
+
+message CancelBankDepositSessionRequest {
+  string tenant_id = 1;
+  string session_id = 2;               // UUID
+}
+
+message CancelBankDepositSessionResponse {
+  BankDepositSession session = 1;
+}
+
+message ListVirtualAccountsRequest {
+  string tenant_id = 1;
+  string currency = 2;                  // optional filter
+  string account_type = 3;             // optional filter: PERMANENT, TEMPORARY
+  int32  limit = 4;                     // max 100, default 20
+  int32  offset = 5;
+}
+
+message ListVirtualAccountsResponse {
+  repeated VirtualAccount accounts = 1;
+  int32 total = 2;
+}
+
+message GetBankingPartnerRequest {
+  string partner_id = 1;             // UUID of the banking partner
+}
+
+message GetBankingPartnerResponse {
+  string id = 1;
+  string name = 2;
+  string webhook_secret = 3;
+  repeated string supported_currencies = 4;
+  bool is_active = 5;
+}

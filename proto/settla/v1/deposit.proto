@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package settla.v1;
+
+option go_package = "github.com/intellect4all/settla/gen/settla/v1;settlav1";
+
+import "google/protobuf/timestamp.proto";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DepositService — crypto deposit session lifecycle
+// ──────────────────────────────────────────────────────────────────────────────
+
+service DepositService {
+  // CreateDepositSession creates a new crypto deposit session with a unique address.
+  rpc CreateDepositSession(CreateDepositSessionRequest) returns (CreateDepositSessionResponse);
+
+  // GetDepositSession retrieves a deposit session by ID.
+  rpc GetDepositSession(GetDepositSessionRequest) returns (GetDepositSessionResponse);
+
+  // ListDepositSessions lists deposit sessions for a tenant with pagination.
+  rpc ListDepositSessions(ListDepositSessionsRequest) returns (ListDepositSessionsResponse);
+
+  // CancelDepositSession cancels a pending deposit session.
+  rpc CancelDepositSession(CancelDepositSessionRequest) returns (CancelDepositSessionResponse);
+
+  // GetDepositSessionByTxHash looks up a deposit session by on-chain transaction hash.
+  rpc GetDepositSessionByTxHash(GetDepositSessionByTxHashRequest) returns (GetDepositSessionByTxHashResponse);
+
+  // GetDepositSessionPublicStatus retrieves public-safe fields of a deposit session by ID.
+  // No tenant_id required — used for customer-facing payment status pages.
+  rpc GetDepositSessionPublicStatus(GetDepositSessionPublicStatusRequest) returns (GetDepositSessionPublicStatusResponse);
+}
+
+// ── Messages ─────────────────────────────────────────────────────────────────
+
+message DepositSession {
+  string id = 1;                    // UUID
+  string tenant_id = 2;            // UUID
+  string status = 3;               // PENDING_PAYMENT, DETECTED, CONFIRMED, etc.
+  string chain = 4;                // e.g. "tron"
+  string token = 5;                // e.g. "USDT"
+  string deposit_address = 6;      // on-chain deposit address
+  string expected_amount = 7;      // decimal string
+  string received_amount = 8;      // decimal string
+  string currency = 9;             // e.g. "USDT"
+  int32  collection_fee_bps = 10;
+  string fee_amount = 11;          // decimal string
+  string net_amount = 12;          // decimal string
+  string settlement_pref = 13;     // AUTO_CONVERT, HOLD, THRESHOLD
+  string idempotency_key = 14;
+  google.protobuf.Timestamp expires_at = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+  google.protobuf.Timestamp detected_at = 18;
+  google.protobuf.Timestamp confirmed_at = 19;
+  google.protobuf.Timestamp credited_at = 20;
+  google.protobuf.Timestamp settled_at = 21;
+  google.protobuf.Timestamp expired_at = 22;
+  google.protobuf.Timestamp failed_at = 23;
+  string failure_reason = 24;
+  string failure_code = 25;
+  repeated DepositTransaction transactions = 26;
+}
+
+message DepositTransaction {
+  string id = 1;                   // UUID
+  string session_id = 2;          // UUID
+  string chain = 3;
+  string tx_hash = 4;
+  string from_address = 5;
+  string to_address = 6;
+  string token_contract = 7;
+  string amount = 8;              // decimal string
+  int64  block_number = 9;
+  string block_hash = 10;
+  int32  confirmations = 11;
+  int32  required_confirm = 12;
+  bool   confirmed = 13;
+  google.protobuf.Timestamp detected_at = 14;
+  google.protobuf.Timestamp confirmed_at = 15;
+  google.protobuf.Timestamp created_at = 16;
+}
+
+// ── Request/Response ─────────────────────────────────────────────────────────
+
+message CreateDepositSessionRequest {
+  string tenant_id = 1;           // Set by gateway from auth context
+  string chain = 2;               // e.g. "tron"
+  string token = 3;               // e.g. "USDT"
+  string expected_amount = 4;     // decimal string
+  string currency = 5;            // e.g. "USDT"
+  string settlement_pref = 6;    // AUTO_CONVERT, HOLD (optional, uses tenant default)
+  string idempotency_key = 7;
+  int32  ttl_seconds = 8;        // optional, 0 = use tenant default
+}
+
+message CreateDepositSessionResponse {
+  DepositSession session = 1;
+}
+
+message GetDepositSessionRequest {
+  string tenant_id = 1;
+  string session_id = 2;         // UUID
+}
+
+message GetDepositSessionResponse {
+  DepositSession session = 1;
+}
+
+message ListDepositSessionsRequest {
+  string tenant_id = 1;
+  int32  limit = 2;              // max 100, default 20
+  int32  offset = 3;
+}
+
+message ListDepositSessionsResponse {
+  repeated DepositSession sessions = 1;
+  int32 total = 2;
+}
+
+message CancelDepositSessionRequest {
+  string tenant_id = 1;
+  string session_id = 2;        // UUID
+}
+
+message CancelDepositSessionResponse {
+  DepositSession session = 1;
+}
+
+message GetDepositSessionByTxHashRequest {
+  string tenant_id = 1;
+  string tx_hash = 2;
+  string chain = 3;
+}
+
+message GetDepositSessionByTxHashResponse {
+  DepositSession session = 1;
+}
+
+message GetDepositSessionPublicStatusRequest {
+  string session_id = 1;          // UUID
+}
+
+message GetDepositSessionPublicStatusResponse {
+  string id = 1;                   // UUID
+  string status = 2;
+  string chain = 3;
+  string token = 4;
+  string deposit_address = 5;
+  string expected_amount = 6;      // decimal string
+  string received_amount = 7;      // decimal string
+  google.protobuf.Timestamp expires_at = 8;
+}
