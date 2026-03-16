@@ -4,10 +4,10 @@ INSERT INTO transfers (
     source_currency, source_amount, dest_currency, dest_amount,
     stable_coin, stable_amount, chain, fx_rate, fees,
     sender, recipient, quote_id,
-    on_ramp_provider_id, off_ramp_provider_id
+    on_ramp_provider_id, off_ramp_provider_id, pii_encryption_version
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18
+    $17, $18, $19
 ) RETURNING *;
 
 -- name: GetTransfer :one
@@ -21,12 +21,13 @@ WHERE id = $1;
 -- name: GetTransferByIdempotencyKey :one
 SELECT * FROM transfers
 WHERE tenant_id = $1 AND idempotency_key = $2
-  AND created_at >= now() - INTERVAL '24 hours'
+  AND created_at >= now() - INTERVAL '72 hours'
 LIMIT 1;
 
 -- name: GetTransferByExternalRef :one
 SELECT * FROM transfers
 WHERE tenant_id = $1 AND external_ref = $2
+  AND created_at >= now() - INTERVAL '90 days'
 LIMIT 1;
 
 -- name: ListTransfersByTenant :many
@@ -35,11 +36,30 @@ WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListTransfersByTenantCursor :many
+-- Cursor-based pagination: pass the created_at of the last item from the
+-- previous page as $2 (or a far-future timestamp for the first page).
+-- This avoids OFFSET which degrades at high page numbers (50M rows/day).
+SELECT * FROM transfers
+WHERE tenant_id = $1
+  AND created_at < $2
+ORDER BY created_at DESC
+LIMIT $3;
+
 -- name: ListTransfersByStatus :many
 SELECT * FROM transfers
 WHERE tenant_id = $1 AND status = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4;
+
+-- name: ListTransfersByStatusCursor :many
+-- Cursor-based pagination: pass the created_at of the last item from the
+-- previous page as $3 (or a far-future timestamp for the first page).
+SELECT * FROM transfers
+WHERE tenant_id = $1 AND status = $2
+  AND created_at < $3
+ORDER BY created_at DESC
+LIMIT $4;
 
 -- name: ListTransfersInDateRange :many
 SELECT * FROM transfers
@@ -48,6 +68,17 @@ WHERE tenant_id = $1
   AND created_at < $3
 ORDER BY created_at DESC
 LIMIT $4 OFFSET $5;
+
+-- name: ListTransfersInDateRangeCursor :many
+-- Cursor-based pagination within a date range: pass the created_at of the
+-- last item from the previous page as $4 (must be >= $2 and < $3).
+SELECT * FROM transfers
+WHERE tenant_id = $1
+  AND created_at >= $2
+  AND created_at < $3
+  AND created_at < $4
+ORDER BY created_at DESC
+LIMIT $5;
 
 -- name: UpdateTransferStatus :exec
 UPDATE transfers
@@ -148,19 +179,29 @@ SELECT * FROM provider_transactions
 WHERE tenant_id = $1 AND transfer_id = $2
 ORDER BY created_at;
 
+-- name: ListStuckTransfers :many
+-- Used by recovery detector to find transfers stuck in non-terminal states.
+-- This is an admin-only system query that scans across all tenants.
+SELECT id, tenant_id, status, updated_at, created_at
+FROM transfers
+WHERE status = $1
+  AND updated_at < $2
+ORDER BY updated_at ASC
+LIMIT $3;
+
 -- name: GetProviderTransaction :one
 SELECT * FROM provider_transactions
-WHERE transfer_id = $1 AND tx_type = $2
+WHERE tenant_id = $1 AND transfer_id = $2 AND tx_type = $3
 LIMIT 1;
 
 -- name: UpdateProviderTransactionFull :exec
 UPDATE provider_transactions
-SET status = $3,
-    external_id = $4,
-    tx_hash = $5,
-    metadata = $6,
+SET status = $4,
+    external_id = $5,
+    tx_hash = $6,
+    metadata = $7,
     updated_at = now()
-WHERE transfer_id = $1 AND tx_type = $2;
+WHERE tenant_id = $1 AND transfer_id = $2 AND tx_type = $3;
 
 -- name: ClaimProviderTransaction :one
 -- Atomically claims a provider transaction slot using INSERT ON CONFLICT DO NOTHING.
@@ -176,3 +217,17 @@ INSERT INTO provider_transactions (
 )
 ON CONFLICT (tenant_id, transfer_id, tx_type) DO NOTHING
 RETURNING id;
+
+-- name: ListTransfersByTenantFiltered :many
+-- Server-side filtering for dashboard: optional status exact match and
+-- optional substring search on id, external_ref, or idempotency_key.
+-- Pass empty string for @status_filter or @search_query to skip that filter.
+SELECT * FROM transfers
+WHERE tenant_id = @tenant_id
+  AND (@status_filter::text = '' OR status = @status_filter)
+  AND (@search_query::text = '' OR
+       id::text ILIKE '%' || @search_query || '%' OR
+       COALESCE(external_ref, '') ILIKE '%' || @search_query || '%' OR
+       COALESCE(idempotency_key, '') ILIKE '%' || @search_query || '%')
+ORDER BY updated_at DESC
+LIMIT @page_size;

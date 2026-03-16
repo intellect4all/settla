@@ -9,9 +9,11 @@
 -- settla_app (subject to RLS) for tenant-scoped API operations.
 -- ============================================================================
 
-DO $$ BEGIN
+DO $$
+BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'settla_app') THEN
-    CREATE ROLE settla_app LOGIN PASSWORD 'settla_app';
+    EXECUTE format('CREATE ROLE settla_app LOGIN PASSWORD %L',
+      coalesce(current_setting('app.settla_app_password', true), 'settla_app_dev'));
   END IF;
 END $$;
 

@@ -106,3 +106,41 @@ WHERE id = $1;
 SELECT * FROM reconciliation_reports
 ORDER BY run_at DESC
 LIMIT $1 OFFSET $2;
+
+-- ============================================================================
+-- Cursor-based pagination queries
+-- ============================================================================
+
+-- name: ListManualReviewsByStatusCursor :many
+SELECT * FROM manual_reviews
+WHERE tenant_id = @tenant_id AND status = @status
+  AND (@cursor_created_at::timestamptz IS NULL OR created_at < @cursor_created_at)
+ORDER BY created_at DESC
+LIMIT @page_size;
+
+-- name: ListManualReviewsByTenantCursor :many
+SELECT * FROM manual_reviews
+WHERE tenant_id = @tenant_id
+  AND (@cursor_created_at::timestamptz IS NULL OR created_at < @cursor_created_at)
+ORDER BY created_at DESC
+LIMIT @page_size;
+
+-- name: ListNetSettlementsByStatusCursor :many
+SELECT * FROM net_settlements
+WHERE tenant_id = @tenant_id AND status = @status
+  AND (@cursor_created_at::timestamptz IS NULL OR created_at < @cursor_created_at)
+ORDER BY created_at DESC
+LIMIT @page_size;
+
+-- name: ListNetSettlementsByTenantCursor :many
+SELECT * FROM net_settlements
+WHERE tenant_id = @tenant_id
+  AND (@cursor_created_at::timestamptz IS NULL OR created_at < @cursor_created_at)
+ORDER BY created_at DESC
+LIMIT @page_size;
+
+-- name: ListReconciliationReportsCursor :many
+SELECT * FROM reconciliation_reports
+WHERE (@cursor_run_at::timestamptz IS NULL OR run_at < @cursor_run_at)
+ORDER BY run_at DESC
+LIMIT @page_size;
