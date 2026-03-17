@@ -95,8 +95,16 @@ func (s *TransferStoreAdapter) CreateTransferWithOutbox(ctx context.Context, tra
 	}
 
 	var senderJSON, recipientJSON []byte
+	var encVersion int16
 
 	if s.piiCrypto != nil {
+		// Determine current key version for encryption.
+		keyVer, err := s.piiCrypto.CurrentKeyVersion(transfer.TenantID)
+		if err != nil {
+			return fmt.Errorf("settla-store: getting current PII key version: %w", err)
+		}
+		encVersion = int16(keyVer)
+
 		// Encrypt PII fields before storage.
 		encSender, err := s.piiCrypto.EncryptSender(transfer.TenantID, transfer.Sender)
 		if err != nil {
@@ -115,6 +123,9 @@ func (s *TransferStoreAdapter) CreateTransferWithOutbox(ctx context.Context, tra
 			return fmt.Errorf("settla-store: marshalling encrypted recipient: %w", err)
 		}
 	} else {
+		// No encryption configured — store plaintext (development/test only).
+		// Version 0 indicates plaintext.
+		encVersion = 0
 		senderJSON, err = json.Marshal(transfer.Sender)
 		if err != nil {
 			return fmt.Errorf("settla-store: marshalling sender: %w", err)
@@ -141,24 +152,25 @@ func (s *TransferStoreAdapter) CreateTransferWithOutbox(ctx context.Context, tra
 	// 1. INSERT transfer within transaction.
 	qtx := s.q.WithTx(tx)
 	row, err := qtx.CreateTransfer(ctx, CreateTransferParams{
-		TenantID:          transfer.TenantID,
-		ExternalRef:       textFromString(transfer.ExternalRef),
-		IdempotencyKey:    textFromString(transfer.IdempotencyKey),
-		Status:            TransferStatusEnum(transfer.Status),
-		SourceCurrency:    string(transfer.SourceCurrency),
-		SourceAmount:      numericFromDecimal(transfer.SourceAmount),
-		DestCurrency:      string(transfer.DestCurrency),
-		DestAmount:        numericFromDecimal(transfer.DestAmount),
-		StableCoin:        textFromString(string(transfer.StableCoin)),
-		StableAmount:      numericFromDecimal(transfer.StableAmount),
-		Chain:             textFromString(transfer.Chain),
-		FxRate:            numericFromDecimal(transfer.FXRate),
-		Fees:              feesJSON,
-		Sender:            senderJSON,
-		Recipient:         recipientJSON,
-		QuoteID:           uuidFromPtr(transfer.QuoteID),
-		OnRampProviderID:  textFromString(transfer.OnRampProviderID),
-		OffRampProviderID: textFromString(transfer.OffRampProviderID),
+		TenantID:             transfer.TenantID,
+		ExternalRef:          textFromString(transfer.ExternalRef),
+		IdempotencyKey:       textFromString(transfer.IdempotencyKey),
+		Status:               TransferStatusEnum(transfer.Status),
+		SourceCurrency:       string(transfer.SourceCurrency),
+		SourceAmount:         numericFromDecimal(transfer.SourceAmount),
+		DestCurrency:         string(transfer.DestCurrency),
+		DestAmount:           numericFromDecimal(transfer.DestAmount),
+		StableCoin:           textFromString(string(transfer.StableCoin)),
+		StableAmount:         numericFromDecimal(transfer.StableAmount),
+		Chain:                textFromString(transfer.Chain),
+		FxRate:               numericFromDecimal(transfer.FXRate),
+		Fees:                 feesJSON,
+		Sender:               senderJSON,
+		Recipient:            recipientJSON,
+		QuoteID:              uuidFromPtr(transfer.QuoteID),
+		OnRampProviderID:     textFromString(transfer.OnRampProviderID),
+		OffRampProviderID:    textFromString(transfer.OffRampProviderID),
+		PiiEncryptionVersion: encVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("settla-store: creating transfer: %w", err)

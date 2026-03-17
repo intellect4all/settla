@@ -361,6 +361,62 @@ func (q *Queries) ListManualReviewsByStatus(ctx context.Context, arg ListManualR
 	return items, nil
 }
 
+const listManualReviewsByStatusCursor = `-- name: ListManualReviewsByStatusCursor :many
+
+SELECT id, transfer_id, tenant_id, status, transfer_status, stuck_since, attempted_recoveries, resolution, resolved_by, resolved_at, created_at FROM manual_reviews
+WHERE tenant_id = $1 AND status = $2
+  AND ($3::timestamptz IS NULL OR created_at < $3)
+ORDER BY created_at DESC
+LIMIT $4
+`
+
+type ListManualReviewsByStatusCursorParams struct {
+	TenantID        uuid.UUID        `json:"tenant_id"`
+	Status          ReviewStatusEnum `json:"status"`
+	CursorCreatedAt time.Time        `json:"cursor_created_at"`
+	PageSize        int32            `json:"page_size"`
+}
+
+// ============================================================================
+// Cursor-based pagination queries
+// ============================================================================
+func (q *Queries) ListManualReviewsByStatusCursor(ctx context.Context, arg ListManualReviewsByStatusCursorParams) ([]ManualReview, error) {
+	rows, err := q.db.Query(ctx, listManualReviewsByStatusCursor,
+		arg.TenantID,
+		arg.Status,
+		arg.CursorCreatedAt,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ManualReview{}
+	for rows.Next() {
+		var i ManualReview
+		if err := rows.Scan(
+			&i.ID,
+			&i.TransferID,
+			&i.TenantID,
+			&i.Status,
+			&i.TransferStatus,
+			&i.StuckSince,
+			&i.AttemptedRecoveries,
+			&i.Resolution,
+			&i.ResolvedBy,
+			&i.ResolvedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManualReviewsByTenant = `-- name: ListManualReviewsByTenant :many
 SELECT id, transfer_id, tenant_id, status, transfer_status, stuck_since, attempted_recoveries, resolution, resolved_by, resolved_at, created_at FROM manual_reviews
 WHERE tenant_id = $1
@@ -376,6 +432,52 @@ type ListManualReviewsByTenantParams struct {
 
 func (q *Queries) ListManualReviewsByTenant(ctx context.Context, arg ListManualReviewsByTenantParams) ([]ManualReview, error) {
 	rows, err := q.db.Query(ctx, listManualReviewsByTenant, arg.TenantID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ManualReview{}
+	for rows.Next() {
+		var i ManualReview
+		if err := rows.Scan(
+			&i.ID,
+			&i.TransferID,
+			&i.TenantID,
+			&i.Status,
+			&i.TransferStatus,
+			&i.StuckSince,
+			&i.AttemptedRecoveries,
+			&i.Resolution,
+			&i.ResolvedBy,
+			&i.ResolvedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManualReviewsByTenantCursor = `-- name: ListManualReviewsByTenantCursor :many
+SELECT id, transfer_id, tenant_id, status, transfer_status, stuck_since, attempted_recoveries, resolution, resolved_by, resolved_at, created_at FROM manual_reviews
+WHERE tenant_id = $1
+  AND ($2::timestamptz IS NULL OR created_at < $2)
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListManualReviewsByTenantCursorParams struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	CursorCreatedAt time.Time `json:"cursor_created_at"`
+	PageSize        int32     `json:"page_size"`
+}
+
+func (q *Queries) ListManualReviewsByTenantCursor(ctx context.Context, arg ListManualReviewsByTenantCursorParams) ([]ManualReview, error) {
+	rows, err := q.db.Query(ctx, listManualReviewsByTenantCursor, arg.TenantID, arg.CursorCreatedAt, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -458,6 +560,59 @@ func (q *Queries) ListNetSettlementsByStatus(ctx context.Context, arg ListNetSet
 	return items, nil
 }
 
+const listNetSettlementsByStatusCursor = `-- name: ListNetSettlementsByStatusCursor :many
+SELECT id, tenant_id, period_start, period_end, corridors, net_by_currency, total_fees_usd, instructions, status, due_date, settled_at, created_at FROM net_settlements
+WHERE tenant_id = $1 AND status = $2
+  AND ($3::timestamptz IS NULL OR created_at < $3)
+ORDER BY created_at DESC
+LIMIT $4
+`
+
+type ListNetSettlementsByStatusCursorParams struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	Status          string    `json:"status"`
+	CursorCreatedAt time.Time `json:"cursor_created_at"`
+	PageSize        int32     `json:"page_size"`
+}
+
+func (q *Queries) ListNetSettlementsByStatusCursor(ctx context.Context, arg ListNetSettlementsByStatusCursorParams) ([]NetSettlement, error) {
+	rows, err := q.db.Query(ctx, listNetSettlementsByStatusCursor,
+		arg.TenantID,
+		arg.Status,
+		arg.CursorCreatedAt,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NetSettlement{}
+	for rows.Next() {
+		var i NetSettlement
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.PeriodStart,
+			&i.PeriodEnd,
+			&i.Corridors,
+			&i.NetByCurrency,
+			&i.TotalFeesUsd,
+			&i.Instructions,
+			&i.Status,
+			&i.DueDate,
+			&i.SettledAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNetSettlementsByTenant = `-- name: ListNetSettlementsByTenant :many
 SELECT id, tenant_id, period_start, period_end, corridors, net_by_currency, total_fees_usd, instructions, status, due_date, settled_at, created_at FROM net_settlements
 WHERE tenant_id = $1
@@ -504,6 +659,53 @@ func (q *Queries) ListNetSettlementsByTenant(ctx context.Context, arg ListNetSet
 	return items, nil
 }
 
+const listNetSettlementsByTenantCursor = `-- name: ListNetSettlementsByTenantCursor :many
+SELECT id, tenant_id, period_start, period_end, corridors, net_by_currency, total_fees_usd, instructions, status, due_date, settled_at, created_at FROM net_settlements
+WHERE tenant_id = $1
+  AND ($2::timestamptz IS NULL OR created_at < $2)
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListNetSettlementsByTenantCursorParams struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	CursorCreatedAt time.Time `json:"cursor_created_at"`
+	PageSize        int32     `json:"page_size"`
+}
+
+func (q *Queries) ListNetSettlementsByTenantCursor(ctx context.Context, arg ListNetSettlementsByTenantCursorParams) ([]NetSettlement, error) {
+	rows, err := q.db.Query(ctx, listNetSettlementsByTenantCursor, arg.TenantID, arg.CursorCreatedAt, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NetSettlement{}
+	for rows.Next() {
+		var i NetSettlement
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.PeriodStart,
+			&i.PeriodEnd,
+			&i.Corridors,
+			&i.NetByCurrency,
+			&i.TotalFeesUsd,
+			&i.Instructions,
+			&i.Status,
+			&i.DueDate,
+			&i.SettledAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReconciliationReports = `-- name: ListReconciliationReports :many
 SELECT id, job_name, run_at, duration_ms, checks_run, checks_passed, discrepancies, auto_corrected, needs_review, created_at FROM reconciliation_reports
 ORDER BY run_at DESC
@@ -517,6 +719,49 @@ type ListReconciliationReportsParams struct {
 
 func (q *Queries) ListReconciliationReports(ctx context.Context, arg ListReconciliationReportsParams) ([]ReconciliationReport, error) {
 	rows, err := q.db.Query(ctx, listReconciliationReports, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ReconciliationReport{}
+	for rows.Next() {
+		var i ReconciliationReport
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobName,
+			&i.RunAt,
+			&i.DurationMs,
+			&i.ChecksRun,
+			&i.ChecksPassed,
+			&i.Discrepancies,
+			&i.AutoCorrected,
+			&i.NeedsReview,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReconciliationReportsCursor = `-- name: ListReconciliationReportsCursor :many
+SELECT id, job_name, run_at, duration_ms, checks_run, checks_passed, discrepancies, auto_corrected, needs_review, created_at FROM reconciliation_reports
+WHERE ($1::timestamptz IS NULL OR run_at < $1)
+ORDER BY run_at DESC
+LIMIT $2
+`
+
+type ListReconciliationReportsCursorParams struct {
+	CursorRunAt time.Time `json:"cursor_run_at"`
+	PageSize    int32     `json:"page_size"`
+}
+
+func (q *Queries) ListReconciliationReportsCursor(ctx context.Context, arg ListReconciliationReportsCursorParams) ([]ReconciliationReport, error) {
+	rows, err := q.db.Query(ctx, listReconciliationReportsCursor, arg.CursorRunAt, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}

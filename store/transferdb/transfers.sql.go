@@ -178,32 +178,33 @@ INSERT INTO transfers (
     source_currency, source_amount, dest_currency, dest_amount,
     stable_coin, stable_amount, chain, fx_rate, fees,
     sender, recipient, quote_id,
-    on_ramp_provider_id, off_ramp_provider_id
+    on_ramp_provider_id, off_ramp_provider_id, pii_encryption_version
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18
-) RETURNING id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id
+    $17, $18, $19
+) RETURNING id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version
 `
 
 type CreateTransferParams struct {
-	TenantID          uuid.UUID          `json:"tenant_id"`
-	ExternalRef       pgtype.Text        `json:"external_ref"`
-	IdempotencyKey    pgtype.Text        `json:"idempotency_key"`
-	Status            TransferStatusEnum `json:"status"`
-	SourceCurrency    string             `json:"source_currency"`
-	SourceAmount      pgtype.Numeric     `json:"source_amount"`
-	DestCurrency      string             `json:"dest_currency"`
-	DestAmount        pgtype.Numeric     `json:"dest_amount"`
-	StableCoin        pgtype.Text        `json:"stable_coin"`
-	StableAmount      pgtype.Numeric     `json:"stable_amount"`
-	Chain             pgtype.Text        `json:"chain"`
-	FxRate            pgtype.Numeric     `json:"fx_rate"`
-	Fees              []byte             `json:"fees"`
-	Sender            []byte             `json:"sender"`
-	Recipient         []byte             `json:"recipient"`
-	QuoteID           pgtype.UUID        `json:"quote_id"`
-	OnRampProviderID  pgtype.Text        `json:"on_ramp_provider_id"`
-	OffRampProviderID pgtype.Text        `json:"off_ramp_provider_id"`
+	TenantID             uuid.UUID          `json:"tenant_id"`
+	ExternalRef          pgtype.Text        `json:"external_ref"`
+	IdempotencyKey       pgtype.Text        `json:"idempotency_key"`
+	Status               TransferStatusEnum `json:"status"`
+	SourceCurrency       string             `json:"source_currency"`
+	SourceAmount         pgtype.Numeric     `json:"source_amount"`
+	DestCurrency         string             `json:"dest_currency"`
+	DestAmount           pgtype.Numeric     `json:"dest_amount"`
+	StableCoin           pgtype.Text        `json:"stable_coin"`
+	StableAmount         pgtype.Numeric     `json:"stable_amount"`
+	Chain                pgtype.Text        `json:"chain"`
+	FxRate               pgtype.Numeric     `json:"fx_rate"`
+	Fees                 []byte             `json:"fees"`
+	Sender               []byte             `json:"sender"`
+	Recipient            []byte             `json:"recipient"`
+	QuoteID              pgtype.UUID        `json:"quote_id"`
+	OnRampProviderID     pgtype.Text        `json:"on_ramp_provider_id"`
+	OffRampProviderID    pgtype.Text        `json:"off_ramp_provider_id"`
+	PiiEncryptionVersion int16              `json:"pii_encryption_version"`
 }
 
 func (q *Queries) CreateTransfer(ctx context.Context, arg CreateTransferParams) (Transfer, error) {
@@ -226,6 +227,7 @@ func (q *Queries) CreateTransfer(ctx context.Context, arg CreateTransferParams) 
 		arg.QuoteID,
 		arg.OnRampProviderID,
 		arg.OffRampProviderID,
+		arg.PiiEncryptionVersion,
 	)
 	var i Transfer
 	err := row.Scan(
@@ -256,6 +258,8 @@ func (q *Queries) CreateTransfer(ctx context.Context, arg CreateTransferParams) 
 		&i.FailureCode,
 		&i.OnRampProviderID,
 		&i.OffRampProviderID,
+		&i.FeeScheduleSnapshot,
+		&i.PiiEncryptionVersion,
 	)
 	return i, err
 }
@@ -335,17 +339,18 @@ func (q *Queries) GetActiveQuote(ctx context.Context, arg GetActiveQuoteParams) 
 
 const getProviderTransaction = `-- name: GetProviderTransaction :one
 SELECT id, tenant_id, provider, tx_type, external_id, transfer_id, status, amount, currency, chain, tx_hash, metadata, created_at, updated_at FROM provider_transactions
-WHERE transfer_id = $1 AND tx_type = $2
+WHERE tenant_id = $1 AND transfer_id = $2 AND tx_type = $3
 LIMIT 1
 `
 
 type GetProviderTransactionParams struct {
+	TenantID   uuid.UUID          `json:"tenant_id"`
 	TransferID uuid.UUID          `json:"transfer_id"`
 	TxType     ProviderTxTypeEnum `json:"tx_type"`
 }
 
 func (q *Queries) GetProviderTransaction(ctx context.Context, arg GetProviderTransactionParams) (ProviderTransaction, error) {
-	row := q.db.QueryRow(ctx, getProviderTransaction, arg.TransferID, arg.TxType)
+	row := q.db.QueryRow(ctx, getProviderTransaction, arg.TenantID, arg.TransferID, arg.TxType)
 	var i ProviderTransaction
 	err := row.Scan(
 		&i.ID,
@@ -397,7 +402,7 @@ func (q *Queries) GetQuote(ctx context.Context, arg GetQuoteParams) (Quote, erro
 }
 
 const getTransfer = `-- name: GetTransfer :one
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -437,13 +442,16 @@ func (q *Queries) GetTransfer(ctx context.Context, arg GetTransferParams) (Trans
 		&i.FailureCode,
 		&i.OnRampProviderID,
 		&i.OffRampProviderID,
+		&i.FeeScheduleSnapshot,
+		&i.PiiEncryptionVersion,
 	)
 	return i, err
 }
 
 const getTransferByExternalRef = `-- name: GetTransferByExternalRef :one
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE tenant_id = $1 AND external_ref = $2
+  AND created_at >= now() - INTERVAL '90 days'
 LIMIT 1
 `
 
@@ -483,12 +491,14 @@ func (q *Queries) GetTransferByExternalRef(ctx context.Context, arg GetTransferB
 		&i.FailureCode,
 		&i.OnRampProviderID,
 		&i.OffRampProviderID,
+		&i.FeeScheduleSnapshot,
+		&i.PiiEncryptionVersion,
 	)
 	return i, err
 }
 
 const getTransferByID = `-- name: GetTransferByID :one
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE id = $1
 `
 
@@ -523,14 +533,16 @@ func (q *Queries) GetTransferByID(ctx context.Context, id uuid.UUID) (Transfer, 
 		&i.FailureCode,
 		&i.OnRampProviderID,
 		&i.OffRampProviderID,
+		&i.FeeScheduleSnapshot,
+		&i.PiiEncryptionVersion,
 	)
 	return i, err
 }
 
 const getTransferByIdempotencyKey = `-- name: GetTransferByIdempotencyKey :one
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE tenant_id = $1 AND idempotency_key = $2
-  AND created_at >= now() - INTERVAL '24 hours'
+  AND created_at >= now() - INTERVAL '72 hours'
 LIMIT 1
 `
 
@@ -570,6 +582,8 @@ func (q *Queries) GetTransferByIdempotencyKey(ctx context.Context, arg GetTransf
 		&i.FailureCode,
 		&i.OnRampProviderID,
 		&i.OffRampProviderID,
+		&i.FeeScheduleSnapshot,
+		&i.PiiEncryptionVersion,
 	)
 	return i, err
 }
@@ -609,6 +623,57 @@ func (q *Queries) ListProviderTransactions(ctx context.Context, arg ListProvider
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStuckTransfers = `-- name: ListStuckTransfers :many
+SELECT id, tenant_id, status, updated_at, created_at
+FROM transfers
+WHERE status = $1
+  AND updated_at < $2
+ORDER BY updated_at ASC
+LIMIT $3
+`
+
+type ListStuckTransfersParams struct {
+	Status    TransferStatusEnum `json:"status"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Limit     int32              `json:"limit"`
+}
+
+type ListStuckTransfersRow struct {
+	ID        uuid.UUID          `json:"id"`
+	TenantID  uuid.UUID          `json:"tenant_id"`
+	Status    TransferStatusEnum `json:"status"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	CreatedAt time.Time          `json:"created_at"`
+}
+
+// Used by recovery detector to find transfers stuck in non-terminal states.
+// This is an admin-only system query that scans across all tenants.
+func (q *Queries) ListStuckTransfers(ctx context.Context, arg ListStuckTransfersParams) ([]ListStuckTransfersRow, error) {
+	rows, err := q.db.Query(ctx, listStuckTransfers, arg.Status, arg.UpdatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStuckTransfersRow{}
+	for rows.Next() {
+		var i ListStuckTransfersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Status,
+			&i.UpdatedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -662,7 +727,7 @@ func (q *Queries) ListTransferEvents(ctx context.Context, arg ListTransferEvents
 }
 
 const listTransfersByStatus = `-- name: ListTransfersByStatus :many
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE tenant_id = $1 AND status = $2
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4
@@ -717,6 +782,80 @@ func (q *Queries) ListTransfersByStatus(ctx context.Context, arg ListTransfersBy
 			&i.FailureCode,
 			&i.OnRampProviderID,
 			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransfersByStatusCursor = `-- name: ListTransfersByStatusCursor :many
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
+WHERE tenant_id = $1 AND status = $2
+  AND created_at < $3
+ORDER BY created_at DESC
+LIMIT $4
+`
+
+type ListTransfersByStatusCursorParams struct {
+	TenantID  uuid.UUID          `json:"tenant_id"`
+	Status    TransferStatusEnum `json:"status"`
+	CreatedAt time.Time          `json:"created_at"`
+	Limit     int32              `json:"limit"`
+}
+
+// Cursor-based pagination: pass the created_at of the last item from the
+// previous page as $3 (or a far-future timestamp for the first page).
+func (q *Queries) ListTransfersByStatusCursor(ctx context.Context, arg ListTransfersByStatusCursorParams) ([]Transfer, error) {
+	rows, err := q.db.Query(ctx, listTransfersByStatusCursor,
+		arg.TenantID,
+		arg.Status,
+		arg.CreatedAt,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transfer{}
+	for rows.Next() {
+		var i Transfer
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ExternalRef,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.SourceCurrency,
+			&i.SourceAmount,
+			&i.DestCurrency,
+			&i.DestAmount,
+			&i.StableCoin,
+			&i.StableAmount,
+			&i.Chain,
+			&i.FxRate,
+			&i.Fees,
+			&i.Sender,
+			&i.Recipient,
+			&i.QuoteID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FundedAt,
+			&i.CompletedAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.OnRampProviderID,
+			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -729,7 +868,7 @@ func (q *Queries) ListTransfersByStatus(ctx context.Context, arg ListTransfersBy
 }
 
 const listTransfersByTenant = `-- name: ListTransfersByTenant :many
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -778,6 +917,152 @@ func (q *Queries) ListTransfersByTenant(ctx context.Context, arg ListTransfersBy
 			&i.FailureCode,
 			&i.OnRampProviderID,
 			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransfersByTenantCursor = `-- name: ListTransfersByTenantCursor :many
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
+WHERE tenant_id = $1
+  AND created_at < $2
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListTransfersByTenantCursorParams struct {
+	TenantID  uuid.UUID `json:"tenant_id"`
+	CreatedAt time.Time `json:"created_at"`
+	Limit     int32     `json:"limit"`
+}
+
+// Cursor-based pagination: pass the created_at of the last item from the
+// previous page as $2 (or a far-future timestamp for the first page).
+// This avoids OFFSET which degrades at high page numbers (50M rows/day).
+func (q *Queries) ListTransfersByTenantCursor(ctx context.Context, arg ListTransfersByTenantCursorParams) ([]Transfer, error) {
+	rows, err := q.db.Query(ctx, listTransfersByTenantCursor, arg.TenantID, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transfer{}
+	for rows.Next() {
+		var i Transfer
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ExternalRef,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.SourceCurrency,
+			&i.SourceAmount,
+			&i.DestCurrency,
+			&i.DestAmount,
+			&i.StableCoin,
+			&i.StableAmount,
+			&i.Chain,
+			&i.FxRate,
+			&i.Fees,
+			&i.Sender,
+			&i.Recipient,
+			&i.QuoteID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FundedAt,
+			&i.CompletedAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.OnRampProviderID,
+			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransfersByTenantFiltered = `-- name: ListTransfersByTenantFiltered :many
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
+WHERE tenant_id = $1
+  AND ($2::text = '' OR status = $2)
+  AND ($3::text = '' OR
+       id::text ILIKE '%' || $3 || '%' OR
+       COALESCE(external_ref, '') ILIKE '%' || $3 || '%' OR
+       COALESCE(idempotency_key, '') ILIKE '%' || $3 || '%')
+ORDER BY updated_at DESC
+LIMIT $4
+`
+
+type ListTransfersByTenantFilteredParams struct {
+	TenantID     uuid.UUID `json:"tenant_id"`
+	StatusFilter string    `json:"status_filter"`
+	SearchQuery  string    `json:"search_query"`
+	PageSize     int32     `json:"page_size"`
+}
+
+// Server-side filtering for dashboard: optional status exact match and
+// optional substring search on id, external_ref, or idempotency_key.
+// Pass empty string for @status_filter or @search_query to skip that filter.
+func (q *Queries) ListTransfersByTenantFiltered(ctx context.Context, arg ListTransfersByTenantFilteredParams) ([]Transfer, error) {
+	rows, err := q.db.Query(ctx, listTransfersByTenantFiltered,
+		arg.TenantID,
+		arg.StatusFilter,
+		arg.SearchQuery,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transfer{}
+	for rows.Next() {
+		var i Transfer
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ExternalRef,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.SourceCurrency,
+			&i.SourceAmount,
+			&i.DestCurrency,
+			&i.DestAmount,
+			&i.StableCoin,
+			&i.StableAmount,
+			&i.Chain,
+			&i.FxRate,
+			&i.Fees,
+			&i.Sender,
+			&i.Recipient,
+			&i.QuoteID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FundedAt,
+			&i.CompletedAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.OnRampProviderID,
+			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -790,7 +1075,7 @@ func (q *Queries) ListTransfersByTenant(ctx context.Context, arg ListTransfersBy
 }
 
 const listTransfersInDateRange = `-- name: ListTransfersInDateRange :many
-SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id FROM transfers
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
 WHERE tenant_id = $1
   AND created_at >= $2
   AND created_at < $3
@@ -849,6 +1134,84 @@ func (q *Queries) ListTransfersInDateRange(ctx context.Context, arg ListTransfer
 			&i.FailureCode,
 			&i.OnRampProviderID,
 			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransfersInDateRangeCursor = `-- name: ListTransfersInDateRangeCursor :many
+SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_currency, source_amount, dest_currency, dest_amount, stable_coin, stable_amount, chain, fx_rate, fees, sender, recipient, quote_id, created_at, updated_at, funded_at, completed_at, failed_at, failure_reason, failure_code, on_ramp_provider_id, off_ramp_provider_id, fee_schedule_snapshot, pii_encryption_version FROM transfers
+WHERE tenant_id = $1
+  AND created_at >= $2
+  AND created_at < $3
+  AND created_at < $4
+ORDER BY created_at DESC
+LIMIT $5
+`
+
+type ListTransfersInDateRangeCursorParams struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedAt_2 time.Time `json:"created_at_2"`
+	CreatedAt_3 time.Time `json:"created_at_3"`
+	Limit       int32     `json:"limit"`
+}
+
+// Cursor-based pagination within a date range: pass the created_at of the
+// last item from the previous page as $4 (must be >= $2 and < $3).
+func (q *Queries) ListTransfersInDateRangeCursor(ctx context.Context, arg ListTransfersInDateRangeCursorParams) ([]Transfer, error) {
+	rows, err := q.db.Query(ctx, listTransfersInDateRangeCursor,
+		arg.TenantID,
+		arg.CreatedAt,
+		arg.CreatedAt_2,
+		arg.CreatedAt_3,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Transfer{}
+	for rows.Next() {
+		var i Transfer
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ExternalRef,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.SourceCurrency,
+			&i.SourceAmount,
+			&i.DestCurrency,
+			&i.DestAmount,
+			&i.StableCoin,
+			&i.StableAmount,
+			&i.Chain,
+			&i.FxRate,
+			&i.Fees,
+			&i.Sender,
+			&i.Recipient,
+			&i.QuoteID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FundedAt,
+			&i.CompletedAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.OnRampProviderID,
+			&i.OffRampProviderID,
+			&i.FeeScheduleSnapshot,
+			&i.PiiEncryptionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -884,15 +1247,16 @@ func (q *Queries) SumDailyVolumeByTenant(ctx context.Context, arg SumDailyVolume
 
 const updateProviderTransactionFull = `-- name: UpdateProviderTransactionFull :exec
 UPDATE provider_transactions
-SET status = $3,
-    external_id = $4,
-    tx_hash = $5,
-    metadata = $6,
+SET status = $4,
+    external_id = $5,
+    tx_hash = $6,
+    metadata = $7,
     updated_at = now()
-WHERE transfer_id = $1 AND tx_type = $2
+WHERE tenant_id = $1 AND transfer_id = $2 AND tx_type = $3
 `
 
 type UpdateProviderTransactionFullParams struct {
+	TenantID   uuid.UUID          `json:"tenant_id"`
 	TransferID uuid.UUID          `json:"transfer_id"`
 	TxType     ProviderTxTypeEnum `json:"tx_type"`
 	Status     string             `json:"status"`
@@ -903,6 +1267,7 @@ type UpdateProviderTransactionFullParams struct {
 
 func (q *Queries) UpdateProviderTransactionFull(ctx context.Context, arg UpdateProviderTransactionFullParams) error {
 	_, err := q.db.Exec(ctx, updateProviderTransactionFull,
+		arg.TenantID,
 		arg.TransferID,
 		arg.TxType,
 		arg.Status,

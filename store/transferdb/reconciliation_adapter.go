@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/intellect4all/settla/core/reconciliation"
@@ -18,7 +17,7 @@ import (
 )
 
 // ReconciliationAdapter implements all reconciliation store interfaces against
-// the Transfer DB. A single struct satisfies:
+// the Transfer DB using SQLC-generated queries. A single struct satisfies:
 //   - reconciliation.TransferQuerier
 //   - reconciliation.OutboxQuerier
 //   - reconciliation.ProviderTxQuerier
@@ -27,13 +26,12 @@ import (
 //   - reconciliation.SettlementFeeStore
 //   - reconciliation.ReportStore
 type ReconciliationAdapter struct {
-	pool *pgxpool.Pool
-	q    *Queries
+	q *Queries
 }
 
-// NewReconciliationAdapter creates a new ReconciliationAdapter backed by the given pool.
-func NewReconciliationAdapter(pool *pgxpool.Pool, q *Queries) *ReconciliationAdapter {
-	return &ReconciliationAdapter{pool: pool, q: q}
+// NewReconciliationAdapter creates a new ReconciliationAdapter backed by the given queries.
+func NewReconciliationAdapter(q *Queries) *ReconciliationAdapter {
+	return &ReconciliationAdapter{q: q}
 }
 
 // Compile-time interface checks.
@@ -46,82 +44,76 @@ var (
 	_ reconciliation.TenantSlugResolver = (*ReconciliationAdapter)(nil)
 	_ reconciliation.SettlementFeeStore = (*ReconciliationAdapter)(nil)
 	_ reconciliation.ReportStore        = (*ReconciliationAdapter)(nil)
+	_ reconciliation.DepositQuerier     = (*ReconciliationAdapter)(nil)
+	_ reconciliation.BankDepositQuerier = (*ReconciliationAdapter)(nil)
 )
 
 // CountTransfersInStatus returns the number of transfers in the given status
 // whose updated_at is before olderThan.
 func (a *ReconciliationAdapter) CountTransfersInStatus(ctx context.Context, status domain.TransferStatus, olderThan time.Time) (int, error) {
-	const query = `SELECT COUNT(*) FROM transfers WHERE status = $1 AND updated_at < $2`
-	var n int
-	if err := a.pool.QueryRow(ctx, query, string(status), olderThan).Scan(&n); err != nil {
+	n, err := a.q.CountTransfersInStatus(ctx, CountTransfersInStatusParams{
+		Status:    TransferStatusEnum(status),
+		UpdatedAt: olderThan,
+	})
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: counting transfers in status %s: %w", status, err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // CountUnpublishedOlderThan returns the number of outbox entries that are
 // unpublished and were created before olderThan.
 func (a *ReconciliationAdapter) CountUnpublishedOlderThan(ctx context.Context, olderThan time.Time) (int, error) {
-	const query = `SELECT COUNT(*) FROM outbox WHERE published = false AND created_at < $1`
-	var n int
-	if err := a.pool.QueryRow(ctx, query, olderThan).Scan(&n); err != nil {
+	n, err := a.q.CountUnpublishedOlderThan(ctx, olderThan)
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: counting unpublished outbox entries: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // CountDefaultPartitionRows returns the number of rows in the outbox_default
 // partition, which should always be zero in normal operation.
 func (a *ReconciliationAdapter) CountDefaultPartitionRows(ctx context.Context) (int, error) {
-	const query = `SELECT COUNT(*) FROM outbox_default`
-	var n int
-	if err := a.pool.QueryRow(ctx, query).Scan(&n); err != nil {
+	n, err := a.q.CountDefaultPartitionRows(ctx)
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: counting default partition rows: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // CountPendingProviderTxOlderThan returns the number of provider transactions
 // stuck in 'pending' status with created_at before olderThan.
 func (a *ReconciliationAdapter) CountPendingProviderTxOlderThan(ctx context.Context, olderThan time.Time) (int, error) {
-	const query = `SELECT COUNT(*) FROM provider_transactions WHERE status = 'pending' AND created_at < $1`
-	var n int
-	if err := a.pool.QueryRow(ctx, query, olderThan).Scan(&n); err != nil {
+	n, err := a.q.CountPendingProviderTxOlderThan(ctx, olderThan)
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: counting pending provider txs: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // GetDailyTransferCount returns the total number of transfers created on the
 // given UTC date (00:00:00 to 23:59:59.999...).
 func (a *ReconciliationAdapter) GetDailyTransferCount(ctx context.Context, date time.Time) (int, error) {
-	const query = `SELECT COUNT(*) FROM transfers WHERE created_at >= $1 AND created_at < $2`
 	start := date.UTC().Truncate(24 * time.Hour)
 	end := start.Add(24 * time.Hour)
-	var n int
-	if err := a.pool.QueryRow(ctx, query, start, end).Scan(&n); err != nil {
+	n, err := a.q.GetDailyTransferCount(ctx, GetDailyTransferCountParams{
+		StartTime: start,
+		EndTime:   end,
+	})
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: getting daily transfer count: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // GetAverageDailyTransferCount returns the average number of transfers per day
 // over the date range [startDate, endDate).
 func (a *ReconciliationAdapter) GetAverageDailyTransferCount(ctx context.Context, startDate, endDate time.Time) (float64, error) {
-	// Divide total count by number of calendar days in the window to get average.
-	const query = `
-		SELECT COALESCE(
-			CAST(COUNT(*) AS float) / GREATEST(
-				EXTRACT(EPOCH FROM ($2::timestamptz - $1::timestamptz)) / 86400,
-				1
-			),
-			0
-		)
-		FROM transfers
-		WHERE created_at >= $1 AND created_at < $2
-	`
-	var avg float64
-	if err := a.pool.QueryRow(ctx, query, startDate, endDate).Scan(&avg); err != nil {
+	avg, err := a.q.GetAverageDailyTransferCount(ctx, GetAverageDailyTransferCountParams{
+		StartDate: startDate,
+		EndDate:   endDate,
+	})
+	if err != nil {
 		return 0, fmt.Errorf("settla-reconciliation-store: getting average daily transfer count: %w", err)
 	}
 	return avg, nil
@@ -129,9 +121,8 @@ func (a *ReconciliationAdapter) GetAverageDailyTransferCount(ctx context.Context
 
 // GetTenantSlug returns the slug for a tenant by ID.
 func (a *ReconciliationAdapter) GetTenantSlug(ctx context.Context, tenantID uuid.UUID) (string, error) {
-	const query = `SELECT slug FROM tenants WHERE id = $1`
-	var slug string
-	if err := a.pool.QueryRow(ctx, query, tenantID).Scan(&slug); err != nil {
+	slug, err := a.q.GetTenantSlug(ctx, tenantID)
+	if err != nil {
 		return "", fmt.Errorf("settla-reconciliation-store: getting tenant slug for %s: %w", tenantID, err)
 	}
 	return slug, nil
@@ -139,40 +130,17 @@ func (a *ReconciliationAdapter) GetTenantSlug(ctx context.Context, tenantID uuid
 
 // ListActiveTenantIDs returns the UUIDs of all tenants with status 'active'.
 func (a *ReconciliationAdapter) ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
-	const query = `SELECT id FROM tenants WHERE status = 'active'`
-	rows, err := a.pool.Query(ctx, query)
+	ids, err := a.q.ListActiveTenantIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("settla-reconciliation-store: listing active tenants: %w", err)
 	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("settla-reconciliation-store: scanning tenant id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 // GetLatestNetSettlement returns the most recently created net settlement across
 // all tenants, or (nil, nil) if none exists.
 func (a *ReconciliationAdapter) GetLatestNetSettlement(ctx context.Context) (*reconciliation.SettlementRecord, error) {
-	const query = `
-		SELECT id, tenant_id, period_start, period_end, total_fees_usd
-		FROM net_settlements
-		ORDER BY created_at DESC
-		LIMIT 1
-	`
-	var (
-		id, tenantID    uuid.UUID
-		periodStart     time.Time
-		periodEnd       time.Time
-		totalFeesNumeric pgtype.Numeric
-	)
-	err := a.pool.QueryRow(ctx, query).Scan(&id, &tenantID, &periodStart, &periodEnd, &totalFeesNumeric)
+	row, err := a.q.GetLatestNetSettlement(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -180,11 +148,11 @@ func (a *ReconciliationAdapter) GetLatestNetSettlement(ctx context.Context) (*re
 		return nil, fmt.Errorf("settla-reconciliation-store: fetching latest net settlement: %w", err)
 	}
 	return &reconciliation.SettlementRecord{
-		ID:           id,
-		TenantID:     tenantID,
-		PeriodStart:  periodStart,
-		PeriodEnd:    periodEnd,
-		TotalFeesUSD: decimalFromNumeric(totalFeesNumeric),
+		ID:           row.ID,
+		TenantID:     row.TenantID,
+		PeriodStart:  row.PeriodStart,
+		PeriodEnd:    row.PeriodEnd,
+		TotalFeesUSD: decimalFromNumeric(row.TotalFeesUsd),
 	}, nil
 }
 
@@ -192,16 +160,11 @@ func (a *ReconciliationAdapter) GetLatestNetSettlement(ctx context.Context) (*re
 // transfers for the given tenant in [start, end). Returns decimal.Zero if no
 // transfers match.
 func (a *ReconciliationAdapter) SumCompletedTransferFeesUSD(ctx context.Context, tenantID uuid.UUID, start, end time.Time) (decimal.Decimal, error) {
-	const query = `
-		SELECT COALESCE(SUM((fees->>'TotalFeeUSD')::numeric), 0)
-		FROM transfers
-		WHERE tenant_id = $1
-		  AND status = 'COMPLETED'
-		  AND completed_at >= $2
-		  AND completed_at < $3
-	`
-	var totalNumeric pgtype.Numeric
-	err := a.pool.QueryRow(ctx, query, tenantID, start, end).Scan(&totalNumeric)
+	totalNumeric, err := a.q.SumCompletedTransferFeesUSD(ctx, SumCompletedTransferFeesUSDParams{
+		TenantID:  tenantID,
+		StartTime: pgtype.Timestamptz{Time: start, Valid: true},
+		EndTime:   pgtype.Timestamptz{Time: end, Valid: true},
+	})
 	if err != nil {
 		return decimal.Zero, fmt.Errorf(
 			"settla-reconciliation-store: summing transfer fees for tenant %s: %w",
@@ -262,4 +225,81 @@ func (a *ReconciliationAdapter) GetLatestReport(ctx context.Context) (*reconcili
 		OverallPass: !r.NeedsReview,
 		Results:     results,
 	}, nil
+}
+
+// ── Deposit reconciliation queries ──────────────────────────────────────────
+
+// CountStuckDepositSessions returns the number of deposit sessions in a
+// non-terminal status that have not been updated since olderThan.
+func (a *ReconciliationAdapter) CountStuckDepositSessions(ctx context.Context, olderThan time.Time) (int, error) {
+	n, err := a.q.CountStuckDepositSessions(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting stuck deposit sessions: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountStaleBlockCheckpoints returns the number of chain monitors whose
+// checkpoint has not been updated since olderThan.
+func (a *ReconciliationAdapter) CountStaleBlockCheckpoints(ctx context.Context, olderThan time.Time) (int, error) {
+	n, err := a.q.CountStaleBlockCheckpoints(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting stale block checkpoints: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountAvailablePoolAddressesAll returns the total number of undispensed
+// addresses in the pool across all tenants and chains.
+func (a *ReconciliationAdapter) CountAvailablePoolAddressesAll(ctx context.Context) (int, error) {
+	n, err := a.q.CountAvailablePoolAddressesAll(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting available pool addresses: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountDepositTxAmountMismatches returns the number of sessions in CONFIRMED
+// or later states where received_amount does not match the sum of confirmed
+// transaction amounts.
+func (a *ReconciliationAdapter) CountDepositTxAmountMismatches(ctx context.Context) (int, error) {
+	n, err := a.q.CountDepositTxAmountMismatches(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting deposit tx-amount mismatches: %w", err)
+	}
+	return int(n), nil
+}
+
+// ── Bank deposit reconciliation queries ─────────────────────────────────────
+
+// CountStuckBankDepositSessions returns the number of bank deposit sessions in
+// PENDING_PAYMENT status that have not been updated since olderThan.
+func (a *ReconciliationAdapter) CountStuckBankDepositSessions(ctx context.Context, olderThan time.Time) (int, error) {
+	n, err := a.q.CountStuckBankDepositSessions(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting stuck bank deposit sessions: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountStuckBankDepositCrediting returns the number of bank deposit sessions in
+// CREDITING status that have not advanced since olderThan.
+func (a *ReconciliationAdapter) CountStuckBankDepositCrediting(ctx context.Context, olderThan time.Time) (int, error) {
+	n, err := a.q.CountStuckBankDepositCrediting(ctx, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting stuck bank deposit crediting: %w", err)
+	}
+	return int(n), nil
+}
+
+// CountOrphanedVirtualAccounts returns the number of virtual accounts in the
+// pool that are marked as unavailable but whose linked session has reached a
+// terminal state (EXPIRED, FAILED, CANCELLED, SETTLED, HELD). These accounts
+// should have been recycled by the IntentRecycleVirtualAccount worker.
+func (a *ReconciliationAdapter) CountOrphanedVirtualAccounts(ctx context.Context) (int, error) {
+	n, err := a.q.CountOrphanedVirtualAccounts(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("settla-reconciliation-store: counting orphaned virtual accounts: %w", err)
+	}
+	return int(n), nil
 }

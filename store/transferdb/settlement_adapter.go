@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 
 	"github.com/intellect4all/settla/core/settlement"
@@ -16,23 +17,20 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ settlement.TransferStore    = (*SettlementAdapter)(nil)
-	_ settlement.SettlementStore  = (*SettlementAdapter)(nil)
-	_ settlement.TenantStore      = (*SettlementAdapter)(nil)
+	_ settlement.TransferStore   = (*SettlementAdapter)(nil)
+	_ settlement.SettlementStore = (*SettlementAdapter)(nil)
+	_ settlement.TenantStore     = (*SettlementAdapter)(nil)
 )
 
 // SettlementAdapter implements settlement.TransferStore, settlement.SettlementStore,
-// and settlement.TenantStore using raw SQL against the Transfer DB pool.
-// Uses raw queries rather than SQLC-generated code because the settlement SQL
-// queries involve JOINs and JSON column handling that are simpler to manage directly.
+// and settlement.TenantStore using SQLC-generated queries against the Transfer DB.
 type SettlementAdapter struct {
-	pool *pgxpool.Pool
-	q    *Queries
+	q *Queries
 }
 
 // NewSettlementAdapter creates a new adapter for settlement store interfaces.
-func NewSettlementAdapter(pool *pgxpool.Pool, q *Queries) *SettlementAdapter {
-	return &SettlementAdapter{pool: pool, q: q}
+func NewSettlementAdapter(q *Queries) *SettlementAdapter {
+	return &SettlementAdapter{q: q}
 }
 
 // ListCompletedTransfersByPeriod returns summaries of completed transfers for a tenant
@@ -42,34 +40,30 @@ func (a *SettlementAdapter) ListCompletedTransfersByPeriod(
 	tenantID uuid.UUID,
 	start, end time.Time,
 ) ([]settlement.TransferSummary, error) {
-	rows, err := a.pool.Query(ctx, `
-		SELECT source_currency, source_amount, dest_currency, dest_amount,
-		       COALESCE((fees->>'total_usd')::NUMERIC(28,8), 0) AS fees_usd
-		FROM transfers
-		WHERE tenant_id = $1
-		  AND status = 'COMPLETED'
-		  AND completed_at >= $2
-		  AND completed_at < $3`,
-		tenantID, start, end,
-	)
+	rows, err := a.q.ListCompletedTransfersByPeriod(ctx, ListCompletedTransfersByPeriodParams{
+		TenantID:      tenantID,
+		CompletedAt:   pgtype.Timestamptz{Time: start, Valid: true},
+		CompletedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-settlement: listing completed transfers: %w", err)
 	}
-	defer rows.Close()
 
-	var summaries []settlement.TransferSummary
-	for rows.Next() {
-		var s settlement.TransferSummary
-		var srcAmt, destAmt, fees string
-		if err := rows.Scan(&s.SourceCurrency, &srcAmt, &s.DestCurrency, &destAmt, &fees); err != nil {
-			return nil, fmt.Errorf("settla-settlement: scanning transfer summary: %w", err)
+	summaries := make([]settlement.TransferSummary, 0, len(rows))
+	for _, r := range rows {
+		s := settlement.TransferSummary{
+			TransferID:     r.ID,
+			SourceCurrency: r.SourceCurrency,
+			SourceAmount:   decimalFromNumeric(r.SourceAmount),
+			DestCurrency:   r.DestCurrency,
+			DestAmount:     decimalFromNumeric(r.DestAmount),
 		}
-		s.SourceAmount, _ = decimal.NewFromString(srcAmt)
-		s.DestAmount, _ = decimal.NewFromString(destAmt)
-		s.Fees, _ = decimal.NewFromString(fees)
+		if r.FeesUsd != nil {
+			s.Fees, _ = decimal.NewFromString(fmt.Sprintf("%v", r.FeesUsd))
+		}
 		summaries = append(summaries, s)
 	}
-	return summaries, rows.Err()
+	return summaries, nil
 }
 
 // CreateNetSettlement persists a new net settlement record.
@@ -87,16 +81,18 @@ func (a *SettlementAdapter) CreateNetSettlement(ctx context.Context, s *domain.N
 		return fmt.Errorf("settla-settlement: marshalling instructions: %w", err)
 	}
 
-	_, err = a.pool.Exec(ctx, `
-		INSERT INTO net_settlements (
-		    id, tenant_id, period_start, period_end,
-		    corridors, net_by_currency, total_fees_usd,
-		    instructions, status, due_date
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		s.ID, s.TenantID, s.PeriodStart, s.PeriodEnd,
-		corridorsJSON, netJSON, s.TotalFeesUSD.String(),
-		instrJSON, s.Status, s.DueDate,
-	)
+	_, err = a.q.CreateNetSettlement(ctx, CreateNetSettlementParams{
+		ID:            s.ID,
+		TenantID:      s.TenantID,
+		PeriodStart:   s.PeriodStart,
+		PeriodEnd:     s.PeriodEnd,
+		Corridors:     corridorsJSON,
+		NetByCurrency: netJSON,
+		TotalFeesUsd:  numericFromDecimal(s.TotalFeesUSD),
+		Instructions:  instrJSON,
+		Status:        s.Status,
+		DueDate:       pgtypeDateFromPtr(s.DueDate),
+	})
 	if err != nil {
 		return fmt.Errorf("settla-settlement: creating net settlement: %w", err)
 	}
@@ -105,76 +101,65 @@ func (a *SettlementAdapter) CreateNetSettlement(ctx context.Context, s *domain.N
 
 // GetNetSettlement retrieves a net settlement by ID.
 func (a *SettlementAdapter) GetNetSettlement(ctx context.Context, id uuid.UUID) (*domain.NetSettlement, error) {
-	row := a.pool.QueryRow(ctx, `
-		SELECT ns.id, ns.tenant_id, t.name, ns.period_start, ns.period_end,
-		       ns.corridors, ns.net_by_currency, ns.total_fees_usd,
-		       ns.instructions, ns.status, ns.due_date, ns.created_at
-		FROM net_settlements ns
-		JOIN tenants t ON t.id = ns.tenant_id
-		WHERE ns.id = $1`, id)
-
-	var s domain.NetSettlement
-	var corridorsJSON, netJSON, instrJSON []byte
-	var feesStr string
-	if err := row.Scan(
-		&s.ID, &s.TenantID, &s.TenantName, &s.PeriodStart, &s.PeriodEnd,
-		&corridorsJSON, &netJSON, &feesStr,
-		&instrJSON, &s.Status, &s.DueDate, &s.CreatedAt,
-	); err != nil {
+	row, err := a.q.GetNetSettlement(ctx, id)
+	if err != nil {
 		return nil, fmt.Errorf("settla-settlement: getting net settlement %s: %w", id, err)
 	}
 
-	s.TotalFeesUSD, _ = decimal.NewFromString(feesStr)
-	_ = json.Unmarshal(corridorsJSON, &s.Corridors)
-	_ = json.Unmarshal(netJSON, &s.NetByCurrency)
-	_ = json.Unmarshal(instrJSON, &s.Instructions)
+	s := &domain.NetSettlement{
+		ID:           row.ID,
+		TenantID:     row.TenantID,
+		PeriodStart:  row.PeriodStart,
+		PeriodEnd:    row.PeriodEnd,
+		TotalFeesUSD: decimalFromNumeric(row.TotalFeesUsd),
+		Status:       row.Status,
+		CreatedAt:    row.CreatedAt,
+	}
+	s.DueDate = timePtrFromPgtypeDate(row.DueDate)
+	_ = json.Unmarshal(row.Corridors, &s.Corridors)
+	_ = json.Unmarshal(row.NetByCurrency, &s.NetByCurrency)
+	_ = json.Unmarshal(row.Instructions, &s.Instructions)
 
-	return &s, nil
+	return s, nil
 }
 
-// ListPendingSettlements returns all settlements with status "pending" or "overdue".
-func (a *SettlementAdapter) ListPendingSettlements(ctx context.Context) ([]domain.NetSettlement, error) {
-	rows, err := a.pool.Query(ctx, `
-		SELECT ns.id, ns.tenant_id, t.name, ns.period_start, ns.period_end,
-		       ns.corridors, ns.net_by_currency, ns.total_fees_usd,
-		       ns.instructions, ns.status, ns.due_date, ns.created_at
-		FROM net_settlements ns
-		JOIN tenants t ON t.id = ns.tenant_id
-		WHERE ns.status IN ('pending', 'overdue')
-		ORDER BY ns.due_date ASC`)
+// ListPendingSettlements returns all settlements with status "pending" or "overdue"
+// across ALL tenants. This is an admin/scheduler operation — callers must provide
+// an AdminCaller to identify who is making the cross-tenant query and why.
+func (a *SettlementAdapter) ListPendingSettlements(ctx context.Context, caller domain.AdminCaller) ([]domain.NetSettlement, error) {
+	slog.Info("admin cross-tenant query", "caller", caller.Service, "reason", caller.Reason, "method", "ListPendingSettlements")
+	rows, err := a.q.ListAllPendingSettlements(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("settla-settlement: listing pending settlements: %w", err)
 	}
-	defer rows.Close()
 
-	var settlements []domain.NetSettlement
-	for rows.Next() {
-		var s domain.NetSettlement
-		var corridorsJSON, netJSON, instrJSON []byte
-		var feesStr string
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.TenantName, &s.PeriodStart, &s.PeriodEnd,
-			&corridorsJSON, &netJSON, &feesStr,
-			&instrJSON, &s.Status, &s.DueDate, &s.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("settla-settlement: scanning pending settlement: %w", err)
+	settlements := make([]domain.NetSettlement, 0, len(rows))
+	for _, r := range rows {
+		s := domain.NetSettlement{
+			ID:           r.ID,
+			TenantID:     r.TenantID,
+			TenantName:   r.TenantName,
+			PeriodStart:  r.PeriodStart,
+			PeriodEnd:    r.PeriodEnd,
+			TotalFeesUSD: decimalFromNumeric(r.TotalFeesUsd),
+			Status:       r.Status,
+			CreatedAt:    r.CreatedAt,
 		}
-		s.TotalFeesUSD, _ = decimal.NewFromString(feesStr)
-		_ = json.Unmarshal(corridorsJSON, &s.Corridors)
-		_ = json.Unmarshal(netJSON, &s.NetByCurrency)
-		_ = json.Unmarshal(instrJSON, &s.Instructions)
+		s.DueDate = timePtrFromPgtypeDate(r.DueDate)
+		_ = json.Unmarshal(r.Corridors, &s.Corridors)
+		_ = json.Unmarshal(r.NetByCurrency, &s.NetByCurrency)
+		_ = json.Unmarshal(r.Instructions, &s.Instructions)
 		settlements = append(settlements, s)
 	}
-	return settlements, rows.Err()
+	return settlements, nil
 }
 
 // UpdateSettlementStatus updates the status of a net settlement.
 func (a *SettlementAdapter) UpdateSettlementStatus(ctx context.Context, id uuid.UUID, status string) error {
-	_, err := a.pool.Exec(ctx, `
-		UPDATE net_settlements
-		SET status = $2,
-		    settled_at = CASE WHEN $2 = 'settled' THEN now() ELSE settled_at END
-		WHERE id = $1`, id, status)
+	err := a.q.UpdateSettlementStatus(ctx, UpdateSettlementStatusParams{
+		ID:     id,
+		Status: status,
+	})
 	if err != nil {
 		return fmt.Errorf("settla-settlement: updating settlement status: %w", err)
 	}
@@ -192,35 +177,18 @@ func (a *SettlementAdapter) GetTenant(ctx context.Context, tenantID uuid.UUID) (
 
 // ListTenantsBySettlementModel returns all tenants using the given settlement model.
 func (a *SettlementAdapter) ListTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel) ([]domain.Tenant, error) {
-	rows, err := a.pool.Query(ctx, `
-		SELECT id, name, slug, status, fee_schedule, settlement_model,
-		       webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit,
-		       kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events
-		FROM tenants
-		WHERE settlement_model = $1`, string(model))
+	rows, err := a.q.ListTenantsBySettlementModel(ctx, string(model))
 	if err != nil {
 		return nil, fmt.Errorf("settla-settlement: listing tenants by settlement model: %w", err)
 	}
-	defer rows.Close()
 
-	var tenants []domain.Tenant
-	for rows.Next() {
-		var row Tenant
-		if err := rows.Scan(
-			&row.ID, &row.Name, &row.Slug, &row.Status,
-			&row.FeeSchedule, &row.SettlementModel,
-			&row.WebhookUrl, &row.WebhookSecret,
-			&row.DailyLimitUsd, &row.PerTransferLimit,
-			&row.KybStatus, &row.KybVerifiedAt,
-			&row.Metadata, &row.CreatedAt, &row.UpdatedAt, &row.WebhookEvents,
-		); err != nil {
-			return nil, fmt.Errorf("settla-settlement: scanning tenant row: %w", err)
-		}
+	tenants := make([]domain.Tenant, 0, len(rows))
+	for _, row := range rows {
 		t, err := tenantFromRow(row)
 		if err != nil {
 			return nil, err
 		}
 		tenants = append(tenants, *t)
 	}
-	return tenants, rows.Err()
+	return tenants, nil
 }
