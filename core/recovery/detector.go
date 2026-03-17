@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -122,14 +123,15 @@ var DefaultThresholds = map[domain.TransferStatus]Thresholds{
 // states past configurable time thresholds and attempts automated recovery.
 // All recovery actions go through the outbox pattern via RecoveryEngine.
 type Detector struct {
-	store       TransferQueryStore
-	reviewStore ReviewStore
-	engine      RecoveryEngine
-	providers   ProviderStatusChecker
-	logger      *slog.Logger
-	metrics     *DetectorMetrics
-	interval    time.Duration
-	thresholds  map[domain.TransferStatus]Thresholds
+	store              TransferQueryStore
+	reviewStore        ReviewStore
+	engine             RecoveryEngine
+	providers          ProviderStatusChecker
+	logger             *slog.Logger
+	metrics            *DetectorMetrics
+	interval           time.Duration
+	thresholds         map[domain.TransferStatus]Thresholds
+	recoveryInProgress sync.Map // keyed by transfer ID (uuid.UUID) to prevent duplicate recovery across overlapping cycles
 }
 
 // NewDetector creates a Detector with default configuration.
@@ -232,20 +234,9 @@ func (d *Detector) runCycle(ctx context.Context) error {
 		for _, transfer := range transfers {
 			stuckDuration := now.Sub(transfer.UpdatedAt)
 
-			if stuckDuration >= thresholds.Escalate {
-				if err := d.escalate(ctx, transfer, transfer.UpdatedAt); err != nil {
-					d.logger.Error("settla-recovery: escalation failed",
-						"transfer_id", transfer.ID,
-						"tenant_id", transfer.TenantID,
-						"status", transfer.Status,
-						"error", err,
-					)
-				} else {
-					totalEscalated++
-				}
-				// Still attempt recovery after escalation
-			}
-
+			// Try recovery first, escalate only if recovery fails or is skipped.
+			// This avoids creating unnecessary manual review records when automated
+			// recovery can resolve the issue.
 			recovered, err := d.recoverTransfer(ctx, transfer)
 			if err != nil {
 				d.logger.Error("settla-recovery: recovery failed",
@@ -266,6 +257,19 @@ func (d *Detector) runCycle(ctx context.Context) error {
 					d.metrics.RecoveryAttempts.WithLabelValues(string(transfer.Status), "recovered").Inc()
 				}
 			} else {
+				// Recovery was skipped or not applicable — escalate if past threshold
+				if stuckDuration >= thresholds.Escalate {
+					if escErr := d.escalate(ctx, transfer, transfer.UpdatedAt); escErr != nil {
+						d.logger.Error("settla-recovery: escalation failed",
+							"transfer_id", transfer.ID,
+							"tenant_id", transfer.TenantID,
+							"status", transfer.Status,
+							"error", escErr,
+						)
+					} else {
+						totalEscalated++
+					}
+				}
 				totalSkipped++
 				if d.metrics != nil {
 					d.metrics.RecoveryAttempts.WithLabelValues(string(transfer.Status), "skipped").Inc()
@@ -291,7 +295,16 @@ func (d *Detector) runCycle(ctx context.Context) error {
 
 // recoverTransfer attempts automated recovery for a stuck transfer based on its state.
 // Returns true if a recovery action was taken, false if skipped (e.g., pending status).
+// Uses recoveryInProgress to prevent duplicate recovery when detector cycles overlap.
 func (d *Detector) recoverTransfer(ctx context.Context, transfer *domain.Transfer) (bool, error) {
+	if _, alreadyRunning := d.recoveryInProgress.LoadOrStore(transfer.ID, true); alreadyRunning {
+		d.logger.Debug("settla-recovery: skipping transfer already being recovered",
+			"transfer_id", transfer.ID,
+		)
+		return false, nil
+	}
+	defer d.recoveryInProgress.Delete(transfer.ID)
+
 	switch transfer.Status {
 	case domain.TransferStatusFunded:
 		return d.recoverFunded(ctx, transfer)

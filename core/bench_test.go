@@ -116,6 +116,10 @@ func (s *benchTransferStore) ListTransfers(_ context.Context, tenantID uuid.UUID
 	return result[offset:end], nil
 }
 
+func (s *benchTransferStore) ListTransfersFiltered(_ context.Context, _ uuid.UUID, _, _ string, _ int) ([]domain.Transfer, error) {
+	return nil, nil
+}
+
 func (s *benchTransferStore) TransitionWithOutbox(_ context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, _ []domain.OutboxEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,6 +137,17 @@ func (s *benchTransferStore) TransitionWithOutbox(_ context.Context, transferID 
 
 func (s *benchTransferStore) CreateTransferWithOutbox(_ context.Context, t *domain.Transfer, _ []domain.OutboxEntry) error {
 	return s.CreateTransfer(context.Background(), t)
+}
+
+func (s *benchTransferStore) GetTransferByExternalRef(_ context.Context, tenantID uuid.UUID, externalRef string) (*domain.Transfer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.transfers {
+		if t.TenantID == tenantID && t.ExternalRef == externalRef {
+			return t, nil
+		}
+	}
+	return nil, fmt.Errorf("transfer not found for external ref %s", externalRef)
 }
 
 // setupBenchmarkEngine creates an engine with mock dependencies for benchmarking.
@@ -153,7 +168,7 @@ func setupBenchmarkEngine(b *testing.B) *Engine {
 	router := &mockRouter{}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	engine := NewEngine(transfers, tenants, router, logger, nil)
+	engine := NewEngine(transfers, tenants, router, nil, logger, nil)
 
 	return engine
 }

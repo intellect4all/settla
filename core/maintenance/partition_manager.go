@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // DBExecutor abstracts database operations for DDL commands.
@@ -33,7 +36,11 @@ type PartitionConfig struct {
 	Table         string        // parent table name
 	Database      string        // which database this table lives in
 	Interval      string        // "daily", "weekly", or "monthly"
-	CreateAhead   int           // number of future partitions to maintain
+	// CreateAhead is the number of future partitions to maintain ahead of
+	// the current date. This value should be tuned per environment:
+	// production workloads with high write volume (e.g. outbox at 50M rows/day)
+	// need more headroom than staging or dev environments.
+	CreateAhead   int
 	DropOlderThan time.Duration // drop partitions older than this (0 = never drop)
 }
 
@@ -44,8 +51,8 @@ func DefaultPartitionConfigs() []PartitionConfig {
 			Table:         "outbox",
 			Database:      "transfer",
 			Interval:      "daily",
-			CreateAhead:   3,
-			DropOlderThan: 48 * time.Hour,
+			CreateAhead:   7,
+			DropOlderThan: 7 * 24 * time.Hour,
 		},
 		{
 			Table:       "transfers",
@@ -72,30 +79,74 @@ func DefaultPartitionConfigs() []PartitionConfig {
 			Interval:    "monthly",
 			CreateAhead: 2,
 		},
+		{
+			Table:       "bank_deposit_sessions",
+			Database:    "transfer",
+			Interval:    "monthly",
+			CreateAhead: 2,
+		},
+		{
+			Table:       "bank_deposit_transactions",
+			Database:    "transfer",
+			Interval:    "monthly",
+			CreateAhead: 2,
+		},
 	}
+}
+
+// PartitionMetrics holds optional Prometheus metrics for outbox partition health.
+// When nil, the PartitionManager operates without metrics instrumentation.
+type PartitionMetrics struct {
+	PartitionCount  prometheus.Gauge
+	OldestAgeDays   prometheus.Gauge
+	DropErrorsTotal prometheus.Counter
 }
 
 // PartitionManager creates future partitions and archives old ones.
 // At 500M outbox rows/day, partition management is critical.
 // Uses DROP PARTITION (instant) instead of DELETE (vacuum nightmare).
 type PartitionManager struct {
-	db     DBExecutor
-	logger *slog.Logger
+	db      DBExecutor
+	logger  *slog.Logger
 	configs []PartitionConfig
+	metrics *PartitionMetrics
 }
 
 // NewPartitionManager creates a partition manager with the given database executor.
-func NewPartitionManager(db DBExecutor, logger *slog.Logger) *PartitionManager {
-	return &PartitionManager{
+// Optional functional options (e.g. WithPartitionConfigs) can be passed to
+// override defaults at construction time.
+func NewPartitionManager(db DBExecutor, logger *slog.Logger, opts ...func(*PartitionManager)) *PartitionManager {
+	pm := &PartitionManager{
 		db:      db,
 		logger:  logger.With("module", "core.maintenance.partition"),
 		configs: DefaultPartitionConfigs(),
 	}
+	for _, opt := range opts {
+		opt(pm)
+	}
+	return pm
 }
 
 // SetConfigs overrides the default partition configurations.
 func (pm *PartitionManager) SetConfigs(configs []PartitionConfig) {
 	pm.configs = configs
+}
+
+// WithPartitionConfigs returns a functional option that overrides the default
+// partition configurations. Use this for cleaner dependency injection at
+// construction time instead of calling SetConfigs after creation.
+func WithPartitionConfigs(configs []PartitionConfig) func(*PartitionManager) {
+	return func(pm *PartitionManager) {
+		pm.configs = configs
+	}
+}
+
+// WithPartitionMetrics returns a functional option that attaches Prometheus
+// metrics for outbox partition health monitoring.
+func WithPartitionMetrics(m *PartitionMetrics) func(*PartitionManager) {
+	return func(pm *PartitionManager) {
+		pm.metrics = m
+	}
 }
 
 // ManagePartitions runs the full partition management cycle:
@@ -135,12 +186,78 @@ func (pm *PartitionManager) ManagePartitions(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
+	// Record outbox partition health metrics after each cycle
+	pm.recordOutboxPartitionMetrics(ctx)
+
 	if len(errs) > 0 {
 		return fmt.Errorf("settla-maintenance: %d partition errors: %v", len(errs), errs[0])
 	}
 
 	pm.logger.Info("settla-maintenance: partition management completed")
 	return nil
+}
+
+// recordOutboxPartitionMetrics queries the outbox partition count and oldest
+// partition age, then updates the corresponding Prometheus gauges.
+func (pm *PartitionManager) recordOutboxPartitionMetrics(ctx context.Context) {
+	if pm.metrics == nil {
+		return
+	}
+
+	// Count outbox partitions (excluding the default partition)
+	countSQL := `SELECT COUNT(*) FROM pg_catalog.pg_inherits i
+		JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid
+		JOIN pg_catalog.pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'outbox' AND c.relname != 'outbox_default'`
+
+	rows, err := pm.db.Query(ctx, countSQL)
+	if err != nil {
+		pm.logger.Warn("settla-maintenance: failed to query outbox partition count", "error", err)
+		return
+	}
+	var count int64
+	if rows.Next() {
+		if scanErr := rows.Scan(&count); scanErr != nil {
+			rows.Close()
+			return
+		}
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		return
+	}
+	pm.metrics.PartitionCount.Set(float64(count))
+
+	// Find the oldest outbox partition by extracting the date from the partition
+	// range bounds via pg_catalog
+	oldestSQL := `SELECT MIN(pg_catalog.pg_get_expr(c.relpartbound, c.oid))
+		FROM pg_catalog.pg_inherits i
+		JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid
+		JOIN pg_catalog.pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'outbox' AND c.relname != 'outbox_default'`
+
+	rows, err = pm.db.Query(ctx, oldestSQL)
+	if err != nil {
+		pm.logger.Warn("settla-maintenance: failed to query oldest outbox partition", "error", err)
+		return
+	}
+	var oldestExpr *string
+	if rows.Next() {
+		if scanErr := rows.Scan(&oldestExpr); scanErr != nil {
+			rows.Close()
+			return
+		}
+	}
+	rows.Close()
+
+	if oldestExpr != nil && *oldestExpr != "" {
+		// The outbox uses daily partitions, so the oldest partition age in days
+		// is computed from the number of outbox partitions that precede today.
+		// As a simple heuristic, use the partition count to estimate the age
+		// since daily partitions span exactly 1 day each.
+		ageDays := math.Max(0, float64(count)-1)
+		pm.metrics.OldestAgeDays.Set(ageDays)
+	}
 }
 
 // createFuturePartitions creates partitions ahead of the current date.
@@ -224,6 +341,9 @@ func (pm *PartitionManager) dropOldPartitions(ctx context.Context, config Partit
 				"partition", partName,
 				"error", err,
 			)
+			if pm.metrics != nil && config.Table == "outbox" {
+				pm.metrics.DropErrorsTotal.Inc()
+			}
 			// Non-fatal: partition may not exist
 		} else {
 			pm.logger.Info("settla-maintenance: partition dropped",

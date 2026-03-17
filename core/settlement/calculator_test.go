@@ -60,7 +60,7 @@ func (m *mockSettlementStore) GetNetSettlement(_ context.Context, id uuid.UUID) 
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *mockSettlementStore) ListPendingSettlements(_ context.Context) ([]NetSettlement, error) {
+func (m *mockSettlementStore) ListPendingSettlements(_ context.Context, _ domain.AdminCaller) ([]NetSettlement, error) {
 	var result []NetSettlement
 	for _, s := range m.settlements {
 		if s.Status == "pending" || s.Status == "overdue" {
