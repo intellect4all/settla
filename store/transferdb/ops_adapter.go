@@ -2,24 +2,38 @@ package transferdb
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/intellect4all/settla/domain"
 )
 
 // OpsStore defines the cross-tenant ops queries needed by the dashboard.
 type OpsStore interface {
 	// ListManualReviews returns manual reviews. Pass a non-nil tenantID to
 	// restrict to a single tenant (tenant-scoped view); nil returns all tenants (admin view).
-	ListManualReviews(ctx context.Context, tenantID *uuid.UUID, status string) ([]OpsManualReview, error)
+	// caller identifies who is making the query and why (for audit logging).
+	ListManualReviews(ctx context.Context, caller domain.AdminCaller, tenantID *uuid.UUID, status string) ([]OpsManualReview, error)
 	ResolveManualReview(ctx context.Context, id uuid.UUID, newStatus, resolution, resolvedBy string) error
 	GetLatestReconciliationReport(ctx context.Context) (*OpsReconciliationReport, error)
 	// ListNetSettlements returns net settlements. Pass a non-nil tenantID to
 	// restrict to a single tenant; nil returns all tenants (admin view).
-	ListNetSettlements(ctx context.Context, tenantID *uuid.UUID) ([]OpsNetSettlement, error)
+	// caller identifies who is making the query and why (for audit logging).
+	ListNetSettlements(ctx context.Context, caller domain.AdminCaller, tenantID *uuid.UUID) ([]OpsNetSettlement, error)
 	MarkSettlementPaid(ctx context.Context, id uuid.UUID, paymentRef string) error
+
+	// Tenant management
+	ListAllTenants(ctx context.Context, limit, offset int32) ([]OpsTenant, error)
+	GetTenantByID(ctx context.Context, id uuid.UUID) (*OpsTenant, error)
+	UpdateTenantStatus(ctx context.Context, id uuid.UUID, status string) error
+	UpdateTenantKYBStatus(ctx context.Context, id uuid.UUID, kybStatus string) error
+	UpdateTenantFees(ctx context.Context, id uuid.UUID, feeSchedule []byte) error
+	UpdateTenantLimits(ctx context.Context, id uuid.UUID, dailyLimitUsd, perTransferLimit string) error
 }
 
 // OpsManualReview is a cross-tenant view of a manual review with transfer details.
@@ -69,129 +83,86 @@ type OpsNetSettlement struct {
 	SettledAt     *time.Time `json:"settled_at,omitempty"`
 }
 
+// OpsTenant is a tenant as seen by the ops dashboard (no secrets like webhook_secret).
+type OpsTenant struct {
+	ID               uuid.UUID       `json:"id"`
+	Name             string          `json:"name"`
+	Slug             string          `json:"slug"`
+	Status           string          `json:"status"`
+	FeeSchedule      json.RawMessage `json:"fee_schedule"`
+	SettlementModel  string          `json:"settlement_model"`
+	DailyLimitUsd    string          `json:"daily_limit_usd"`
+	PerTransferLimit string          `json:"per_transfer_limit"`
+	KybStatus        string          `json:"kyb_status"`
+	KybVerifiedAt    *time.Time      `json:"kyb_verified_at,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
 // Compile-time interface check.
 var _ OpsStore = (*OpsStoreAdapter)(nil)
 
-// OpsStoreAdapter implements OpsStore using raw pgx queries (cross-tenant, not
-// restricted to a single tenant_id like the SQLC-generated queries).
+// OpsStoreAdapter implements OpsStore using SQLC-generated queries.
 type OpsStoreAdapter struct {
-	pool *pgxpool.Pool
-	q    *Queries
+	q *Queries
 }
 
 // NewOpsAdapter creates a new OpsStoreAdapter.
-func NewOpsAdapter(pool *pgxpool.Pool, q *Queries) *OpsStoreAdapter {
-	return &OpsStoreAdapter{pool: pool, q: q}
+func NewOpsAdapter(q *Queries) *OpsStoreAdapter {
+	return &OpsStoreAdapter{q: q}
 }
 
 // ListManualReviews returns up to 100 manual reviews. When tenantID is non-nil,
 // only reviews for that tenant are returned. When status is non-empty, only
 // reviews with that status are returned. The two filters are combined with AND.
-func (a *OpsStoreAdapter) ListManualReviews(ctx context.Context, tenantID *uuid.UUID, status string) ([]OpsManualReview, error) {
-	const baseQuery = `
-		SELECT
-			mr.id,
-			mr.transfer_id,
-			mr.tenant_id,
-			COALESCE(t.name, '') AS tenant_name,
-			mr.status,
-			mr.transfer_status,
-			mr.attempted_recoveries,
-			COALESCE(tr.source_amount, 0) AS source_amount,
-			COALESCE(tr.source_currency, '') AS source_currency,
-			COALESCE(tr.dest_currency, '') AS dest_currency,
-			COALESCE(tr.failure_code, '') AS failure_code,
-			mr.created_at,
-			mr.resolved_at,
-			COALESCE(mr.resolved_by, '') AS resolved_by,
-			COALESCE(mr.resolution, '') AS resolution
-		FROM manual_reviews mr
-		LEFT JOIN tenants t ON t.id = mr.tenant_id
-		LEFT JOIN transfers tr ON tr.id = mr.transfer_id
-	`
-
-	var rows interface{ Next() bool; Scan(...any) error; Close(); Err() error }
-	var err error
-
-	switch {
-	case tenantID != nil && status != "":
-		r, qErr := a.pool.Query(ctx, baseQuery+` WHERE mr.tenant_id = $1 AND mr.status = $2 ORDER BY mr.created_at DESC LIMIT 100`, *tenantID, status)
-		rows, err = r, qErr
-	case tenantID != nil:
-		r, qErr := a.pool.Query(ctx, baseQuery+` WHERE mr.tenant_id = $1 ORDER BY mr.created_at DESC LIMIT 100`, *tenantID)
-		rows, err = r, qErr
-	case status != "":
-		r, qErr := a.pool.Query(ctx, baseQuery+` WHERE mr.status = $1 ORDER BY mr.created_at DESC LIMIT 100`, status)
-		rows, err = r, qErr
-	default:
-		r, qErr := a.pool.Query(ctx, baseQuery+` ORDER BY mr.created_at DESC LIMIT 100`)
-		rows, err = r, qErr
-	}
+func (a *OpsStoreAdapter) ListManualReviews(ctx context.Context, caller domain.AdminCaller, tenantID *uuid.UUID, status string) ([]OpsManualReview, error) {
+	slog.Info("admin cross-tenant query", "caller", caller.Service, "reason", caller.Reason, "method", "ListManualReviews")
+	rows, err := a.q.ListOpsManualReviews(ctx, ListOpsManualReviewsParams{
+		FilterTenantID: uuidFromPtr(tenantID),
+		FilterStatus:   pgtypeTextFromString(status),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-ops: listing manual reviews: %w", err)
 	}
-	defer rows.Close()
 
-	var reviews []OpsManualReview
-	for rows.Next() {
-		var (
-			rev                 OpsManualReview
-			sourceAmountNumeric any
-			resolvedAt          *time.Time
-			attemptedRecoveries int32
-		)
-		if err := rows.Scan(
-			&rev.ID,
-			&rev.TransferID,
-			&rev.TenantID,
-			&rev.TenantName,
-			&rev.Status,
-			&rev.TransferStatus,
-			&attemptedRecoveries,
-			&sourceAmountNumeric,
-			&rev.SourceCurrency,
-			&rev.DestCurrency,
-			&rev.FailureCode,
-			&rev.EscalatedAt,
-			&resolvedAt,
-			&rev.ReviewedBy,
-			&rev.Notes,
-		); err != nil {
-			return nil, fmt.Errorf("settla-ops: scanning manual review row: %w", err)
+	reviews := make([]OpsManualReview, 0, len(rows))
+	for _, r := range rows {
+		rev := OpsManualReview{
+			ID:             r.ID,
+			TransferID:     r.TransferID,
+			TenantID:       r.TenantID,
+			TenantName:     r.TenantName,
+			Status:         string(r.Status),
+			TransferStatus: r.TransferStatus,
+			SourceCurrency: r.SourceCurrency,
+			DestCurrency:   r.DestCurrency,
+			FailureCode:    r.FailureCode,
+			EscalatedAt:    r.EscalatedAt,
+			ReviewedBy:     r.ResolvedBy,
+			Notes:          r.Resolution,
 		}
 
 		// Build human-readable reason.
 		rev.Reason = fmt.Sprintf("Transfer stuck in %s state", rev.TransferStatus)
-		if attemptedRecoveries > 0 {
-			rev.Reason += fmt.Sprintf(" after %d recovery attempts", attemptedRecoveries)
+		if r.AttemptedRecoveries > 0 {
+			rev.Reason += fmt.Sprintf(" after %d recovery attempts", r.AttemptedRecoveries)
 		}
 
-		// Convert source_amount from pgtype.Numeric (comes through as interface{}).
-		// We scan it as a generic and use pgx's own numeric scanning.
-		rev.SourceAmount = "0"
-		if sourceAmountNumeric != nil {
-			// Re-scan into pgtype.Numeric via the pool row scan machinery.
-			// Simpler: format via Stringer if available.
-			rev.SourceAmount = fmt.Sprintf("%v", sourceAmountNumeric)
-		}
-
-		rev.ReviewedAt = resolvedAt
+		rev.SourceAmount = decimalFromNumeric(r.SourceAmount).String()
+		rev.ReviewedAt = timePtrFromPgtypeTz(r.ResolvedAt)
 		reviews = append(reviews, rev)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("settla-ops: iterating manual review rows: %w", err)
 	}
 	return reviews, nil
 }
 
 // ResolveManualReview updates a manual review status.
 func (a *OpsStoreAdapter) ResolveManualReview(ctx context.Context, id uuid.UUID, newStatus, resolution, resolvedBy string) error {
-	const query = `
-		UPDATE manual_reviews
-		SET status = $2, resolution = $3, resolved_by = $4, resolved_at = now()
-		WHERE id = $1
-	`
-	_, err := a.pool.Exec(ctx, query, id, newStatus, resolution, resolvedBy)
+	err := a.q.ResolveManualReview(ctx, ResolveManualReviewParams{
+		ID:         id,
+		Status:     ReviewStatusEnum(newStatus),
+		Resolution: pgtype.Text{String: resolution, Valid: resolution != ""},
+		ResolvedBy: pgtype.Text{String: resolvedBy, Valid: resolvedBy != ""},
+	})
 	if err != nil {
 		return fmt.Errorf("settla-ops: resolving manual review %s: %w", id, err)
 	}
@@ -222,95 +193,158 @@ func (a *OpsStoreAdapter) GetLatestReconciliationReport(ctx context.Context) (*O
 
 // ListNetSettlements returns up to 50 net settlements, joined with tenant names.
 // When tenantID is non-nil, only settlements for that tenant are returned.
-func (a *OpsStoreAdapter) ListNetSettlements(ctx context.Context, tenantID *uuid.UUID) ([]OpsNetSettlement, error) {
-	const baseQuery = `
-		SELECT
-			ns.id,
-			ns.tenant_id,
-			COALESCE(t.name, '') AS tenant_name,
-			ns.period_start,
-			ns.period_end,
-			ns.corridors,
-			ns.net_by_currency,
-			ns.total_fees_usd,
-			ns.instructions,
-			ns.status,
-			ns.due_date,
-			ns.settled_at
-		FROM net_settlements ns
-		LEFT JOIN tenants t ON t.id = ns.tenant_id
-	`
-	var (
-		rows interface{ Next() bool; Scan(...any) error; Close(); Err() error }
-		err  error
-	)
-	if tenantID != nil {
-		var r interface{ Next() bool; Scan(...any) error; Close(); Err() error }
-		r, err = a.pool.Query(ctx, baseQuery+` WHERE ns.tenant_id = $1 ORDER BY ns.created_at DESC LIMIT 50`, *tenantID)
-		rows = r
-	} else {
-		var r interface{ Next() bool; Scan(...any) error; Close(); Err() error }
-		r, err = a.pool.Query(ctx, baseQuery+` ORDER BY ns.created_at DESC LIMIT 50`)
-		rows = r
-	}
+func (a *OpsStoreAdapter) ListNetSettlements(ctx context.Context, caller domain.AdminCaller, tenantID *uuid.UUID) ([]OpsNetSettlement, error) {
+	slog.Info("admin cross-tenant query", "caller", caller.Service, "reason", caller.Reason, "method", "ListNetSettlements")
+	rows, err := a.q.ListOpsNetSettlements(ctx, uuidFromPtr(tenantID))
 	if err != nil {
 		return nil, fmt.Errorf("settla-ops: listing net settlements: %w", err)
 	}
-	defer rows.Close()
 
-	var settlements []OpsNetSettlement
-	for rows.Next() {
-		var (
-			s               OpsNetSettlement
-			totalFeesNumeric any
-			dueDate         *time.Time
-		)
-		if err := rows.Scan(
-			&s.ID,
-			&s.TenantID,
-			&s.TenantName,
-			&s.PeriodStart,
-			&s.PeriodEnd,
-			&s.Corridors,
-			&s.NetByCurrency,
-			&totalFeesNumeric,
-			&s.Instructions,
-			&s.Status,
-			&dueDate,
-			&s.SettledAt,
-		); err != nil {
-			return nil, fmt.Errorf("settla-ops: scanning net settlement row: %w", err)
+	settlements := make([]OpsNetSettlement, 0, len(rows))
+	for _, r := range rows {
+		s := OpsNetSettlement{
+			ID:            r.ID,
+			TenantID:      r.TenantID,
+			TenantName:    r.TenantName,
+			PeriodStart:   r.PeriodStart,
+			PeriodEnd:     r.PeriodEnd,
+			Corridors:     r.Corridors,
+			NetByCurrency: r.NetByCurrency,
+			TotalFeesUsd:  decimalFromNumeric(r.TotalFeesUsd).String(),
+			Instructions:  r.Instructions,
+			Status:        r.Status,
+			DueDate:       timePtrFromPgtypeDate(r.DueDate),
+			SettledAt:     timePtrFromPgtypeTz(r.SettledAt),
 		}
-
-		s.TotalFeesUsd = "0"
-		if totalFeesNumeric != nil {
-			s.TotalFeesUsd = fmt.Sprintf("%v", totalFeesNumeric)
-		}
-		s.DueDate = dueDate
 		settlements = append(settlements, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("settla-ops: iterating net settlement rows: %w", err)
 	}
 	return settlements, nil
 }
 
+// ListAllTenants returns up to `limit` tenants starting at `offset`.
+func (a *OpsStoreAdapter) ListAllTenants(ctx context.Context, limit, offset int32) ([]OpsTenant, error) {
+	rows, err := a.q.ListTenants(ctx, ListTenantsParams{Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, fmt.Errorf("settla-ops: listing tenants: %w", err)
+	}
+	tenants := make([]OpsTenant, 0, len(rows))
+	for _, t := range rows {
+		tenants = append(tenants, tenantToOps(t))
+	}
+	return tenants, nil
+}
+
+// GetTenantByID returns a single tenant by ID.
+func (a *OpsStoreAdapter) GetTenantByID(ctx context.Context, id uuid.UUID) (*OpsTenant, error) {
+	t, err := a.q.GetTenant(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("settla-ops: getting tenant %s: %w", id, err)
+	}
+	ot := tenantToOps(t)
+	return &ot, nil
+}
+
+// UpdateTenantStatus updates a tenant's status (ACTIVE, SUSPENDED, ONBOARDING).
+func (a *OpsStoreAdapter) UpdateTenantStatus(ctx context.Context, id uuid.UUID, status string) error {
+	err := a.q.UpdateTenantStatus(ctx, UpdateTenantStatusParams{ID: id, Status: status})
+	if err != nil {
+		return fmt.Errorf("settla-ops: updating tenant %s status: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateTenantKYBStatus updates a tenant's KYB status.
+func (a *OpsStoreAdapter) UpdateTenantKYBStatus(ctx context.Context, id uuid.UUID, kybStatus string) error {
+	err := a.q.UpdateTenantKYB(ctx, UpdateTenantKYBParams{ID: id, KybStatus: kybStatus})
+	if err != nil {
+		return fmt.Errorf("settla-ops: updating tenant %s KYB status: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateTenantFees updates a tenant's fee schedule.
+func (a *OpsStoreAdapter) UpdateTenantFees(ctx context.Context, id uuid.UUID, feeSchedule []byte) error {
+	err := a.q.UpdateTenantFeeSchedule(ctx, UpdateTenantFeeScheduleParams{ID: id, FeeSchedule: feeSchedule})
+	if err != nil {
+		return fmt.Errorf("settla-ops: updating tenant %s fees: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateTenantLimits updates a tenant's daily and per-transfer limits.
+func (a *OpsStoreAdapter) UpdateTenantLimits(ctx context.Context, id uuid.UUID, dailyLimitUsd, perTransferLimit string) error {
+	daily := pgtype.Numeric{}
+	if err := daily.Scan(dailyLimitUsd); err != nil {
+		return fmt.Errorf("settla-ops: parsing daily_limit_usd %q: %w", dailyLimitUsd, err)
+	}
+	perTx := pgtype.Numeric{}
+	if err := perTx.Scan(perTransferLimit); err != nil {
+		return fmt.Errorf("settla-ops: parsing per_transfer_limit %q: %w", perTransferLimit, err)
+	}
+	err := a.q.UpdateTenantLimits(ctx, UpdateTenantLimitsParams{
+		ID:               id,
+		DailyLimitUsd:    daily,
+		PerTransferLimit: perTx,
+	})
+	if err != nil {
+		return fmt.Errorf("settla-ops: updating tenant %s limits: %w", id, err)
+	}
+	return nil
+}
+
+// tenantToOps converts a SQLC Tenant to an OpsTenant (strips secrets).
+func tenantToOps(t Tenant) OpsTenant {
+	dailyLimit := numericToString(t.DailyLimitUsd)
+	perTx := numericToString(t.PerTransferLimit)
+	var kybAt *time.Time
+	if t.KybVerifiedAt.Valid {
+		ts := t.KybVerifiedAt.Time
+		kybAt = &ts
+	}
+	return OpsTenant{
+		ID:               t.ID,
+		Name:             t.Name,
+		Slug:             t.Slug,
+		Status:           t.Status,
+		FeeSchedule:      json.RawMessage(t.FeeSchedule),
+		SettlementModel:  t.SettlementModel,
+		DailyLimitUsd:    dailyLimit,
+		PerTransferLimit: perTx,
+		KybStatus:        t.KybStatus,
+		KybVerifiedAt:    kybAt,
+		CreatedAt:        t.CreatedAt,
+		UpdatedAt:        t.UpdatedAt,
+	}
+}
+
+// numericToString converts a pgtype.Numeric to a string, returning "0" if invalid.
+func numericToString(n pgtype.Numeric) string {
+	if !n.Valid {
+		return "0"
+	}
+	f, err := n.Float64Value()
+	if err != nil || !f.Valid {
+		return "0"
+	}
+	return fmt.Sprintf("%.2f", f.Float64)
+}
+
 // MarkSettlementPaid marks a net settlement as paid and records the payment reference.
 func (a *OpsStoreAdapter) MarkSettlementPaid(ctx context.Context, id uuid.UUID, paymentRef string) error {
-	const query = `
-		UPDATE net_settlements
-		SET status = 'paid',
-		    settled_at = now(),
-		    instructions = jsonb_set(
-		        COALESCE(instructions, '[]'::jsonb),
-		        '{payment_ref}',
-		        to_jsonb($2::text)
-		    )
-		WHERE id = $1
-	`
-	_, err := a.pool.Exec(ctx, query, id, paymentRef)
+	err := a.q.MarkSettlementPaid(ctx, MarkSettlementPaidParams{
+		ID:         id,
+		PaymentRef: paymentRef,
+	})
 	if err != nil {
 		return fmt.Errorf("settla-ops: marking settlement %s as paid: %w", id, err)
 	}
 	return nil
+}
+
+// pgtypeTextFromString returns a valid pgtype.Text when s is non-empty, otherwise invalid (NULL).
+func pgtypeTextFromString(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
 }

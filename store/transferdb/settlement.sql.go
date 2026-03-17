@@ -91,8 +91,68 @@ func (q *Queries) GetNetSettlement(ctx context.Context, id uuid.UUID) (NetSettle
 	return i, err
 }
 
+const listAllPendingSettlements = `-- name: ListAllPendingSettlements :many
+SELECT ns.id, ns.tenant_id, ns.period_start, ns.period_end, ns.corridors, ns.net_by_currency, ns.total_fees_usd, ns.instructions, ns.status, ns.due_date, ns.settled_at, ns.created_at, t.name AS tenant_name
+FROM net_settlements ns
+JOIN tenants t ON t.id = ns.tenant_id
+WHERE ns.status IN ('pending', 'overdue')
+ORDER BY ns.due_date ASC
+`
+
+type ListAllPendingSettlementsRow struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+	TenantName    string             `json:"tenant_name"`
+}
+
+// Admin-only: returns pending settlements across all tenants.
+// Callers MUST verify admin authorization before invoking.
+func (q *Queries) ListAllPendingSettlements(ctx context.Context) ([]ListAllPendingSettlementsRow, error) {
+	rows, err := q.db.Query(ctx, listAllPendingSettlements)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllPendingSettlementsRow{}
+	for rows.Next() {
+		var i ListAllPendingSettlementsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.PeriodStart,
+			&i.PeriodEnd,
+			&i.Corridors,
+			&i.NetByCurrency,
+			&i.TotalFeesUsd,
+			&i.Instructions,
+			&i.Status,
+			&i.DueDate,
+			&i.SettledAt,
+			&i.CreatedAt,
+			&i.TenantName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCompletedTransfersByPeriod = `-- name: ListCompletedTransfersByPeriod :many
-SELECT source_currency, source_amount, dest_currency, dest_amount,
+SELECT id, source_currency, source_amount, dest_currency, dest_amount,
        COALESCE((fees->>'total_usd')::NUMERIC(28,8), 0) AS fees_usd
 FROM transfers
 WHERE tenant_id = $1
@@ -108,6 +168,7 @@ type ListCompletedTransfersByPeriodParams struct {
 }
 
 type ListCompletedTransfersByPeriodRow struct {
+	ID             uuid.UUID      `json:"id"`
 	SourceCurrency string         `json:"source_currency"`
 	SourceAmount   pgtype.Numeric `json:"source_amount"`
 	DestCurrency   string         `json:"dest_currency"`
@@ -125,6 +186,7 @@ func (q *Queries) ListCompletedTransfersByPeriod(ctx context.Context, arg ListCo
 	for rows.Next() {
 		var i ListCompletedTransfersByPeriodRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.SourceCurrency,
 			&i.SourceAmount,
 			&i.DestCurrency,
@@ -145,7 +207,8 @@ const listPendingSettlements = `-- name: ListPendingSettlements :many
 SELECT ns.id, ns.tenant_id, ns.period_start, ns.period_end, ns.corridors, ns.net_by_currency, ns.total_fees_usd, ns.instructions, ns.status, ns.due_date, ns.settled_at, ns.created_at, t.name AS tenant_name
 FROM net_settlements ns
 JOIN tenants t ON t.id = ns.tenant_id
-WHERE ns.status IN ('pending', 'overdue')
+WHERE ns.tenant_id = $1
+  AND ns.status IN ('pending', 'overdue')
 ORDER BY ns.due_date ASC
 `
 
@@ -165,8 +228,8 @@ type ListPendingSettlementsRow struct {
 	TenantName    string             `json:"tenant_name"`
 }
 
-func (q *Queries) ListPendingSettlements(ctx context.Context) ([]ListPendingSettlementsRow, error) {
-	rows, err := q.db.Query(ctx, listPendingSettlements)
+func (q *Queries) ListPendingSettlements(ctx context.Context, tenantID uuid.UUID) ([]ListPendingSettlementsRow, error) {
+	rows, err := q.db.Query(ctx, listPendingSettlements, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +263,7 @@ func (q *Queries) ListPendingSettlements(ctx context.Context) ([]ListPendingSett
 }
 
 const listTenantsBySettlementModel = `-- name: ListTenantsBySettlementModel :many
-SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events FROM tenants
+SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events, crypto_enabled, default_settlement_pref, supported_chains, min_confirmations_tron, min_confirmations_eth, min_confirmations_base, payment_tolerance_bps, default_session_ttl_secs, bank_deposits_enabled, default_banking_partner, bank_supported_currencies, default_mismatch_policy, bank_default_session_ttl_secs, fee_schedule_version FROM tenants
 WHERE settlement_model = $1
 `
 
@@ -230,6 +293,20 @@ func (q *Queries) ListTenantsBySettlementModel(ctx context.Context, settlementMo
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.WebhookEvents,
+			&i.CryptoEnabled,
+			&i.DefaultSettlementPref,
+			&i.SupportedChains,
+			&i.MinConfirmationsTron,
+			&i.MinConfirmationsEth,
+			&i.MinConfirmationsBase,
+			&i.PaymentToleranceBps,
+			&i.DefaultSessionTtlSecs,
+			&i.BankDepositsEnabled,
+			&i.DefaultBankingPartner,
+			&i.BankSupportedCurrencies,
+			&i.DefaultMismatchPolicy,
+			&i.BankDefaultSessionTtlSecs,
+			&i.FeeScheduleVersion,
 		); err != nil {
 			return nil, err
 		}

@@ -13,6 +13,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type BankDepositSessionStatusEnum string
+
+const (
+	BankDepositSessionStatusEnumPENDINGPAYMENT  BankDepositSessionStatusEnum = "PENDING_PAYMENT"
+	BankDepositSessionStatusEnumPAYMENTRECEIVED BankDepositSessionStatusEnum = "PAYMENT_RECEIVED"
+	BankDepositSessionStatusEnumCREDITING       BankDepositSessionStatusEnum = "CREDITING"
+	BankDepositSessionStatusEnumCREDITED        BankDepositSessionStatusEnum = "CREDITED"
+	BankDepositSessionStatusEnumSETTLING        BankDepositSessionStatusEnum = "SETTLING"
+	BankDepositSessionStatusEnumSETTLED         BankDepositSessionStatusEnum = "SETTLED"
+	BankDepositSessionStatusEnumHELD            BankDepositSessionStatusEnum = "HELD"
+	BankDepositSessionStatusEnumEXPIRED         BankDepositSessionStatusEnum = "EXPIRED"
+	BankDepositSessionStatusEnumFAILED          BankDepositSessionStatusEnum = "FAILED"
+	BankDepositSessionStatusEnumCANCELLED       BankDepositSessionStatusEnum = "CANCELLED"
+	BankDepositSessionStatusEnumUNDERPAID       BankDepositSessionStatusEnum = "UNDERPAID"
+	BankDepositSessionStatusEnumOVERPAID        BankDepositSessionStatusEnum = "OVERPAID"
+)
+
+func (e *BankDepositSessionStatusEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BankDepositSessionStatusEnum(s)
+	case string:
+		*e = BankDepositSessionStatusEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BankDepositSessionStatusEnum: %T", src)
+	}
+	return nil
+}
+
+type NullBankDepositSessionStatusEnum struct {
+	BankDepositSessionStatusEnum BankDepositSessionStatusEnum `json:"bank_deposit_session_status_enum"`
+	Valid                        bool                         `json:"valid"` // Valid is true if BankDepositSessionStatusEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBankDepositSessionStatusEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.BankDepositSessionStatusEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BankDepositSessionStatusEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBankDepositSessionStatusEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BankDepositSessionStatusEnum), nil
+}
+
 type CompensationStrategyEnum string
 
 const (
@@ -55,6 +107,99 @@ func (ns NullCompensationStrategyEnum) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.CompensationStrategyEnum), nil
+}
+
+type DepositSessionStatusEnum string
+
+const (
+	DepositSessionStatusEnumPENDINGPAYMENT DepositSessionStatusEnum = "PENDING_PAYMENT"
+	DepositSessionStatusEnumDETECTED       DepositSessionStatusEnum = "DETECTED"
+	DepositSessionStatusEnumCONFIRMED      DepositSessionStatusEnum = "CONFIRMED"
+	DepositSessionStatusEnumCREDITING      DepositSessionStatusEnum = "CREDITING"
+	DepositSessionStatusEnumCREDITED       DepositSessionStatusEnum = "CREDITED"
+	DepositSessionStatusEnumSETTLING       DepositSessionStatusEnum = "SETTLING"
+	DepositSessionStatusEnumSETTLED        DepositSessionStatusEnum = "SETTLED"
+	DepositSessionStatusEnumHELD           DepositSessionStatusEnum = "HELD"
+	DepositSessionStatusEnumEXPIRED        DepositSessionStatusEnum = "EXPIRED"
+	DepositSessionStatusEnumFAILED         DepositSessionStatusEnum = "FAILED"
+	DepositSessionStatusEnumCANCELLED      DepositSessionStatusEnum = "CANCELLED"
+)
+
+func (e *DepositSessionStatusEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = DepositSessionStatusEnum(s)
+	case string:
+		*e = DepositSessionStatusEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for DepositSessionStatusEnum: %T", src)
+	}
+	return nil
+}
+
+type NullDepositSessionStatusEnum struct {
+	DepositSessionStatusEnum DepositSessionStatusEnum `json:"deposit_session_status_enum"`
+	Valid                    bool                     `json:"valid"` // Valid is true if DepositSessionStatusEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullDepositSessionStatusEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.DepositSessionStatusEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.DepositSessionStatusEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullDepositSessionStatusEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.DepositSessionStatusEnum), nil
+}
+
+type PaymentMismatchPolicyEnum string
+
+const (
+	PaymentMismatchPolicyEnumACCEPT PaymentMismatchPolicyEnum = "ACCEPT"
+	PaymentMismatchPolicyEnumREJECT PaymentMismatchPolicyEnum = "REJECT"
+)
+
+func (e *PaymentMismatchPolicyEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PaymentMismatchPolicyEnum(s)
+	case string:
+		*e = PaymentMismatchPolicyEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PaymentMismatchPolicyEnum: %T", src)
+	}
+	return nil
+}
+
+type NullPaymentMismatchPolicyEnum struct {
+	PaymentMismatchPolicyEnum PaymentMismatchPolicyEnum `json:"payment_mismatch_policy_enum"`
+	Valid                     bool                      `json:"valid"` // Valid is true if PaymentMismatchPolicyEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPaymentMismatchPolicyEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.PaymentMismatchPolicyEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PaymentMismatchPolicyEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPaymentMismatchPolicyEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PaymentMismatchPolicyEnum), nil
 }
 
 type ProviderTxTypeEnum string
@@ -143,6 +288,49 @@ func (ns NullReviewStatusEnum) Value() (driver.Value, error) {
 	return string(ns.ReviewStatusEnum), nil
 }
 
+type SettlementPreferenceEnum string
+
+const (
+	SettlementPreferenceEnumAUTOCONVERT SettlementPreferenceEnum = "AUTO_CONVERT"
+	SettlementPreferenceEnumHOLD        SettlementPreferenceEnum = "HOLD"
+	SettlementPreferenceEnumTHRESHOLD   SettlementPreferenceEnum = "THRESHOLD"
+)
+
+func (e *SettlementPreferenceEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = SettlementPreferenceEnum(s)
+	case string:
+		*e = SettlementPreferenceEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for SettlementPreferenceEnum: %T", src)
+	}
+	return nil
+}
+
+type NullSettlementPreferenceEnum struct {
+	SettlementPreferenceEnum SettlementPreferenceEnum `json:"settlement_preference_enum"`
+	Valid                    bool                     `json:"valid"` // Valid is true if SettlementPreferenceEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullSettlementPreferenceEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.SettlementPreferenceEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.SettlementPreferenceEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullSettlementPreferenceEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.SettlementPreferenceEnum), nil
+}
+
 type TransferStatusEnum string
 
 const (
@@ -192,6 +380,87 @@ func (ns NullTransferStatusEnum) Value() (driver.Value, error) {
 	return string(ns.TransferStatusEnum), nil
 }
 
+type VirtualAccountTypeEnum string
+
+const (
+	VirtualAccountTypeEnumPERMANENT VirtualAccountTypeEnum = "PERMANENT"
+	VirtualAccountTypeEnumTEMPORARY VirtualAccountTypeEnum = "TEMPORARY"
+)
+
+func (e *VirtualAccountTypeEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = VirtualAccountTypeEnum(s)
+	case string:
+		*e = VirtualAccountTypeEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for VirtualAccountTypeEnum: %T", src)
+	}
+	return nil
+}
+
+type NullVirtualAccountTypeEnum struct {
+	VirtualAccountTypeEnum VirtualAccountTypeEnum `json:"virtual_account_type_enum"`
+	Valid                  bool                   `json:"valid"` // Valid is true if VirtualAccountTypeEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullVirtualAccountTypeEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.VirtualAccountTypeEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.VirtualAccountTypeEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullVirtualAccountTypeEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.VirtualAccountTypeEnum), nil
+}
+
+type AnalyticsDailySnapshot struct {
+	ID             uuid.UUID      `json:"id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	SnapshotDate   pgtype.Date    `json:"snapshot_date"`
+	MetricType     string         `json:"metric_type"`
+	SourceCurrency string         `json:"source_currency"`
+	DestCurrency   string         `json:"dest_currency"`
+	Provider       string         `json:"provider"`
+	TransferCount  int64          `json:"transfer_count"`
+	CompletedCount int64          `json:"completed_count"`
+	FailedCount    int64          `json:"failed_count"`
+	VolumeUsd      pgtype.Numeric `json:"volume_usd"`
+	FeesUsd        pgtype.Numeric `json:"fees_usd"`
+	OnRampFeesUsd  pgtype.Numeric `json:"on_ramp_fees_usd"`
+	OffRampFeesUsd pgtype.Numeric `json:"off_ramp_fees_usd"`
+	NetworkFeesUsd pgtype.Numeric `json:"network_fees_usd"`
+	AvgLatencyMs   int32          `json:"avg_latency_ms"`
+	P50LatencyMs   int32          `json:"p50_latency_ms"`
+	P90LatencyMs   int32          `json:"p90_latency_ms"`
+	P95LatencyMs   int32          `json:"p95_latency_ms"`
+	SuccessRate    pgtype.Numeric `json:"success_rate"`
+	CreatedAt      time.Time      `json:"created_at"`
+}
+
+type AnalyticsExportJob struct {
+	ID                uuid.UUID          `json:"id"`
+	TenantID          uuid.UUID          `json:"tenant_id"`
+	Status            string             `json:"status"`
+	ExportType        string             `json:"export_type"`
+	Parameters        []byte             `json:"parameters"`
+	FilePath          pgtype.Text        `json:"file_path"`
+	DownloadUrl       pgtype.Text        `json:"download_url"`
+	DownloadExpiresAt pgtype.Timestamptz `json:"download_expires_at"`
+	RowCount          int64              `json:"row_count"`
+	ErrorMessage      pgtype.Text        `json:"error_message"`
+	CreatedAt         time.Time          `json:"created_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+}
+
 type ApiKey struct {
 	ID          uuid.UUID          `json:"id"`
 	TenantID    uuid.UUID          `json:"tenant_id"`
@@ -203,6 +472,455 @@ type ApiKey struct {
 	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   time.Time          `json:"created_at"`
+}
+
+type AuditLog struct {
+	ID         uuid.UUID   `json:"id"`
+	TenantID   uuid.UUID   `json:"tenant_id"`
+	ActorType  string      `json:"actor_type"`
+	ActorID    string      `json:"actor_id"`
+	Action     string      `json:"action"`
+	EntityType string      `json:"entity_type"`
+	EntityID   pgtype.UUID `json:"entity_id"`
+	OldValue   []byte      `json:"old_value"`
+	NewValue   []byte      `json:"new_value"`
+	Metadata   []byte      `json:"metadata"`
+	CreatedAt  time.Time   `json:"created_at"`
+}
+
+type BankDepositSession struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsDefault struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m03 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m04 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m05 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m06 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m07 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositSessionsY2026m08 struct {
+	ID                   uuid.UUID                    `json:"id"`
+	TenantID             uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text                  `json:"idempotency_key"`
+	Status               BankDepositSessionStatusEnum `json:"status"`
+	Version              int64                        `json:"version"`
+	BankingPartnerID     string                       `json:"banking_partner_id"`
+	AccountNumber        string                       `json:"account_number"`
+	AccountName          string                       `json:"account_name"`
+	SortCode             string                       `json:"sort_code"`
+	Iban                 string                       `json:"iban"`
+	AccountType          VirtualAccountTypeEnum       `json:"account_type"`
+	Currency             string                       `json:"currency"`
+	ExpectedAmount       pgtype.Numeric               `json:"expected_amount"`
+	MinAmount            pgtype.Numeric               `json:"min_amount"`
+	MaxAmount            pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy       PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps     int32                        `json:"collection_fee_bps"`
+	SettlementPref       SettlementPreferenceEnum     `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            string                       `json:"payer_name"`
+	PayerReference       string                       `json:"payer_reference"`
+	BankReference        string                       `json:"bank_reference"`
+	ExpiresAt            time.Time                    `json:"expires_at"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
+	PaymentReceivedAt    pgtype.Timestamptz           `json:"payment_received_at"`
+	CreditedAt           pgtype.Timestamptz           `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz           `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz           `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz           `json:"failed_at"`
+	FailureReason        pgtype.Text                  `json:"failure_reason"`
+	FailureCode          pgtype.Text                  `json:"failure_code"`
+	Metadata             []byte                       `json:"metadata"`
+}
+
+type BankDepositTransaction struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsDefault struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m03 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m04 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m05 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m06 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m07 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankDepositTransactionsY2026m08 struct {
+	ID                 uuid.UUID      `json:"id"`
+	SessionID          uuid.UUID      `json:"session_id"`
+	TenantID           uuid.UUID      `json:"tenant_id"`
+	BankReference      string         `json:"bank_reference"`
+	PayerName          string         `json:"payer_name"`
+	PayerAccountNumber string         `json:"payer_account_number"`
+	Amount             pgtype.Numeric `json:"amount"`
+	Currency           string         `json:"currency"`
+	ReceivedAt         time.Time      `json:"received_at"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+type BankingPartner struct {
+	ID                  uuid.UUID   `json:"id"`
+	Name                string      `json:"name"`
+	WebhookSecret       pgtype.Text `json:"webhook_secret"`
+	SupportedCurrencies []string    `json:"supported_currencies"`
+	IsActive            bool        `json:"is_active"`
+	Metadata            []byte      `json:"metadata"`
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
+}
+
+type BlockCheckpoint struct {
+	ID          uuid.UUID `json:"id"`
+	Chain       string    `json:"chain"`
+	BlockNumber int64     `json:"block_number"`
+	BlockHash   string    `json:"block_hash"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type CompensationRecord struct {
@@ -218,6 +936,449 @@ type CompensationRecord struct {
 	Status         string                   `json:"status"`
 	CreatedAt      time.Time                `json:"created_at"`
 	CompletedAt    pgtype.Timestamptz       `json:"completed_at"`
+}
+
+type CryptoAddressPool struct {
+	ID              uuid.UUID          `json:"id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	Address         string             `json:"address"`
+	DerivationIndex int64              `json:"derivation_index"`
+	Dispensed       bool               `json:"dispensed"`
+	DispensedAt     pgtype.Timestamptz `json:"dispensed_at"`
+	SessionID       pgtype.UUID        `json:"session_id"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositAddressIndex struct {
+	ID        uuid.UUID `json:"id"`
+	Chain     string    `json:"chain"`
+	Address   string    `json:"address"`
+	TenantID  uuid.UUID `json:"tenant_id"`
+	SessionID uuid.UUID `json:"session_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CryptoDepositSession struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsDefault struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m03 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m04 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m05 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m06 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m07 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositSessionsY2026m08 struct {
+	ID                   uuid.UUID                `json:"id"`
+	TenantID             uuid.UUID                `json:"tenant_id"`
+	IdempotencyKey       pgtype.Text              `json:"idempotency_key"`
+	Status               DepositSessionStatusEnum `json:"status"`
+	Version              int64                    `json:"version"`
+	Chain                string                   `json:"chain"`
+	Token                string                   `json:"token"`
+	DepositAddress       string                   `json:"deposit_address"`
+	ExpectedAmount       pgtype.Numeric           `json:"expected_amount"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	Currency             string                   `json:"currency"`
+	CollectionFeeBps     int32                    `json:"collection_fee_bps"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementPref       SettlementPreferenceEnum `json:"settlement_pref"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	DerivationIndex      int64                    `json:"derivation_index"`
+	ExpiresAt            time.Time                `json:"expires_at"`
+	CreatedAt            time.Time                `json:"created_at"`
+	UpdatedAt            time.Time                `json:"updated_at"`
+	DetectedAt           pgtype.Timestamptz       `json:"detected_at"`
+	ConfirmedAt          pgtype.Timestamptz       `json:"confirmed_at"`
+	CreditedAt           pgtype.Timestamptz       `json:"credited_at"`
+	SettledAt            pgtype.Timestamptz       `json:"settled_at"`
+	ExpiredAt            pgtype.Timestamptz       `json:"expired_at"`
+	FailedAt             pgtype.Timestamptz       `json:"failed_at"`
+	FailureReason        pgtype.Text              `json:"failure_reason"`
+	FailureCode          pgtype.Text              `json:"failure_code"`
+	Metadata             []byte                   `json:"metadata"`
+}
+
+type CryptoDepositTransaction struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsDefault struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m03 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m04 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m05 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m06 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m07 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDepositTransactionsY2026m08 struct {
+	ID              uuid.UUID          `json:"id"`
+	SessionID       uuid.UUID          `json:"session_id"`
+	TenantID        uuid.UUID          `json:"tenant_id"`
+	Chain           string             `json:"chain"`
+	TxHash          string             `json:"tx_hash"`
+	FromAddress     string             `json:"from_address"`
+	ToAddress       string             `json:"to_address"`
+	TokenContract   string             `json:"token_contract"`
+	Amount          pgtype.Numeric     `json:"amount"`
+	BlockNumber     int64              `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	Confirmations   int32              `json:"confirmations"`
+	RequiredConfirm int32              `json:"required_confirm"`
+	Confirmed       bool               `json:"confirmed"`
+	DetectedAt      time.Time          `json:"detected_at"`
+	ConfirmedAt     pgtype.Timestamptz `json:"confirmed_at"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type CryptoDerivationCounter struct {
+	TenantID  uuid.UUID `json:"tenant_id"`
+	Chain     string    `json:"chain"`
+	NextIndex int64     `json:"next_index"`
 }
 
 type ManualReview struct {
@@ -339,7 +1500,71 @@ type OutboxY2026m03d12 struct {
 	CreatedAt     time.Time          `json:"created_at"`
 }
 
+type PaymentLink struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	ShortCode     string             `json:"short_code"`
+	Description   string             `json:"description"`
+	SessionConfig []byte             `json:"session_config"`
+	UseLimit      pgtype.Int4        `json:"use_limit"`
+	UseCount      int32              `json:"use_count"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	RedirectUrl   string             `json:"redirect_url"`
+	Status        string             `json:"status"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+type PortalUser struct {
+	ID                  uuid.UUID          `json:"id"`
+	TenantID            uuid.UUID          `json:"tenant_id"`
+	Email               string             `json:"email"`
+	PasswordHash        string             `json:"password_hash"`
+	DisplayName         string             `json:"display_name"`
+	Role                string             `json:"role"`
+	EmailVerified       bool               `json:"email_verified"`
+	EmailTokenHash      pgtype.Text        `json:"email_token_hash"`
+	EmailTokenExpiresAt pgtype.Timestamptz `json:"email_token_expires_at"`
+	LastLoginAt         pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+}
+
 type ProviderTransaction struct {
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	Provider   string             `json:"provider"`
+	TxType     ProviderTxTypeEnum `json:"tx_type"`
+	ExternalID pgtype.Text        `json:"external_id"`
+	TransferID uuid.UUID          `json:"transfer_id"`
+	Status     string             `json:"status"`
+	Amount     pgtype.Numeric     `json:"amount"`
+	Currency   string             `json:"currency"`
+	Chain      pgtype.Text        `json:"chain"`
+	TxHash     pgtype.Text        `json:"tx_hash"`
+	Metadata   []byte             `json:"metadata"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+}
+
+type ProviderTransactionsDefault struct {
+	ID         uuid.UUID          `json:"id"`
+	TenantID   uuid.UUID          `json:"tenant_id"`
+	Provider   string             `json:"provider"`
+	TxType     ProviderTxTypeEnum `json:"tx_type"`
+	ExternalID pgtype.Text        `json:"external_id"`
+	TransferID uuid.UUID          `json:"transfer_id"`
+	Status     string             `json:"status"`
+	Amount     pgtype.Numeric     `json:"amount"`
+	Currency   string             `json:"currency"`
+	Chain      pgtype.Text        `json:"chain"`
+	TxHash     pgtype.Text        `json:"tx_hash"`
+	Metadata   []byte             `json:"metadata"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+}
+
+type ProviderTransactionsOld struct {
 	ID         uuid.UUID          `json:"id"`
 	TenantID   uuid.UUID          `json:"tenant_id"`
 	Provider   string             `json:"provider"`
@@ -385,52 +1610,80 @@ type ReconciliationReport struct {
 }
 
 type Tenant struct {
-	ID               uuid.UUID          `json:"id"`
-	Name             string             `json:"name"`
-	Slug             string             `json:"slug"`
-	Status           string             `json:"status"`
-	FeeSchedule      []byte             `json:"fee_schedule"`
-	SettlementModel  string             `json:"settlement_model"`
-	WebhookUrl       pgtype.Text        `json:"webhook_url"`
-	WebhookSecret    pgtype.Text        `json:"webhook_secret"`
-	DailyLimitUsd    pgtype.Numeric     `json:"daily_limit_usd"`
-	PerTransferLimit pgtype.Numeric     `json:"per_transfer_limit"`
-	KybStatus        string             `json:"kyb_status"`
-	KybVerifiedAt    pgtype.Timestamptz `json:"kyb_verified_at"`
-	Metadata         []byte             `json:"metadata"`
-	CreatedAt        time.Time          `json:"created_at"`
-	UpdatedAt        time.Time          `json:"updated_at"`
-	WebhookEvents    []string           `json:"webhook_events"`
+	ID                        uuid.UUID                 `json:"id"`
+	Name                      string                    `json:"name"`
+	Slug                      string                    `json:"slug"`
+	Status                    string                    `json:"status"`
+	FeeSchedule               []byte                    `json:"fee_schedule"`
+	SettlementModel           string                    `json:"settlement_model"`
+	WebhookUrl                pgtype.Text               `json:"webhook_url"`
+	WebhookSecret             pgtype.Text               `json:"webhook_secret"`
+	DailyLimitUsd             pgtype.Numeric            `json:"daily_limit_usd"`
+	PerTransferLimit          pgtype.Numeric            `json:"per_transfer_limit"`
+	KybStatus                 string                    `json:"kyb_status"`
+	KybVerifiedAt             pgtype.Timestamptz        `json:"kyb_verified_at"`
+	Metadata                  []byte                    `json:"metadata"`
+	CreatedAt                 time.Time                 `json:"created_at"`
+	UpdatedAt                 time.Time                 `json:"updated_at"`
+	WebhookEvents             []string                  `json:"webhook_events"`
+	CryptoEnabled             bool                      `json:"crypto_enabled"`
+	DefaultSettlementPref     string                    `json:"default_settlement_pref"`
+	SupportedChains           []string                  `json:"supported_chains"`
+	MinConfirmationsTron      int32                     `json:"min_confirmations_tron"`
+	MinConfirmationsEth       int32                     `json:"min_confirmations_eth"`
+	MinConfirmationsBase      int32                     `json:"min_confirmations_base"`
+	PaymentToleranceBps       int32                     `json:"payment_tolerance_bps"`
+	DefaultSessionTtlSecs     int32                     `json:"default_session_ttl_secs"`
+	BankDepositsEnabled       bool                      `json:"bank_deposits_enabled"`
+	DefaultBankingPartner     pgtype.Text               `json:"default_banking_partner"`
+	BankSupportedCurrencies   []string                  `json:"bank_supported_currencies"`
+	DefaultMismatchPolicy     PaymentMismatchPolicyEnum `json:"default_mismatch_policy"`
+	BankDefaultSessionTtlSecs int32                     `json:"bank_default_session_ttl_secs"`
+	FeeScheduleVersion        int32                     `json:"fee_schedule_version"`
+}
+
+type Token struct {
+	ID              uuid.UUID `json:"id"`
+	Chain           string    `json:"chain"`
+	Symbol          string    `json:"symbol"`
+	ContractAddress string    `json:"contract_address"`
+	Decimals        int32     `json:"decimals"`
+	IsActive        bool      `json:"is_active"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type Transfer struct {
-	ID                uuid.UUID          `json:"id"`
-	TenantID          uuid.UUID          `json:"tenant_id"`
-	ExternalRef       pgtype.Text        `json:"external_ref"`
-	IdempotencyKey    pgtype.Text        `json:"idempotency_key"`
-	Status            TransferStatusEnum `json:"status"`
-	Version           int64              `json:"version"`
-	SourceCurrency    string             `json:"source_currency"`
-	SourceAmount      pgtype.Numeric     `json:"source_amount"`
-	DestCurrency      string             `json:"dest_currency"`
-	DestAmount        pgtype.Numeric     `json:"dest_amount"`
-	StableCoin        pgtype.Text        `json:"stable_coin"`
-	StableAmount      pgtype.Numeric     `json:"stable_amount"`
-	Chain             pgtype.Text        `json:"chain"`
-	FxRate            pgtype.Numeric     `json:"fx_rate"`
-	Fees              []byte             `json:"fees"`
-	Sender            []byte             `json:"sender"`
-	Recipient         []byte             `json:"recipient"`
-	QuoteID           pgtype.UUID        `json:"quote_id"`
-	CreatedAt         time.Time          `json:"created_at"`
-	UpdatedAt         time.Time          `json:"updated_at"`
-	FundedAt          pgtype.Timestamptz `json:"funded_at"`
-	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
-	FailedAt          pgtype.Timestamptz `json:"failed_at"`
-	FailureReason     pgtype.Text        `json:"failure_reason"`
-	FailureCode       pgtype.Text        `json:"failure_code"`
-	OnRampProviderID  pgtype.Text        `json:"on_ramp_provider_id"`
-	OffRampProviderID pgtype.Text        `json:"off_ramp_provider_id"`
+	ID                  uuid.UUID          `json:"id"`
+	TenantID            uuid.UUID          `json:"tenant_id"`
+	ExternalRef         pgtype.Text        `json:"external_ref"`
+	IdempotencyKey      pgtype.Text        `json:"idempotency_key"`
+	Status              TransferStatusEnum `json:"status"`
+	Version             int64              `json:"version"`
+	SourceCurrency      string             `json:"source_currency"`
+	SourceAmount        pgtype.Numeric     `json:"source_amount"`
+	DestCurrency        string             `json:"dest_currency"`
+	DestAmount          pgtype.Numeric     `json:"dest_amount"`
+	StableCoin          pgtype.Text        `json:"stable_coin"`
+	StableAmount        pgtype.Numeric     `json:"stable_amount"`
+	Chain               pgtype.Text        `json:"chain"`
+	FxRate              pgtype.Numeric     `json:"fx_rate"`
+	Fees                []byte             `json:"fees"`
+	Sender              []byte             `json:"sender"`
+	Recipient           []byte             `json:"recipient"`
+	QuoteID             pgtype.UUID        `json:"quote_id"`
+	CreatedAt           time.Time          `json:"created_at"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+	FundedAt            pgtype.Timestamptz `json:"funded_at"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+	FailedAt            pgtype.Timestamptz `json:"failed_at"`
+	FailureReason       pgtype.Text        `json:"failure_reason"`
+	FailureCode         pgtype.Text        `json:"failure_code"`
+	OnRampProviderID    pgtype.Text        `json:"on_ramp_provider_id"`
+	OffRampProviderID   pgtype.Text        `json:"off_ramp_provider_id"`
+	FeeScheduleSnapshot []byte             `json:"fee_schedule_snapshot"`
+	// PII encryption key version used to encrypt sender/recipient fields. Used during decryption to select the correct DEK version. Version 0 indicates plaintext (no encryption). Default 1 is the initial key.
+	PiiEncryptionVersion int16 `json:"pii_encryption_version"`
 }
 
 type TransferEvent struct {
@@ -723,6 +1976,31 @@ type TransfersY2026m08 struct {
 	FailedAt       pgtype.Timestamptz `json:"failed_at"`
 	FailureReason  pgtype.Text        `json:"failure_reason"`
 	FailureCode    pgtype.Text        `json:"failure_code"`
+}
+
+type VirtualAccountIndex struct {
+	ID            uuid.UUID              `json:"id"`
+	AccountNumber string                 `json:"account_number"`
+	TenantID      uuid.UUID              `json:"tenant_id"`
+	SessionID     pgtype.UUID            `json:"session_id"`
+	AccountType   VirtualAccountTypeEnum `json:"account_type"`
+	CreatedAt     time.Time              `json:"created_at"`
+}
+
+type VirtualAccountPool struct {
+	ID               uuid.UUID              `json:"id"`
+	TenantID         uuid.UUID              `json:"tenant_id"`
+	BankingPartnerID uuid.UUID              `json:"banking_partner_id"`
+	AccountNumber    string                 `json:"account_number"`
+	AccountName      string                 `json:"account_name"`
+	SortCode         string                 `json:"sort_code"`
+	Iban             string                 `json:"iban"`
+	Currency         string                 `json:"currency"`
+	AccountType      VirtualAccountTypeEnum `json:"account_type"`
+	Available        bool                   `json:"available"`
+	SessionID        pgtype.UUID            `json:"session_id"`
+	CreatedAt        time.Time              `json:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at"`
 }
 
 type WebhookDeliveriesDefault struct {

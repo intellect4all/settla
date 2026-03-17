@@ -44,9 +44,9 @@ func newTestTransfer(tenantID uuid.UUID) *domain.Transfer {
 
 func newTestOutboxEntry(aggregateID, tenantID uuid.UUID, eventType string, isIntent bool) domain.OutboxEntry {
 	if isIntent {
-		return domain.NewOutboxIntent("transfer", aggregateID, tenantID, eventType, []byte(`{"test": true}`))
+		return domain.MustNewOutboxIntent("transfer", aggregateID, tenantID, eventType, []byte(`{"test": true}`))
 	}
-	return domain.NewOutboxEvent("transfer", aggregateID, tenantID, eventType, []byte(`{"test": true}`))
+	return domain.MustNewOutboxEvent("transfer", aggregateID, tenantID, eventType, []byte(`{"test": true}`))
 }
 
 // --- outboxEntriesToParams unit test (no DB needed) ---

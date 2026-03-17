@@ -43,10 +43,11 @@ var (
 // TransferStoreAdapter implements core.TransferStore using SQLC-generated queries
 // against the Transfer DB.
 type TransferStoreAdapter struct {
-	q         *Queries
-	pool      TxBeginner           // for transactional operations (TransitionWithOutbox, CreateTransferWithOutbox)
-	appPool   *pgxpool.Pool        // optional: RLS-enforced pool (settla_app role) for tenant-scoped reads
-	piiCrypto *domain.PIIEncryptor // optional: encrypts PII before INSERT, decrypts after SELECT
+	q          *Queries
+	pool       TxBeginner           // for transactional operations (TransitionWithOutbox, CreateTransferWithOutbox)
+	appPool    *pgxpool.Pool        // optional: RLS-enforced pool (settla_app role) for tenant-scoped reads
+	piiCrypto  *domain.PIIEncryptor // optional: encrypts PII before INSERT, decrypts after SELECT
+	rlsEnabled bool                 // true when appPool is configured; false means RLS is bypassed
 }
 
 // TransferStoreOption configures optional features of the TransferStoreAdapter.
@@ -85,6 +86,10 @@ func NewTransferStoreAdapter(q *Queries, pool ...TxBeginner) *TransferStoreAdapt
 	if len(pool) > 0 && pool[0] != nil {
 		a.pool = pool[0]
 	}
+	a.rlsEnabled = (a.appPool != nil)
+	if !a.rlsEnabled {
+		slog.Warn("settla-store: RLS pool not configured, tenant isolation relies on application-layer filters only")
+	}
 	return a
 }
 
@@ -93,6 +98,10 @@ func NewTransferStoreAdapterWithOptions(q *Queries, opts ...TransferStoreOption)
 	a := &TransferStoreAdapter{q: q}
 	for _, opt := range opts {
 		opt(a)
+	}
+	a.rlsEnabled = (a.appPool != nil)
+	if !a.rlsEnabled {
+		slog.Warn("settla-store: RLS pool not configured, tenant isolation relies on application-layer filters only")
 	}
 	return a
 }
@@ -104,8 +113,16 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 	}
 
 	var senderJSON, recipientJSON []byte
+	var encVersion int16
 
 	if s.piiCrypto != nil {
+		// Determine current key version for encryption.
+		keyVer, err := s.piiCrypto.CurrentKeyVersion(transfer.TenantID)
+		if err != nil {
+			return fmt.Errorf("settla-core: getting current PII key version: %w", err)
+		}
+		encVersion = int16(keyVer)
+
 		// Encrypt PII fields before storage.
 		encSender, err := s.piiCrypto.EncryptSender(transfer.TenantID, transfer.Sender)
 		if err != nil {
@@ -125,6 +142,8 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 		}
 	} else {
 		// No encryption configured — store plaintext (development/test only).
+		// Version 0 indicates plaintext.
+		encVersion = 0
 		senderJSON, err = json.Marshal(transfer.Sender)
 		if err != nil {
 			return fmt.Errorf("settla-core: marshalling sender: %w", err)
@@ -136,24 +155,25 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 	}
 
 	row, err := s.q.CreateTransfer(ctx, CreateTransferParams{
-		TenantID:          transfer.TenantID,
-		ExternalRef:       textFromString(transfer.ExternalRef),
-		IdempotencyKey:    textFromString(transfer.IdempotencyKey),
-		Status:            TransferStatusEnum(transfer.Status),
-		SourceCurrency:    string(transfer.SourceCurrency),
-		SourceAmount:      numericFromDecimal(transfer.SourceAmount),
-		DestCurrency:      string(transfer.DestCurrency),
-		DestAmount:        numericFromDecimal(transfer.DestAmount),
-		StableCoin:        textFromString(string(transfer.StableCoin)),
-		StableAmount:      numericFromDecimal(transfer.StableAmount),
-		Chain:             textFromString(transfer.Chain),
-		FxRate:            numericFromDecimal(transfer.FXRate),
-		Fees:              feesJSON,
-		Sender:            senderJSON,
-		Recipient:         recipientJSON,
-		QuoteID:           uuidFromPtr(transfer.QuoteID),
-		OnRampProviderID:  textFromString(transfer.OnRampProviderID),
-		OffRampProviderID: textFromString(transfer.OffRampProviderID),
+		TenantID:             transfer.TenantID,
+		ExternalRef:          textFromString(transfer.ExternalRef),
+		IdempotencyKey:       textFromString(transfer.IdempotencyKey),
+		Status:               TransferStatusEnum(transfer.Status),
+		SourceCurrency:       string(transfer.SourceCurrency),
+		SourceAmount:         numericFromDecimal(transfer.SourceAmount),
+		DestCurrency:         string(transfer.DestCurrency),
+		DestAmount:           numericFromDecimal(transfer.DestAmount),
+		StableCoin:           textFromString(string(transfer.StableCoin)),
+		StableAmount:         numericFromDecimal(transfer.StableAmount),
+		Chain:                textFromString(transfer.Chain),
+		FxRate:               numericFromDecimal(transfer.FXRate),
+		Fees:                 feesJSON,
+		Sender:               senderJSON,
+		Recipient:            recipientJSON,
+		QuoteID:              uuidFromPtr(transfer.QuoteID),
+		OnRampProviderID:     textFromString(transfer.OnRampProviderID),
+		OffRampProviderID:    textFromString(transfer.OffRampProviderID),
+		PiiEncryptionVersion: encVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("settla-core: creating transfer: %w", err)
@@ -196,6 +216,7 @@ func (s *TransferStoreAdapter) GetTransfer(ctx context.Context, tenantID, transf
 		return result, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "GetTransfer", "tenant_id", tenantID)
 	row, err := s.q.GetTransfer(ctx, GetTransferParams{
 		ID:       transferID,
 		TenantID: tenantID,
@@ -226,12 +247,44 @@ func (s *TransferStoreAdapter) GetTransferByIdempotencyKey(ctx context.Context, 
 		return result, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "GetTransferByIdempotencyKey", "tenant_id", tenantID)
 	row, err := s.q.GetTransferByIdempotencyKey(ctx, GetTransferByIdempotencyKeyParams{
 		TenantID:       tenantID,
 		IdempotencyKey: textFromString(key),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-core: getting transfer by idempotency key: %w", err)
+	}
+	return s.transferFromRowWithDecrypt(row)
+}
+
+func (s *TransferStoreAdapter) GetTransferByExternalRef(ctx context.Context, tenantID uuid.UUID, externalRef string) (*domain.Transfer, error) {
+	if s.appPool != nil {
+		var result *domain.Transfer
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetTransferByExternalRef(ctx, GetTransferByExternalRefParams{
+				TenantID:    tenantID,
+				ExternalRef: textFromString(externalRef),
+			})
+			if err != nil {
+				return err
+			}
+			result, err = s.transferFromRowWithDecrypt(row)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: getting transfer by external ref: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetTransferByExternalRef", "tenant_id", tenantID)
+	row, err := s.q.GetTransferByExternalRef(ctx, GetTransferByExternalRefParams{
+		TenantID:    tenantID,
+		ExternalRef: textFromString(externalRef),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-core: getting transfer by external ref: %w", err)
 	}
 	return s.transferFromRowWithDecrypt(row)
 }
@@ -310,6 +363,7 @@ func (s *TransferStoreAdapter) GetTransferEvents(ctx context.Context, tenantID, 
 		return events, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "GetTransferEvents", "tenant_id", tenantID)
 	rows, err := s.q.ListTransferEvents(ctx, ListTransferEventsParams{
 		TenantID:   tenantID,
 		TransferID: transferID,
@@ -344,6 +398,7 @@ func (s *TransferStoreAdapter) GetDailyVolume(ctx context.Context, tenantID uuid
 		return result, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "GetDailyVolume", "tenant_id", tenantID)
 	result, err := s.q.SumDailyVolumeByTenant(ctx, SumDailyVolumeByTenantParams{
 		TenantID:    tenantID,
 		CreatedAt:   startOfDay,
@@ -405,6 +460,7 @@ func (s *TransferStoreAdapter) GetQuote(ctx context.Context, tenantID, quoteID u
 		return result, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "GetQuote", "tenant_id", tenantID)
 	row, err := s.q.GetQuote(ctx, GetQuoteParams{
 		ID:       quoteID,
 		TenantID: tenantID,
@@ -443,6 +499,7 @@ func (s *TransferStoreAdapter) ListTransfers(ctx context.Context, tenantID uuid.
 		return transfers, nil
 	}
 
+	slog.Warn("settla-store: RLS bypassed", "method", "ListTransfers", "tenant_id", tenantID)
 	rows, err := s.q.ListTransfersByTenant(ctx, ListTransfersByTenantParams{
 		TenantID: tenantID,
 		Limit:    int32(limit),
@@ -450,6 +507,33 @@ func (s *TransferStoreAdapter) ListTransfers(ctx context.Context, tenantID uuid.
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-core: listing transfers for tenant %s: %w", tenantID, err)
+	}
+	transfers := make([]domain.Transfer, len(rows))
+	for i, row := range rows {
+		t, err := s.transferFromRowWithDecrypt(row)
+		if err != nil {
+			return nil, err
+		}
+		transfers[i] = *t
+	}
+	return transfers, nil
+}
+
+func (s *TransferStoreAdapter) ListTransfersFiltered(ctx context.Context, tenantID uuid.UUID, statusFilter, searchQuery string, limit int) ([]domain.Transfer, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.q.ListTransfersByTenantFiltered(ctx, ListTransfersByTenantFilteredParams{
+		TenantID:     tenantID,
+		StatusFilter: statusFilter,
+		SearchQuery:  searchQuery,
+		PageSize:     int32(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-core: listing transfers filtered for tenant %s: %w", tenantID, err)
 	}
 	transfers := make([]domain.Transfer, len(rows))
 	for i, row := range rows {
@@ -504,13 +588,21 @@ func (s *TransferStoreAdapter) transferFromRowWithDecrypt(row Transfer) (*domain
 		return t, nil
 	}
 
-	// Try to decrypt sender PII from the raw JSON.
+	keyVersion := int(row.PiiEncryptionVersion)
+
+	// Version 0 means plaintext — no decryption needed.
+	// transferFromRow already parsed the JSON into t.Sender / t.Recipient.
+	if keyVersion == 0 {
+		return t, nil
+	}
+
+	// Try to decrypt sender PII from the raw JSON using the stored key version.
 	if len(row.Sender) > 0 {
 		var encSender domain.EncryptedSender
 		if err := json.Unmarshal(row.Sender, &encSender); err == nil && len(encSender.EncryptedName) > 0 {
-			sender, err := s.piiCrypto.DecryptSender(t.TenantID, &encSender)
+			sender, err := s.piiCrypto.DecryptSenderWithVersion(t.TenantID, &encSender, keyVersion)
 			if err != nil {
-				return nil, fmt.Errorf("settla-core: decrypting sender PII: %w", err)
+				return nil, fmt.Errorf("settla-core: decrypting sender PII (v%d): %w", keyVersion, err)
 			}
 			t.Sender = sender
 		}
@@ -518,13 +610,13 @@ func (s *TransferStoreAdapter) transferFromRowWithDecrypt(row Transfer) (*domain
 		// transferFromRow already handled it correctly.
 	}
 
-	// Try to decrypt recipient PII from the raw JSON.
+	// Try to decrypt recipient PII from the raw JSON using the stored key version.
 	if len(row.Recipient) > 0 {
 		var encRecipient domain.EncryptedRecipient
 		if err := json.Unmarshal(row.Recipient, &encRecipient); err == nil && len(encRecipient.EncryptedName) > 0 {
-			recipient, err := s.piiCrypto.DecryptRecipient(t.TenantID, &encRecipient)
+			recipient, err := s.piiCrypto.DecryptRecipientWithVersion(t.TenantID, &encRecipient, keyVersion)
 			if err != nil {
-				return nil, fmt.Errorf("settla-core: decrypting recipient PII: %w", err)
+				return nil, fmt.Errorf("settla-core: decrypting recipient PII (v%d): %w", keyVersion, err)
 			}
 			t.Recipient = recipient
 		}
@@ -601,8 +693,25 @@ func tenantFromRow(row Tenant) (*domain.Tenant, error) {
 		DailyLimitUSD:    decimalFromNumeric(row.DailyLimitUsd),
 		PerTransferLimit: decimalFromNumeric(row.PerTransferLimit),
 		KYBStatus:        domain.KYBStatus(row.KybStatus),
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		CryptoConfig: domain.TenantCryptoConfig{
+			CryptoEnabled:         row.CryptoEnabled,
+			DefaultSettlementPref: domain.SettlementPreference(row.DefaultSettlementPref),
+			SupportedChains:       row.SupportedChains,
+			MinConfirmationsTron:  row.MinConfirmationsTron,
+			MinConfirmationsEth:   row.MinConfirmationsEth,
+			MinConfirmationsBase:  row.MinConfirmationsBase,
+			PaymentToleranceBPS:   row.PaymentToleranceBps,
+			DefaultSessionTTLSecs: row.DefaultSessionTtlSecs,
+		},
+		BankConfig: domain.TenantBankConfig{
+			BankDepositsEnabled:     row.BankDepositsEnabled,
+			DefaultBankingPartner:   row.DefaultBankingPartner.String,
+			BankSupportedCurrencies: row.BankSupportedCurrencies,
+			DefaultMismatchPolicy:   domain.PaymentMismatchPolicy(row.DefaultMismatchPolicy),
+			DefaultSessionTTLSecs:   row.BankDefaultSessionTtlSecs,
+		},
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
 	}
 	if row.KybVerifiedAt.Valid {
 		t.KYBVerifiedAt = &row.KybVerifiedAt.Time
@@ -671,4 +780,27 @@ func uuidFromPtr(id *uuid.UUID) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return pgtype.UUID{Bytes: *id, Valid: true}
+}
+
+func pgtypeDateFromPtr(t *time.Time) pgtype.Date {
+	if t == nil || t.IsZero() {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: *t, Valid: true}
+}
+
+func timePtrFromPgtypeDate(d pgtype.Date) *time.Time {
+	if !d.Valid {
+		return nil
+	}
+	t := d.Time
+	return &t
+}
+
+func timePtrFromPgtypeTz(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	ts := t.Time
+	return &ts
 }
