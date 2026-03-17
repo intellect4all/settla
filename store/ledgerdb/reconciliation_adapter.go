@@ -7,33 +7,24 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
 
 // LedgerReconciliationAdapter implements reconciliation.LedgerQuerier against
-// the Ledger DB, reading balance_snapshots joined with accounts by code.
+// the Ledger DB using SQLC-generated queries.
 type LedgerReconciliationAdapter struct {
-	pool *pgxpool.Pool
+	q *Queries
 }
 
 // NewLedgerReconciliationAdapter creates a new LedgerReconciliationAdapter.
-func NewLedgerReconciliationAdapter(pool *pgxpool.Pool) *LedgerReconciliationAdapter {
-	return &LedgerReconciliationAdapter{pool: pool}
+func NewLedgerReconciliationAdapter(q *Queries) *LedgerReconciliationAdapter {
+	return &LedgerReconciliationAdapter{q: q}
 }
 
 // GetAccountBalance returns the balance for the given account code from the
 // balance_snapshots table. Returns decimal.Zero if no snapshot exists yet.
 func (a *LedgerReconciliationAdapter) GetAccountBalance(ctx context.Context, accountCode string) (decimal.Decimal, error) {
-	const query = `
-		SELECT bs.balance
-		FROM balance_snapshots bs
-		JOIN accounts a ON a.id = bs.account_id
-		WHERE a.code = $1
-		LIMIT 1
-	`
-	var bal pgtype.Numeric
-	err := a.pool.QueryRow(ctx, query, accountCode).Scan(&bal)
+	bal, err := a.q.GetAccountBalanceByCode(ctx, accountCode)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return decimal.Zero, nil

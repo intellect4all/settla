@@ -16,10 +16,13 @@ type Querier interface {
 	CreateEntryLine(ctx context.Context, arg CreateEntryLineParams) (EntryLine, error)
 	CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (JournalEntry, error)
 	GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
+	// Get balance for an account by its code from balance_snapshots.
+	// Returns NULL if no snapshot exists yet (handled as zero by caller).
+	GetAccountBalanceByCode(ctx context.Context, code string) (pgtype.Numeric, error)
 	GetAccountByCode(ctx context.Context, code string) (Account, error)
 	GetBalanceSnapshot(ctx context.Context, accountID uuid.UUID) (BalanceSnapshot, error)
 	GetJournalEntry(ctx context.Context, arg GetJournalEntryParams) (JournalEntry, error)
-	GetJournalEntryByIdempotencyKey(ctx context.Context, idempotencyKey pgtype.Text) (JournalEntry, error)
+	GetJournalEntryByIdempotencyKey(ctx context.Context, arg GetJournalEntryByIdempotencyKeyParams) (JournalEntry, error)
 	ListAccountsByTenant(ctx context.Context, tenantID pgtype.UUID) ([]Account, error)
 	ListAllAccounts(ctx context.Context) ([]Account, error)
 	ListBalanceSnapshots(ctx context.Context) ([]ListBalanceSnapshotsRow, error)
