@@ -22,6 +22,7 @@ type TransferStore interface {
 	CreateTransfer(ctx context.Context, transfer *domain.Transfer) error
 	GetTransfer(ctx context.Context, tenantID, transferID uuid.UUID) (*domain.Transfer, error)
 	GetTransferByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.Transfer, error)
+	GetTransferByExternalRef(ctx context.Context, tenantID uuid.UUID, externalRef string) (*domain.Transfer, error)
 	UpdateTransfer(ctx context.Context, transfer *domain.Transfer) error
 	CreateTransferEvent(ctx context.Context, event *domain.TransferEvent) error
 	GetTransferEvents(ctx context.Context, tenantID, transferID uuid.UUID) ([]domain.TransferEvent, error)
@@ -29,6 +30,8 @@ type TransferStore interface {
 	CreateQuote(ctx context.Context, quote *domain.Quote) error
 	GetQuote(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error)
 	ListTransfers(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.Transfer, error)
+	// ListTransfersFiltered returns transfers with optional server-side filtering by status and search query.
+	ListTransfersFiltered(ctx context.Context, tenantID uuid.UUID, statusFilter, searchQuery string, limit int) ([]domain.Transfer, error)
 
 	// TransitionWithOutbox atomically updates transfer status and inserts outbox entries
 	// in a single database transaction. Uses optimistic locking via version check.
@@ -51,6 +54,7 @@ type TenantStore interface {
 // execution is handled by workers consuming outbox intents.
 type Router interface {
 	GetQuote(ctx context.Context, tenantID uuid.UUID, req domain.QuoteRequest) (*domain.Quote, error)
+	GetRoutingOptions(ctx context.Context, tenantID uuid.UUID, req domain.QuoteRequest) (*domain.RouteResult, error)
 }
 
 // CreateTransferRequest is the input for creating a new settlement transfer.

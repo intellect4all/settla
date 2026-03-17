@@ -58,6 +58,19 @@ type ExternalStatus struct {
 	BlockchainConfirmed *bool
 	// BlockchainError is set when the blockchain check returned an error.
 	BlockchainError string
+	// CurrentRate is the live FX rate for the corridor, used to estimate FX loss
+	// when reversing an on-ramp. Zero or unset means the rate was not fetched.
+	CurrentRate decimal.Decimal
+}
+
+// EstimateFXLoss computes the estimated FX loss when reversing a stablecoin position
+// back to fiat at the current rate vs. the original rate. The result is in source
+// currency units: positive means the tenant receives less fiat than originally sent.
+func EstimateFXLoss(stableAmount, originalRate, currentRate decimal.Decimal) decimal.Decimal {
+	if currentRate.IsZero() || originalRate.IsZero() {
+		return decimal.Zero // Cannot estimate — return zero loss
+	}
+	return stableAmount.Div(currentRate).Sub(stableAmount.Div(originalRate)).Round(8)
 }
 
 // DetermineCompensation analyzes what completed vs what failed in a transfer
@@ -102,7 +115,7 @@ func DetermineCompensation(
 			plan.Strategy = StrategySimpleRefund
 			plan.RefundAmount = transfer.SourceAmount
 			plan.RefundCurrency = transfer.SourceCurrency
-			plan.Steps = buildSimpleRefundSteps(transfer)
+			plan.Steps = buildSimpleRefundSteps(transfer, tenant.Slug)
 			return plan
 		}
 	}
@@ -112,7 +125,7 @@ func DetermineCompensation(
 		plan.Strategy = StrategySimpleRefund
 		plan.RefundAmount = transfer.SourceAmount
 		plan.RefundCurrency = transfer.SourceCurrency
-		plan.Steps = buildSimpleRefundSteps(transfer)
+		plan.Steps = buildSimpleRefundSteps(transfer, tenant.Slug)
 		return plan
 	}
 
@@ -137,7 +150,12 @@ func DetermineCompensation(
 	// the original rate (conservative: assume some spread).
 	plan.RefundAmount = transfer.SourceAmount // will be adjusted by executor with real rate
 	plan.RefundCurrency = transfer.SourceCurrency
-	plan.Steps = buildReverseOnRampSteps(transfer)
+	plan.Steps = buildReverseOnRampSteps(transfer, tenant.Slug)
+
+	// If a live rate was provided, estimate the FX loss from reversing.
+	if extStatus.CurrentRate.IsPositive() {
+		plan.FXLoss = EstimateFXLoss(transfer.StableAmount, transfer.FXRate, extStatus.CurrentRate)
+	}
 
 	return plan
 }
@@ -181,7 +199,7 @@ func containsStep(steps []string, step string) bool {
 	return false
 }
 
-func buildSimpleRefundSteps(transfer *domain.Transfer) []CompensationStep {
+func buildSimpleRefundSteps(transfer *domain.Transfer, tenantSlug string) []CompensationStep {
 	var steps []CompensationStep
 
 	releasePayload, _ := json.Marshal(domain.TreasuryReleasePayload{
@@ -197,12 +215,41 @@ func buildSimpleRefundSteps(transfer *domain.Transfer) []CompensationStep {
 		Payload: releasePayload,
 	})
 
+	// Build reversal lines to undo any on-ramp posting
+	var reversalLines []domain.LedgerLineEntry
+	if transfer.StableAmount.IsPositive() {
+		reversalLines = []domain.LedgerLineEntry{
+			{
+				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(transfer.Chain),
+				EntryType:   "CREDIT",
+				Amount:      transfer.StableAmount,
+				Currency:    string(transfer.StableCoin),
+				Description: "Compensation: reverse crypto asset",
+			},
+			{
+				AccountCode: "expenses:provider:onramp",
+				EntryType:   "CREDIT",
+				Amount:      transfer.Fees.OnRampFee,
+				Currency:    string(transfer.SourceCurrency),
+				Description: "Compensation: reverse on-ramp fee",
+			},
+			{
+				AccountCode: domain.TenantAccountCode(tenantSlug, "assets:bank:"+lower(string(transfer.SourceCurrency))+":clearing"),
+				EntryType:   "DEBIT",
+				Amount:      transfer.SourceAmount,
+				Currency:    string(transfer.SourceCurrency),
+				Description: "Compensation: debit clearing account",
+			},
+		}
+	}
+
 	reversePayload, _ := json.Marshal(domain.LedgerPostPayload{
 		TransferID:     transfer.ID,
 		TenantID:       transfer.TenantID,
 		IdempotencyKey: "compensation-reverse:" + transfer.ID.String(),
 		Description:    "Compensation reversal for transfer " + transfer.ID.String(),
 		ReferenceType:  "reversal",
+		Lines:          reversalLines,
 	})
 	steps = append(steps, CompensationStep{
 		Type:    domain.IntentLedgerReverse,
@@ -212,7 +259,7 @@ func buildSimpleRefundSteps(transfer *domain.Transfer) []CompensationStep {
 	return steps
 }
 
-func buildReverseOnRampSteps(transfer *domain.Transfer) []CompensationStep {
+func buildReverseOnRampSteps(transfer *domain.Transfer, tenantSlug string) []CompensationStep {
 	var steps []CompensationStep
 
 	reverseOnRampPayload, _ := json.Marshal(ProviderReverseOnRampPayload{
@@ -225,7 +272,7 @@ func buildReverseOnRampSteps(transfer *domain.Transfer) []CompensationStep {
 		OriginalRate:   transfer.FXRate,
 	})
 	steps = append(steps, CompensationStep{
-		Type:    "provider.reverse_onramp",
+		Type:    domain.IntentProviderReverseOnRamp,
 		Payload: reverseOnRampPayload,
 	})
 
@@ -242,12 +289,41 @@ func buildReverseOnRampSteps(transfer *domain.Transfer) []CompensationStep {
 		Payload: releasePayload,
 	})
 
+	// Build reversal lines for reverse-onramp compensation
+	var reverseLines []domain.LedgerLineEntry
+	if transfer.StableAmount.IsPositive() {
+		reverseLines = []domain.LedgerLineEntry{
+			{
+				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(transfer.Chain),
+				EntryType:   "CREDIT",
+				Amount:      transfer.StableAmount,
+				Currency:    string(transfer.StableCoin),
+				Description: "Reverse on-ramp: credit crypto asset",
+			},
+			{
+				AccountCode: "expenses:provider:onramp",
+				EntryType:   "CREDIT",
+				Amount:      transfer.Fees.OnRampFee,
+				Currency:    string(transfer.SourceCurrency),
+				Description: "Reverse on-ramp: credit on-ramp fee",
+			},
+			{
+				AccountCode: domain.TenantAccountCode(tenantSlug, "assets:bank:"+lower(string(transfer.SourceCurrency))+":clearing"),
+				EntryType:   "DEBIT",
+				Amount:      transfer.SourceAmount,
+				Currency:    string(transfer.SourceCurrency),
+				Description: "Reverse on-ramp: debit clearing account",
+			},
+		}
+	}
+
 	reversePayload, _ := json.Marshal(domain.LedgerPostPayload{
 		TransferID:     transfer.ID,
 		TenantID:       transfer.TenantID,
 		IdempotencyKey: "compensation-reverse-onramp:" + transfer.ID.String(),
 		Description:    "Reverse on-ramp compensation for transfer " + transfer.ID.String(),
 		ReferenceType:  "reversal",
+		Lines:          reverseLines,
 	})
 	steps = append(steps, CompensationStep{
 		Type:    domain.IntentLedgerReverse,

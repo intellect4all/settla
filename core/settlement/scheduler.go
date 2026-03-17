@@ -199,7 +199,10 @@ func (s *Scheduler) calculateForAllTenants(ctx context.Context, periodStart, per
 // checkOverdue examines pending settlements and returns escalation actions
 // for those past their due date.
 func (s *Scheduler) checkOverdue(ctx context.Context, now time.Time) ([]OverdueAction, error) {
-	pending, err := s.calculator.store.ListPendingSettlements(ctx)
+	pending, err := s.calculator.store.ListPendingSettlements(ctx, domain.AdminCaller{
+		Service: "settlement_scheduler",
+		Reason:  "check_overdue",
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending settlements: %w", err)
 	}

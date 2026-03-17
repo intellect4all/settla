@@ -13,6 +13,10 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
+// DefaultSettlementDays is the number of business days after the period end
+// by which the net settlement is due (T+3).
+const DefaultSettlementDays = 3
+
 // Type aliases so existing code within and outside the package continues to compile.
 type NetSettlement = domain.NetSettlement
 type CorridorPosition = domain.CorridorPosition
@@ -41,7 +45,8 @@ type SettlementStore interface {
 	// GetNetSettlement retrieves a net settlement by ID.
 	GetNetSettlement(ctx context.Context, id uuid.UUID) (*NetSettlement, error)
 	// ListPendingSettlements returns all settlements with status "pending" or "overdue".
-	ListPendingSettlements(ctx context.Context) ([]NetSettlement, error)
+	// caller identifies who is making the cross-tenant query and why.
+	ListPendingSettlements(ctx context.Context, caller domain.AdminCaller) ([]NetSettlement, error)
 	// UpdateSettlementStatus updates the status of a net settlement.
 	UpdateSettlementStatus(ctx context.Context, id uuid.UUID, status string) error
 }
@@ -49,6 +54,7 @@ type SettlementStore interface {
 // TransferSummary is a lightweight projection of a completed transfer,
 // containing only the fields needed for net settlement calculation.
 type TransferSummary struct {
+	TransferID     uuid.UUID       // included for dispute traceability
 	SourceCurrency string
 	SourceAmount   decimal.Decimal
 	DestCurrency   string
@@ -96,6 +102,12 @@ func (c *Calculator) CalculateNetSettlement(
 	tenantID uuid.UUID,
 	periodStart, periodEnd time.Time,
 ) (*NetSettlement, error) {
+	// 0. Validate period range
+	if !periodStart.Before(periodEnd) {
+		return nil, fmt.Errorf("settla-settlement: invalid period range: periodStart (%s) must be before periodEnd (%s)",
+			periodStart.Format(time.RFC3339), periodEnd.Format(time.RFC3339))
+	}
+
 	// 1. Load tenant for fee schedule and name
 	tenant, err := c.tenantStore.GetTenant(ctx, tenantID)
 	if err != nil {
@@ -135,20 +147,23 @@ func (c *Calculator) CalculateNetSettlement(
 	instructions := c.generateInstructions(tenant.Name, netByCurrency, totalFees)
 
 	// 6. Build and persist the settlement record
-	dueDate := periodEnd.AddDate(0, 0, 3) // T+3 settlement
+	dueDate := periodEnd.AddDate(0, 0, DefaultSettlementDays) // T+3 settlement
+	// Snapshot the tenant's fee schedule at calculation time for audit trail reconstruction.
+	feeSnapshot := tenant.FeeSchedule
 	settlement := &NetSettlement{
-		ID:            uuid.New(),
-		TenantID:      tenantID,
-		TenantName:    tenant.Name,
-		PeriodStart:   periodStart,
-		PeriodEnd:     periodEnd,
-		Corridors:     corridors,
-		NetByCurrency: netByCurrency,
-		TotalFeesUSD:  totalFees,
-		Instructions:  instructions,
-		Status:        "pending",
-		DueDate:       &dueDate,
-		CreatedAt:     time.Now().UTC(),
+		ID:                  uuid.New(),
+		TenantID:            tenantID,
+		TenantName:          tenant.Name,
+		PeriodStart:         periodStart,
+		PeriodEnd:           periodEnd,
+		Corridors:           corridors,
+		NetByCurrency:       netByCurrency,
+		TotalFeesUSD:        totalFees,
+		Instructions:        instructions,
+		FeeScheduleSnapshot: &feeSnapshot,
+		Status:              "pending",
+		DueDate:             &dueDate,
+		CreatedAt:           time.Now().UTC(),
 	}
 
 	if err := c.store.CreateNetSettlement(ctx, settlement); err != nil {
