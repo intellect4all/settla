@@ -174,6 +174,23 @@ func (q *Queries) GetAccount(ctx context.Context, id uuid.UUID) (Account, error)
 	return i, err
 }
 
+const getAccountBalanceByCode = `-- name: GetAccountBalanceByCode :one
+SELECT bs.balance
+FROM balance_snapshots bs
+JOIN accounts a ON a.id = bs.account_id
+WHERE a.code = $1
+LIMIT 1
+`
+
+// Get balance for an account by its code from balance_snapshots.
+// Returns NULL if no snapshot exists yet (handled as zero by caller).
+func (q *Queries) GetAccountBalanceByCode(ctx context.Context, code string) (pgtype.Numeric, error) {
+	row := q.db.QueryRow(ctx, getAccountBalanceByCode, code)
+	var balance pgtype.Numeric
+	err := row.Scan(&balance)
+	return balance, err
+}
+
 const getAccountByCode = `-- name: GetAccountByCode :one
 SELECT id, tenant_id, code, name, type, currency, normal_balance, parent_id, is_active, metadata, created_at, updated_at FROM accounts WHERE code = $1
 `
@@ -248,12 +265,17 @@ func (q *Queries) GetJournalEntry(ctx context.Context, arg GetJournalEntryParams
 
 const getJournalEntryByIdempotencyKey = `-- name: GetJournalEntryByIdempotencyKey :one
 SELECT id, tenant_id, idempotency_key, posted_at, effective_date, description, reference_type, reference_id, reversed_by, reversal_of, metadata, created_at FROM journal_entries
-WHERE idempotency_key = $1
+WHERE tenant_id = $1 AND idempotency_key = $2
 LIMIT 1
 `
 
-func (q *Queries) GetJournalEntryByIdempotencyKey(ctx context.Context, idempotencyKey pgtype.Text) (JournalEntry, error) {
-	row := q.db.QueryRow(ctx, getJournalEntryByIdempotencyKey, idempotencyKey)
+type GetJournalEntryByIdempotencyKeyParams struct {
+	TenantID       pgtype.UUID `json:"tenant_id"`
+	IdempotencyKey pgtype.Text `json:"idempotency_key"`
+}
+
+func (q *Queries) GetJournalEntryByIdempotencyKey(ctx context.Context, arg GetJournalEntryByIdempotencyKeyParams) (JournalEntry, error) {
+	row := q.db.QueryRow(ctx, getJournalEntryByIdempotencyKey, arg.TenantID, arg.IdempotencyKey)
 	var i JournalEntry
 	err := row.Scan(
 		&i.ID,
