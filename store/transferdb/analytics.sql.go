@@ -13,6 +13,98 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createExportJob = `-- name: CreateExportJob :one
+INSERT INTO analytics_export_jobs (tenant_id, export_type, parameters)
+VALUES ($1, $2, $3)
+RETURNING id, tenant_id, status, export_type, parameters, file_path,
+    download_url, download_expires_at, row_count, error_message,
+    created_at, completed_at
+`
+
+type CreateExportJobParams struct {
+	TenantID   uuid.UUID `json:"tenant_id"`
+	ExportType string    `json:"export_type"`
+	Parameters []byte    `json:"parameters"`
+}
+
+// Create a new export job.
+func (q *Queries) CreateExportJob(ctx context.Context, arg CreateExportJobParams) (AnalyticsExportJob, error) {
+	row := q.db.QueryRow(ctx, createExportJob, arg.TenantID, arg.ExportType, arg.Parameters)
+	var i AnalyticsExportJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Status,
+		&i.ExportType,
+		&i.Parameters,
+		&i.FilePath,
+		&i.DownloadUrl,
+		&i.DownloadExpiresAt,
+		&i.RowCount,
+		&i.ErrorMessage,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const getBankDepositAnalytics = `-- name: GetBankDepositAnalytics :one
+SELECT
+    COUNT(*) AS total_sessions,
+    COUNT(*) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')) AS completed_sessions,
+    COUNT(*) FILTER (WHERE status = 'EXPIRED') AS expired_sessions,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_sessions,
+    CASE
+        WHEN COUNT(*) = 0 THEN 0
+        ELSE ROUND(
+            100.0 * COUNT(*) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD'))
+            / COUNT(*),
+            2
+        )
+    END::NUMERIC(5,2) AS conversion_rate,
+    COALESCE(SUM(received_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_received,
+    COALESCE(SUM(fee_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_fees,
+    COALESCE(SUM(net_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_net
+FROM bank_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at >= $2::timestamptz
+  AND created_at < $3::timestamptz
+`
+
+type GetBankDepositAnalyticsParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	FromTime time.Time `json:"from_time"`
+	ToTime   time.Time `json:"to_time"`
+}
+
+type GetBankDepositAnalyticsRow struct {
+	TotalSessions     int64          `json:"total_sessions"`
+	CompletedSessions int64          `json:"completed_sessions"`
+	ExpiredSessions   int64          `json:"expired_sessions"`
+	FailedSessions    int64          `json:"failed_sessions"`
+	ConversionRate    pgtype.Numeric `json:"conversion_rate"`
+	TotalReceived     pgtype.Numeric `json:"total_received"`
+	TotalFees         pgtype.Numeric `json:"total_fees"`
+	TotalNet          pgtype.Numeric `json:"total_net"`
+}
+
+// Aggregate bank deposit metrics for a tenant and period.
+func (q *Queries) GetBankDepositAnalytics(ctx context.Context, arg GetBankDepositAnalyticsParams) (GetBankDepositAnalyticsRow, error) {
+	row := q.db.QueryRow(ctx, getBankDepositAnalytics, arg.TenantID, arg.FromTime, arg.ToTime)
+	var i GetBankDepositAnalyticsRow
+	err := row.Scan(
+		&i.TotalSessions,
+		&i.CompletedSessions,
+		&i.ExpiredSessions,
+		&i.FailedSessions,
+		&i.ConversionRate,
+		&i.TotalReceived,
+		&i.TotalFees,
+		&i.TotalNet,
+	)
+	return i, err
+}
+
 const getCorridorMetrics = `-- name: GetCorridorMetrics :many
 SELECT
     source_currency,
@@ -92,6 +184,318 @@ func (q *Queries) GetCorridorMetrics(ctx context.Context, arg GetCorridorMetrics
 	return items, nil
 }
 
+const getCryptoDepositAnalytics = `-- name: GetCryptoDepositAnalytics :one
+SELECT
+    COUNT(*) AS total_sessions,
+    COUNT(*) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')) AS completed_sessions,
+    COUNT(*) FILTER (WHERE status = 'EXPIRED') AS expired_sessions,
+    COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_sessions,
+    CASE
+        WHEN COUNT(*) = 0 THEN 0
+        ELSE ROUND(
+            100.0 * COUNT(*) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD'))
+            / COUNT(*),
+            2
+        )
+    END::NUMERIC(5,2) AS conversion_rate,
+    COALESCE(SUM(received_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_received,
+    COALESCE(SUM(fee_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_fees,
+    COALESCE(SUM(net_amount) FILTER (WHERE status IN ('CREDITED','SETTLING','SETTLED','HELD')), 0)::NUMERIC(28,8) AS total_net
+FROM crypto_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at >= $2::timestamptz
+  AND created_at < $3::timestamptz
+`
+
+type GetCryptoDepositAnalyticsParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	FromTime time.Time `json:"from_time"`
+	ToTime   time.Time `json:"to_time"`
+}
+
+type GetCryptoDepositAnalyticsRow struct {
+	TotalSessions     int64          `json:"total_sessions"`
+	CompletedSessions int64          `json:"completed_sessions"`
+	ExpiredSessions   int64          `json:"expired_sessions"`
+	FailedSessions    int64          `json:"failed_sessions"`
+	ConversionRate    pgtype.Numeric `json:"conversion_rate"`
+	TotalReceived     pgtype.Numeric `json:"total_received"`
+	TotalFees         pgtype.Numeric `json:"total_fees"`
+	TotalNet          pgtype.Numeric `json:"total_net"`
+}
+
+// Aggregate crypto deposit metrics for a tenant and period.
+func (q *Queries) GetCryptoDepositAnalytics(ctx context.Context, arg GetCryptoDepositAnalyticsParams) (GetCryptoDepositAnalyticsRow, error) {
+	row := q.db.QueryRow(ctx, getCryptoDepositAnalytics, arg.TenantID, arg.FromTime, arg.ToTime)
+	var i GetCryptoDepositAnalyticsRow
+	err := row.Scan(
+		&i.TotalSessions,
+		&i.CompletedSessions,
+		&i.ExpiredSessions,
+		&i.FailedSessions,
+		&i.ConversionRate,
+		&i.TotalReceived,
+		&i.TotalFees,
+		&i.TotalNet,
+	)
+	return i, err
+}
+
+const getDailySnapshots = `-- name: GetDailySnapshots :many
+SELECT
+    id, tenant_id, snapshot_date, metric_type,
+    source_currency, dest_currency, provider,
+    transfer_count, completed_count, failed_count,
+    volume_usd, fees_usd, on_ramp_fees_usd, off_ramp_fees_usd, network_fees_usd,
+    avg_latency_ms, p50_latency_ms, p90_latency_ms, p95_latency_ms,
+    success_rate, created_at
+FROM analytics_daily_snapshots
+WHERE tenant_id = $1
+  AND metric_type = $2
+  AND snapshot_date >= $3::date
+  AND snapshot_date <= $4::date
+ORDER BY snapshot_date DESC
+`
+
+type GetDailySnapshotsParams struct {
+	TenantID   uuid.UUID   `json:"tenant_id"`
+	MetricType string      `json:"metric_type"`
+	FromDate   pgtype.Date `json:"from_date"`
+	ToDate     pgtype.Date `json:"to_date"`
+}
+
+// Read pre-aggregated data from analytics_daily_snapshots.
+func (q *Queries) GetDailySnapshots(ctx context.Context, arg GetDailySnapshotsParams) ([]AnalyticsDailySnapshot, error) {
+	rows, err := q.db.Query(ctx, getDailySnapshots,
+		arg.TenantID,
+		arg.MetricType,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AnalyticsDailySnapshot{}
+	for rows.Next() {
+		var i AnalyticsDailySnapshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SnapshotDate,
+			&i.MetricType,
+			&i.SourceCurrency,
+			&i.DestCurrency,
+			&i.Provider,
+			&i.TransferCount,
+			&i.CompletedCount,
+			&i.FailedCount,
+			&i.VolumeUsd,
+			&i.FeesUsd,
+			&i.OnRampFeesUsd,
+			&i.OffRampFeesUsd,
+			&i.NetworkFeesUsd,
+			&i.AvgLatencyMs,
+			&i.P50LatencyMs,
+			&i.P90LatencyMs,
+			&i.P95LatencyMs,
+			&i.SuccessRate,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getExportJob = `-- name: GetExportJob :one
+SELECT id, tenant_id, status, export_type, parameters, file_path,
+    download_url, download_expires_at, row_count, error_message,
+    created_at, completed_at
+FROM analytics_export_jobs
+WHERE id = $1 AND tenant_id = $2
+`
+
+type GetExportJobParams struct {
+	ID       uuid.UUID `json:"id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// Get an export job by ID (tenant-scoped).
+func (q *Queries) GetExportJob(ctx context.Context, arg GetExportJobParams) (AnalyticsExportJob, error) {
+	row := q.db.QueryRow(ctx, getExportJob, arg.ID, arg.TenantID)
+	var i AnalyticsExportJob
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Status,
+		&i.ExportType,
+		&i.Parameters,
+		&i.FilePath,
+		&i.DownloadUrl,
+		&i.DownloadExpiresAt,
+		&i.RowCount,
+		&i.ErrorMessage,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
+const getFeeBreakdown = `-- name: GetFeeBreakdown :many
+
+SELECT
+    source_currency,
+    dest_currency,
+    COUNT(*) AS transfer_count,
+    COALESCE(SUM(source_amount) FILTER (WHERE status NOT IN ('FAILED','REFUNDED')), 0)::NUMERIC(28,8) AS volume_usd,
+    COALESCE(SUM((fees->>'on_ramp_fee')::NUMERIC(28,8)) FILTER (WHERE status NOT IN ('FAILED','REFUNDED')), 0)::NUMERIC(28,8) AS on_ramp_fees_usd,
+    COALESCE(SUM((fees->>'off_ramp_fee')::NUMERIC(28,8)) FILTER (WHERE status NOT IN ('FAILED','REFUNDED')), 0)::NUMERIC(28,8) AS off_ramp_fees_usd,
+    COALESCE(SUM((fees->>'network_fee')::NUMERIC(28,8)) FILTER (WHERE status NOT IN ('FAILED','REFUNDED')), 0)::NUMERIC(28,8) AS network_fees_usd,
+    COALESCE(SUM((fees->>'total_fee_usd')::NUMERIC(28,8)) FILTER (WHERE status NOT IN ('FAILED','REFUNDED')), 0)::NUMERIC(28,8) AS total_fees_usd
+FROM transfers
+WHERE tenant_id = $1
+  AND created_at >= $2::timestamptz
+  AND created_at < $3::timestamptz
+GROUP BY source_currency, dest_currency
+ORDER BY total_fees_usd DESC
+`
+
+type GetFeeBreakdownParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	FromTime time.Time `json:"from_time"`
+	ToTime   time.Time `json:"to_time"`
+}
+
+type GetFeeBreakdownRow struct {
+	SourceCurrency string         `json:"source_currency"`
+	DestCurrency   string         `json:"dest_currency"`
+	TransferCount  int64          `json:"transfer_count"`
+	VolumeUsd      pgtype.Numeric `json:"volume_usd"`
+	OnRampFeesUsd  pgtype.Numeric `json:"on_ramp_fees_usd"`
+	OffRampFeesUsd pgtype.Numeric `json:"off_ramp_fees_usd"`
+	NetworkFeesUsd pgtype.Numeric `json:"network_fees_usd"`
+	TotalFeesUsd   pgtype.Numeric `json:"total_fees_usd"`
+}
+
+// ============================================================================
+// Extended analytics queries — fees, providers, deposits, reconciliation,
+// snapshots, and export jobs.
+// ============================================================================
+// Fee revenue by corridor with breakdown by fee type.
+func (q *Queries) GetFeeBreakdown(ctx context.Context, arg GetFeeBreakdownParams) ([]GetFeeBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, getFeeBreakdown, arg.TenantID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetFeeBreakdownRow{}
+	for rows.Next() {
+		var i GetFeeBreakdownRow
+		if err := rows.Scan(
+			&i.SourceCurrency,
+			&i.DestCurrency,
+			&i.TransferCount,
+			&i.VolumeUsd,
+			&i.OnRampFeesUsd,
+			&i.OffRampFeesUsd,
+			&i.NetworkFeesUsd,
+			&i.TotalFeesUsd,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getProviderPerformance = `-- name: GetProviderPerformance :many
+SELECT
+    pt.provider,
+    t.source_currency,
+    t.dest_currency,
+    COUNT(*) AS transaction_count,
+    COUNT(*) FILTER (WHERE pt.status = 'COMPLETED') AS completed,
+    COUNT(*) FILTER (WHERE pt.status = 'FAILED') AS failed,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE pt.status IN ('COMPLETED','FAILED')) = 0 THEN 0
+        ELSE ROUND(
+            100.0 * COUNT(*) FILTER (WHERE pt.status = 'COMPLETED')
+            / COUNT(*) FILTER (WHERE pt.status IN ('COMPLETED','FAILED')),
+            2
+        )
+    END::NUMERIC(5,2) AS success_rate,
+    COALESCE(
+        AVG(EXTRACT(EPOCH FROM (pt.updated_at - pt.created_at)) * 1000)
+        FILTER (WHERE pt.status = 'COMPLETED'),
+        0
+    )::INTEGER AS avg_settlement_ms,
+    COALESCE(SUM(t.source_amount) FILTER (WHERE pt.status = 'COMPLETED'), 0)::NUMERIC(28,8) AS total_volume
+FROM provider_transactions pt
+JOIN transfers t ON t.id = pt.transfer_id
+WHERE t.tenant_id = $1
+  AND pt.created_at >= $2::timestamptz
+  AND pt.created_at < $3::timestamptz
+GROUP BY pt.provider, t.source_currency, t.dest_currency
+ORDER BY total_volume DESC
+`
+
+type GetProviderPerformanceParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	FromTime time.Time `json:"from_time"`
+	ToTime   time.Time `json:"to_time"`
+}
+
+type GetProviderPerformanceRow struct {
+	Provider         string         `json:"provider"`
+	SourceCurrency   string         `json:"source_currency"`
+	DestCurrency     string         `json:"dest_currency"`
+	TransactionCount int64          `json:"transaction_count"`
+	Completed        int64          `json:"completed"`
+	Failed           int64          `json:"failed"`
+	SuccessRate      pgtype.Numeric `json:"success_rate"`
+	AvgSettlementMs  int32          `json:"avg_settlement_ms"`
+	TotalVolume      pgtype.Numeric `json:"total_volume"`
+}
+
+// Provider performance: success rate, avg settlement time, volume per corridor.
+func (q *Queries) GetProviderPerformance(ctx context.Context, arg GetProviderPerformanceParams) ([]GetProviderPerformanceRow, error) {
+	rows, err := q.db.Query(ctx, getProviderPerformance, arg.TenantID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetProviderPerformanceRow{}
+	for rows.Next() {
+		var i GetProviderPerformanceRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.SourceCurrency,
+			&i.DestCurrency,
+			&i.TransactionCount,
+			&i.Completed,
+			&i.Failed,
+			&i.SuccessRate,
+			&i.AvgSettlementMs,
+			&i.TotalVolume,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getRecentActivity = `-- name: GetRecentActivity :many
 SELECT
     t.id AS transfer_id,
@@ -155,6 +559,51 @@ func (q *Queries) GetRecentActivity(ctx context.Context, arg GetRecentActivityPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const getReconciliationSummary = `-- name: GetReconciliationSummary :one
+SELECT
+    COUNT(*) AS total_runs,
+    COALESCE(SUM(checks_passed), 0)::bigint AS checks_passed,
+    COALESCE(SUM(checks_run - checks_passed), 0)::bigint AS checks_failed,
+    CASE
+        WHEN SUM(checks_run) = 0 THEN 0
+        ELSE ROUND(100.0 * SUM(checks_passed) / SUM(checks_run), 2)
+    END::NUMERIC(5,2) AS pass_rate,
+    MAX(run_at) AS last_run_at,
+    COUNT(*) FILTER (WHERE needs_review = true) AS needs_review_count
+FROM reconciliation_reports
+WHERE run_at >= $1::timestamptz
+  AND run_at < $2::timestamptz
+`
+
+type GetReconciliationSummaryParams struct {
+	FromTime time.Time `json:"from_time"`
+	ToTime   time.Time `json:"to_time"`
+}
+
+type GetReconciliationSummaryRow struct {
+	TotalRuns        int64          `json:"total_runs"`
+	ChecksPassed     int64          `json:"checks_passed"`
+	ChecksFailed     int64          `json:"checks_failed"`
+	PassRate         pgtype.Numeric `json:"pass_rate"`
+	LastRunAt        interface{}    `json:"last_run_at"`
+	NeedsReviewCount int64          `json:"needs_review_count"`
+}
+
+// System-wide reconciliation health summary (no tenant_id on reconciliation_reports).
+func (q *Queries) GetReconciliationSummary(ctx context.Context, arg GetReconciliationSummaryParams) (GetReconciliationSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getReconciliationSummary, arg.FromTime, arg.ToTime)
+	var i GetReconciliationSummaryRow
+	err := row.Scan(
+		&i.TotalRuns,
+		&i.ChecksPassed,
+		&i.ChecksFailed,
+		&i.PassRate,
+		&i.LastRunAt,
+		&i.NeedsReviewCount,
+	)
+	return i, err
 }
 
 const getTransferLatencyPercentiles = `-- name: GetTransferLatencyPercentiles :one
@@ -305,4 +754,240 @@ func (q *Queries) GetVolumeComparison(ctx context.Context, arg GetVolumeComparis
 		&i.PreviousFeesUsd,
 	)
 	return i, err
+}
+
+const listActiveTenantIDs = `-- name: ListActiveTenantIDs :many
+SELECT id FROM tenants WHERE status = 'ACTIVE'
+`
+
+// List all active tenant IDs for the snapshot scheduler.
+func (q *Queries) ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listActiveTenantIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExportJobs = `-- name: ListExportJobs :many
+SELECT id, tenant_id, status, export_type, parameters, file_path,
+    download_url, download_expires_at, row_count, error_message,
+    created_at, completed_at
+FROM analytics_export_jobs
+WHERE tenant_id = $1
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type ListExportJobsParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	PageSize int32     `json:"page_size"`
+}
+
+// List export jobs for a tenant.
+func (q *Queries) ListExportJobs(ctx context.Context, arg ListExportJobsParams) ([]AnalyticsExportJob, error) {
+	rows, err := q.db.Query(ctx, listExportJobs, arg.TenantID, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AnalyticsExportJob{}
+	for rows.Next() {
+		var i AnalyticsExportJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Status,
+			&i.ExportType,
+			&i.Parameters,
+			&i.FilePath,
+			&i.DownloadUrl,
+			&i.DownloadExpiresAt,
+			&i.RowCount,
+			&i.ErrorMessage,
+			&i.CreatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingExportJobs = `-- name: ListPendingExportJobs :many
+SELECT id, tenant_id, status, export_type, parameters, file_path,
+    download_url, download_expires_at, row_count, error_message,
+    created_at, completed_at
+FROM analytics_export_jobs
+WHERE status = 'pending'
+ORDER BY created_at ASC
+LIMIT $1
+`
+
+// List pending export jobs for the exporter to process.
+func (q *Queries) ListPendingExportJobs(ctx context.Context, batchSize int32) ([]AnalyticsExportJob, error) {
+	rows, err := q.db.Query(ctx, listPendingExportJobs, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AnalyticsExportJob{}
+	for rows.Next() {
+		var i AnalyticsExportJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Status,
+			&i.ExportType,
+			&i.Parameters,
+			&i.FilePath,
+			&i.DownloadUrl,
+			&i.DownloadExpiresAt,
+			&i.RowCount,
+			&i.ErrorMessage,
+			&i.CreatedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateExportJobStatus = `-- name: UpdateExportJobStatus :exec
+UPDATE analytics_export_jobs
+SET status = $1,
+    file_path = $2,
+    download_url = $3,
+    download_expires_at = $4,
+    row_count = $5,
+    error_message = $6,
+    completed_at = $7
+WHERE id = $8
+`
+
+type UpdateExportJobStatusParams struct {
+	Status            string             `json:"status"`
+	FilePath          pgtype.Text        `json:"file_path"`
+	DownloadUrl       pgtype.Text        `json:"download_url"`
+	DownloadExpiresAt pgtype.Timestamptz `json:"download_expires_at"`
+	RowCount          int64              `json:"row_count"`
+	ErrorMessage      pgtype.Text        `json:"error_message"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	ID                uuid.UUID          `json:"id"`
+}
+
+// Update export job status after processing.
+func (q *Queries) UpdateExportJobStatus(ctx context.Context, arg UpdateExportJobStatusParams) error {
+	_, err := q.db.Exec(ctx, updateExportJobStatus,
+		arg.Status,
+		arg.FilePath,
+		arg.DownloadUrl,
+		arg.DownloadExpiresAt,
+		arg.RowCount,
+		arg.ErrorMessage,
+		arg.CompletedAt,
+		arg.ID,
+	)
+	return err
+}
+
+const upsertDailySnapshot = `-- name: UpsertDailySnapshot :exec
+INSERT INTO analytics_daily_snapshots (
+    tenant_id, snapshot_date, metric_type,
+    source_currency, dest_currency, provider,
+    transfer_count, completed_count, failed_count,
+    volume_usd, fees_usd, on_ramp_fees_usd, off_ramp_fees_usd, network_fees_usd,
+    avg_latency_ms, p50_latency_ms, p90_latency_ms, p95_latency_ms,
+    success_rate
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12, $13, $14,
+    $15, $16, $17, $18,
+    $19
+) ON CONFLICT (tenant_id, snapshot_date, metric_type, source_currency, dest_currency, provider)
+DO UPDATE SET
+    transfer_count = EXCLUDED.transfer_count,
+    completed_count = EXCLUDED.completed_count,
+    failed_count = EXCLUDED.failed_count,
+    volume_usd = EXCLUDED.volume_usd,
+    fees_usd = EXCLUDED.fees_usd,
+    on_ramp_fees_usd = EXCLUDED.on_ramp_fees_usd,
+    off_ramp_fees_usd = EXCLUDED.off_ramp_fees_usd,
+    network_fees_usd = EXCLUDED.network_fees_usd,
+    avg_latency_ms = EXCLUDED.avg_latency_ms,
+    p50_latency_ms = EXCLUDED.p50_latency_ms,
+    p90_latency_ms = EXCLUDED.p90_latency_ms,
+    p95_latency_ms = EXCLUDED.p95_latency_ms,
+    success_rate = EXCLUDED.success_rate
+`
+
+type UpsertDailySnapshotParams struct {
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	SnapshotDate   pgtype.Date    `json:"snapshot_date"`
+	MetricType     string         `json:"metric_type"`
+	SourceCurrency string         `json:"source_currency"`
+	DestCurrency   string         `json:"dest_currency"`
+	Provider       string         `json:"provider"`
+	TransferCount  int64          `json:"transfer_count"`
+	CompletedCount int64          `json:"completed_count"`
+	FailedCount    int64          `json:"failed_count"`
+	VolumeUsd      pgtype.Numeric `json:"volume_usd"`
+	FeesUsd        pgtype.Numeric `json:"fees_usd"`
+	OnRampFeesUsd  pgtype.Numeric `json:"on_ramp_fees_usd"`
+	OffRampFeesUsd pgtype.Numeric `json:"off_ramp_fees_usd"`
+	NetworkFeesUsd pgtype.Numeric `json:"network_fees_usd"`
+	AvgLatencyMs   int32          `json:"avg_latency_ms"`
+	P50LatencyMs   int32          `json:"p50_latency_ms"`
+	P90LatencyMs   int32          `json:"p90_latency_ms"`
+	P95LatencyMs   int32          `json:"p95_latency_ms"`
+	SuccessRate    pgtype.Numeric `json:"success_rate"`
+}
+
+// INSERT ON CONFLICT for nightly snapshot job.
+func (q *Queries) UpsertDailySnapshot(ctx context.Context, arg UpsertDailySnapshotParams) error {
+	_, err := q.db.Exec(ctx, upsertDailySnapshot,
+		arg.TenantID,
+		arg.SnapshotDate,
+		arg.MetricType,
+		arg.SourceCurrency,
+		arg.DestCurrency,
+		arg.Provider,
+		arg.TransferCount,
+		arg.CompletedCount,
+		arg.FailedCount,
+		arg.VolumeUsd,
+		arg.FeesUsd,
+		arg.OnRampFeesUsd,
+		arg.OffRampFeesUsd,
+		arg.NetworkFeesUsd,
+		arg.AvgLatencyMs,
+		arg.P50LatencyMs,
+		arg.P90LatencyMs,
+		arg.P95LatencyMs,
+		arg.SuccessRate,
+	)
+	return err
 }
