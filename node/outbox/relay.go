@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,7 +58,12 @@ type RelayMetrics struct {
 	UnpublishedGauge prometheus.Gauge
 	PollBatchSize    prometheus.Histogram
 	FailedTotal      prometheus.Counter
+	ExhaustedTotal   prometheus.Counter // entries that exhausted all retries
 	MarkFailedTotal  prometheus.Counter // NATS publish succeeded but DB mark failed
+	// RelayLag records the age of the oldest unpublished entry in each poll cycle.
+	// This is the primary SLI for outbox health — if it grows, the relay is falling behind.
+	// Can be set to the global observability.Metrics.OutboxRelayLag gauge via WithRelayLag.
+	RelayLag prometheus.Gauge
 }
 
 // NewRelayMetrics registers and returns outbox relay Prometheus metrics.
@@ -88,6 +94,11 @@ func NewRelayMetrics() *RelayMetrics {
 		FailedTotal: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "settla_outbox_failed_total",
 			Help: "Total outbox publish failures (retry_count incremented).",
+		}),
+
+		ExhaustedTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "settla_outbox_exhausted_total",
+			Help: "Total outbox entries that exhausted all retries.",
 		}),
 
 		MarkFailedTotal: promauto.NewCounter(prometheus.CounterOpts{
@@ -145,6 +156,17 @@ func WithNumPartitions(n int) RelayOption {
 func WithMetrics(m *RelayMetrics) RelayOption {
 	return func(r *Relay) {
 		r.metrics = m
+	}
+}
+
+// WithRelayLag sets the gauge used to record the age of the oldest unpublished
+// entry. Typically wired to observability.Metrics.OutboxRelayLag.
+func WithRelayLag(g prometheus.Gauge) RelayOption {
+	return func(r *Relay) {
+		if r.metrics == nil {
+			r.metrics = &RelayMetrics{}
+		}
+		r.metrics.RelayLag = g
 	}
 }
 
@@ -233,23 +255,56 @@ func (r *Relay) poll(ctx context.Context) error {
 	}
 
 	if len(entries) == 0 {
+		// No backlog — reset lag to zero.
+		if r.metrics != nil && r.metrics.RelayLag != nil {
+			r.metrics.RelayLag.Set(0)
+		}
 		return nil
 	}
 
-	for _, entry := range entries {
-		if err := r.publishEntry(ctx, entry); err != nil {
-			// Log per-entry failures but continue processing the batch.
-			r.logger.Warn("settla-outbox: failed to publish entry",
-				"entry_id", entry.ID,
-				"event_type", entry.EventType,
-				"tenant_id", entry.TenantID,
-				"retry_count", entry.RetryCount,
-				"error", err,
-			)
-		}
+	// Record the lag of the oldest unpublished entry (first in the batch,
+	// assuming the store orders by created_at ASC).
+	if r.metrics != nil && r.metrics.RelayLag != nil {
+		oldestAge := time.Since(entries[0].CreatedAt).Seconds()
+		r.metrics.RelayLag.Set(oldestAge)
 	}
 
+	r.publishBatch(ctx, entries)
+
 	return nil
+}
+
+const maxPublishConcurrency = 50
+
+// publishBatch publishes a batch of outbox entries to NATS concurrently.
+func (r *Relay) publishBatch(ctx context.Context, entries []OutboxRow) {
+	sem := make(chan struct{}, maxPublishConcurrency)
+	var wg sync.WaitGroup
+
+	for _, entry := range entries {
+		// Skip zero entries produced by MustNewOutboxEvent/MustNewOutboxIntent
+		// when an invalid event type is logged-and-returned instead of panicking.
+		if entry.ID == uuid.Nil {
+			r.logger.Warn("settla-outbox: skipping zero outbox entry (invalid event type at creation time)")
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(e OutboxRow) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := r.publishEntry(ctx, e); err != nil {
+				r.logger.Warn("settla-outbox: failed to publish entry",
+					"entry_id", e.ID,
+					"event_type", e.EventType,
+					"tenant_id", e.TenantID,
+					"retry_count", e.RetryCount,
+					"error", err,
+				)
+			}
+		}(entry)
+	}
+	wg.Wait()
 }
 
 // publishEntry publishes a single outbox entry to NATS and marks it accordingly.
@@ -284,6 +339,11 @@ func (r *Relay) publishEntry(ctx context.Context, entry OutboxRow) error {
 		}
 		if r.metrics != nil {
 			r.metrics.FailedTotal.Inc()
+			// Check if this failure exhausts all retries (retry_count is pre-increment,
+			// so >= MaxRetries-1 means this was the last allowed attempt).
+			if entry.RetryCount >= entry.MaxRetries-1 {
+				r.metrics.ExhaustedTotal.Inc()
+			}
 		}
 		return fmt.Errorf("settla-outbox: publishing entry %s to %s: %w", entry.ID, subject, err)
 	}

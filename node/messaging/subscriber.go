@@ -106,7 +106,10 @@ func (s *Subscriber) cleanupTenantLocks(ctx context.Context) {
 			s.tenantLocks.Range(func(key, value any) bool {
 				entry := value.(*tenantMutexEntry)
 				if entry.lastUsed.Load() < cutoff {
-					s.tenantLocks.Delete(key)
+					if entry.mu.TryLock() {
+						s.tenantLocks.Delete(key)
+						entry.mu.Unlock()
+					}
 				}
 				return true
 			})
@@ -208,10 +211,6 @@ func (s *Subscriber) dispatchPooled(ctx context.Context, msg jetstream.Msg, hand
 	case s.workerPool <- struct{}{}:
 	case <-ctx.Done():
 		return
-	case <-time.After(30 * time.Second):
-		s.logger.Error("settla-messaging: pool slot acquisition timeout", "stream", streamName)
-		_ = msg.Nak()
-		return
 	}
 	if s.draining.Load() {
 		<-s.workerPool
@@ -257,10 +256,16 @@ func processMessage(ctx context.Context, msg jetstream.Msg, handler EventHandler
 			)
 			if client != nil {
 				if dlqErr := client.PublishDLQ(ctx, streamName, "unmarshal_error", msg.Data()); dlqErr != nil {
-					logger.Error("settla-messaging: DLQ publish failed for unmarshal error, NAKing",
-						"error", dlqErr)
-					_ = msg.Nak()
+					logger.Error("settla-messaging: DLQ publish failed for unmarshal error, ACKing unrecoverable message",
+						"error", dlqErr,
+						"subject", msg.Subject(),
+						"raw_data", string(msg.Data()),
+					)
+					_ = msg.Ack()
 					return
+				}
+				if client.DLQCounter != nil {
+					client.DLQCounter.WithLabelValues(streamName, "unmarshal_error").Inc()
 				}
 			}
 			_ = msg.Ack()
@@ -288,6 +293,9 @@ func processMessage(ctx context.Context, msg jetstream.Msg, handler EventHandler
 					"error", dlqErr, "event_id", event.ID)
 				_ = msg.Nak()
 				return
+			}
+			if client.DLQCounter != nil {
+				client.DLQCounter.WithLabelValues(streamName, event.Type).Inc()
 			}
 		}
 		_ = msg.Ack()
@@ -346,7 +354,7 @@ func unmarshalEvent(data []byte) (domain.Event, error) {
 		}
 		_ = json.Unmarshal(data, &fallback)
 		eventType = fallback.Type
-		if fallback.Ts.IsZero() {
+		if !fallback.Ts.IsZero() {
 			w.CreatedAt = fallback.Ts
 		}
 	}
@@ -356,6 +364,14 @@ func unmarshalEvent(data []byte) (domain.Event, error) {
 	if len(w.Payload) > 0 {
 		if err := json.Unmarshal(w.Payload, &payload); err != nil {
 			return domain.Event{}, fmt.Errorf("settla-messaging: unmarshal event payload: %w", err)
+		}
+	} else {
+		// Fallback: try the "data" key used by the direct Publisher format.
+		var dataFallback struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(data, &dataFallback); err == nil && len(dataFallback.Data) > 0 {
+			_ = json.Unmarshal(dataFallback.Data, &payload)
 		}
 	}
 
@@ -529,10 +545,6 @@ func (ss *StreamSubscriber) dispatchPooled(ctx context.Context, msg jetstream.Ms
 	select {
 	case ss.workerPool <- struct{}{}:
 	case <-ctx.Done():
-		return
-	case <-time.After(30 * time.Second):
-		ss.logger.Error("settla-messaging: pool slot acquisition timeout", "stream", ss.streamName)
-		_ = msg.Nak()
 		return
 	}
 	if ss.draining.Load() {

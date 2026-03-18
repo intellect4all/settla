@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -21,7 +22,10 @@ const (
 	SubjectPrefix = SubjectPrefixTransfer
 
 	// DefaultPartitions is the default number of partitions for tenant sharding.
-	DefaultPartitions = 8
+	// 256 partitions supports 100-200K tenants (~400-800 tenants/partition),
+	// minimizing head-of-line blocking from slow tenants.
+	// Override via SETTLA_NODE_PARTITIONS env var (range 1-256).
+	DefaultPartitions = 256
 
 	// MaxRetries is the maximum delivery attempts before dead-lettering.
 	// Total deliveries = MaxRetries (1 initial + 5 retries = 6).
@@ -90,6 +94,10 @@ type Client struct {
 	NumPartitions int
 	// Replicas controls the number of stream replicas. 1 for dev, 3 for production.
 	Replicas int
+	// DLQCounter is an optional counter incremented each time a message is
+	// routed to the dead letter queue. Labels: source_stream, event_type.
+	// When nil, DLQ counting is silently skipped.
+	DLQCounter *prometheus.CounterVec
 }
 
 // ClientOption configures the NATS client.

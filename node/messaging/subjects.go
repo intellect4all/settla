@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,6 +17,9 @@ const (
 	SubjectPrefixBlockchain      = "settla.blockchain"
 	SubjectPrefixWebhook         = "settla.webhook"
 	SubjectPrefixProviderInbound = "settla.provider.inbound"
+	SubjectPrefixDeposit         = "settla.deposit"
+	SubjectPrefixEmail           = "settla.email"
+	SubjectPrefixBankDeposit     = "settla.bank_deposit"
 )
 
 // TransferSubject builds the NATS subject for a transfer event, partitioned by tenant.
@@ -66,6 +70,27 @@ func ProviderWebhookSubject(tenantID uuid.UUID, numPartitions int, eventType str
 	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixProviderInbound, partition, eventType)
 }
 
+// DepositSubject builds the NATS subject for a crypto deposit event, partitioned by tenant.
+// Format: settla.deposit.partition.{hash(tenantID)%N}.{eventType}
+func DepositSubject(tenantID uuid.UUID, numPartitions int, eventType string) string {
+	partition := TenantPartition(tenantID, numPartitions)
+	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixDeposit, partition, eventType)
+}
+
+// EmailSubject builds the NATS subject for an email notification, partitioned by tenant.
+// Format: settla.email.partition.{hash(tenantID)%N}.{eventType}
+func EmailSubject(tenantID uuid.UUID, numPartitions int, eventType string) string {
+	partition := TenantPartition(tenantID, numPartitions)
+	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixEmail, partition, eventType)
+}
+
+// BankDepositSubject builds the NATS subject for a bank deposit event, partitioned by tenant.
+// Format: settla.bank_deposit.partition.{hash(tenantID)%N}.{eventType}
+func BankDepositSubject(tenantID uuid.UUID, numPartitions int, eventType string) string {
+	partition := TenantPartition(tenantID, numPartitions)
+	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixBankDeposit, partition, eventType)
+}
+
 // SubjectForEventType maps a domain event type to its NATS subject.
 // This is the primary routing function used by the outbox relay to determine
 // where to publish each event.
@@ -83,6 +108,10 @@ func SubjectForEventType(eventType string, tenantID uuid.UUID, numPartitions int
 	prefix := eventPrefix(eventType)
 
 	switch prefix {
+	// Deposit events go to the partitioned crypto deposit stream.
+	case "deposit":
+		return DepositSubject(tenantID, numPartitions, eventType)
+
 	// Transfer-related events go to the partitioned transfer stream.
 	case "transfer", "settlement", "onramp", "offramp", "refund":
 		return TransferSubject(tenantID, numPartitions, eventType)
@@ -107,9 +136,17 @@ func SubjectForEventType(eventType string, tenantID uuid.UUID, numPartitions int
 	case "webhook":
 		return WebhookSubject(tenantID, numPartitions, eventType)
 
+	case "email":
+		return EmailSubject(tenantID, numPartitions, eventType)
+
+	case "bank_deposit":
+		return BankDepositSubject(tenantID, numPartitions, eventType)
+
 	default:
 		// Fallback: route unknown events to the transfer stream (preserves
 		// backward compatibility with the single-stream topology).
+		slog.Warn("settla-messaging: unknown event type prefix — routing to transfer stream",
+			"event_type", eventType)
 		return TransferSubject(tenantID, numPartitions, eventType)
 	}
 }
