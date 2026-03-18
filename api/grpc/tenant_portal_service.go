@@ -73,8 +73,8 @@ func (s *Server) UpdateWebhookConfig(ctx context.Context, req *pb.UpdateWebhookC
 		return nil, status.Error(codes.Unimplemented, "tenant portal not configured")
 	}
 
-	if req.GetWebhookUrl() == "" {
-		return nil, status.Error(codes.InvalidArgument, "webhook_url is required")
+	if err := validateNonEmpty("webhook_url", req.GetWebhookUrl()); err != nil {
+		return nil, err
 	}
 
 	// Generate new HMAC secret
@@ -150,6 +150,16 @@ func (s *Server) CreateAPIKey(ctx context.Context, req *pb.CreateAPIKeyRequest) 
 		return nil, mapDomainError(err)
 	}
 
+	auditLog(ctx, s.auditLogger, s.logger, domain.AuditEntry{
+		TenantID:   tenantID,
+		ActorType:  "api_key",
+		ActorID:    tenantID.String(),
+		Action:     "api_key.created",
+		EntityType: "api_key",
+		EntityID:   &key.ID,
+		NewValue:   mustJSON(map[string]string{"key_prefix": keyPrefix, "environment": env, "name": req.GetName()}),
+	})
+
 	return &pb.CreateAPIKeyResponse{
 		Key:    apiKeyToProto(key),
 		RawKey: rawKey,
@@ -172,7 +182,7 @@ func (s *Server) RevokeAPIKey(ctx context.Context, req *pb.RevokeAPIKeyRequest) 
 	}
 
 	// Fetch the key hash before deactivating so we can return it to the gateway
-	// for immediate L1/L2 auth cache invalidation (SEC-2).
+	// for immediate L1/L2 auth cache invalidation.
 	existingKey, err := s.portalStore.GetAPIKeyByIDAndTenant(ctx, tenantID, keyID)
 	if err != nil {
 		return nil, mapDomainError(err)
@@ -181,6 +191,16 @@ func (s *Server) RevokeAPIKey(ctx context.Context, req *pb.RevokeAPIKeyRequest) 
 	if err := s.portalStore.DeactivateAPIKeyByTenant(ctx, tenantID, keyID); err != nil {
 		return nil, mapDomainError(err)
 	}
+
+	auditLog(ctx, s.auditLogger, s.logger, domain.AuditEntry{
+		TenantID:   tenantID,
+		ActorType:  "api_key",
+		ActorID:    tenantID.String(),
+		Action:     "api_key.revoked",
+		EntityType: "api_key",
+		EntityID:   &keyID,
+		NewValue:   mustJSON(map[string]string{"key_prefix": existingKey.KeyPrefix}),
+	})
 
 	return &pb.RevokeAPIKeyResponse{KeyHash: existingKey.KeyHash}, nil
 }
@@ -234,6 +254,17 @@ func (s *Server) RotateAPIKey(ctx context.Context, req *pb.RotateAPIKeyRequest) 
 	if err := s.portalStore.CreateAPIKey(ctx, newKey); err != nil {
 		return nil, mapDomainError(err)
 	}
+
+	auditLog(ctx, s.auditLogger, s.logger, domain.AuditEntry{
+		TenantID:   tenantID,
+		ActorType:  "api_key",
+		ActorID:    tenantID.String(),
+		Action:     "api_key.rotated",
+		EntityType: "api_key",
+		EntityID:   &newKey.ID,
+		OldValue:   mustJSON(map[string]string{"old_key_id": oldKeyID.String(), "old_key_prefix": oldKey.KeyPrefix}),
+		NewValue:   mustJSON(map[string]string{"new_key_prefix": keyPrefix, "environment": oldKey.Environment, "name": name}),
+	})
 
 	return &pb.RotateAPIKeyResponse{
 		Key:    apiKeyToProto(newKey),
