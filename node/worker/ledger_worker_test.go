@@ -194,6 +194,10 @@ func TestLedgerWorker_ReverseSuccess(t *testing.T) {
 		IdempotencyKey: fmt.Sprintf("reverse:%s", transferID),
 		Description:    "Reverse settlement for transfer",
 		ReferenceType:  "reversal",
+		Lines: []domain.LedgerLineEntry{
+			{AccountCode: "a", EntryType: "DEBIT", Amount: decimal.NewFromInt(100), Currency: "GBP", Description: "debit a"},
+			{AccountCode: "b", EntryType: "CREDIT", Amount: decimal.NewFromInt(100), Currency: "GBP", Description: "credit b"},
+		},
 	}
 
 	event := domain.Event{
@@ -208,17 +212,32 @@ func TestLedgerWorker_ReverseSuccess(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	reversals := ledger.getReverseCalls()
-	if len(reversals) != 1 {
-		t.Fatalf("expected 1 reverse call, got %d", len(reversals))
+	// handleReverse now uses PostEntries with swapped debit/credit lines
+	posts := ledger.getPostCalls()
+	if len(posts) != 1 {
+		t.Fatalf("expected 1 post call for reversal, got %d", len(posts))
 	}
-	if reversals[0].entryID != transferID {
-		t.Errorf("expected entry ID %s, got %s", transferID, reversals[0].entryID)
+	if posts[0].IdempotencyKey != fmt.Sprintf("reverse:%s", transferID) {
+		t.Errorf("expected idempotency key reverse:%s, got %s", transferID, posts[0].IdempotencyKey)
+	}
+	if posts[0].ReferenceType != "reversal" {
+		t.Errorf("expected reference type 'reversal', got %s", posts[0].ReferenceType)
+	}
+	if len(posts[0].Lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(posts[0].Lines))
+	}
+	// Verify debit/credit swap: original DEBIT→CREDIT, original CREDIT→DEBIT
+	if posts[0].Lines[0].EntryType != domain.EntryTypeCredit {
+		t.Errorf("expected first line swapped to CREDIT, got %s", posts[0].Lines[0].EntryType)
+	}
+	if posts[0].Lines[1].EntryType != domain.EntryTypeDebit {
+		t.Errorf("expected second line swapped to DEBIT, got %s", posts[0].Lines[1].EntryType)
 	}
 }
 
 func TestLedgerWorker_ReverseFailure(t *testing.T) {
-	ledger := &mockLedger{failReverse: true}
+	// handleReverse now uses PostEntries, so failPost triggers the failure
+	ledger := &mockLedger{failPost: true}
 	w := &LedgerWorker{
 		ledger: ledger,
 		logger: ledgerTestLogger(),
@@ -228,9 +247,13 @@ func TestLedgerWorker_ReverseFailure(t *testing.T) {
 	tenantID := uuid.New()
 
 	payload := domain.LedgerPostPayload{
-		TransferID: transferID,
-		TenantID:   tenantID,
+		TransferID:  transferID,
+		TenantID:    tenantID,
 		Description: "Reverse",
+		Lines: []domain.LedgerLineEntry{
+			{AccountCode: "a", EntryType: "DEBIT", Amount: decimal.NewFromInt(100), Currency: "GBP"},
+			{AccountCode: "b", EntryType: "CREDIT", Amount: decimal.NewFromInt(100), Currency: "GBP"},
+		},
 	}
 
 	event := domain.Event{
@@ -254,13 +277,12 @@ func TestLedgerWorker_EventRouting(t *testing.T) {
 	}
 
 	tests := []struct {
-		eventType    string
-		expectPost   bool
-		expectReverse bool
+		eventType  string
+		expectPost int // number of PostEntries calls expected (reverse also uses PostEntries now)
 	}{
-		{domain.IntentLedgerPost, true, false},
-		{domain.IntentLedgerReverse, false, true},
-		{"some.unknown", false, false},
+		{domain.IntentLedgerPost, 1},
+		{domain.IntentLedgerReverse, 1}, // reverse now builds a reversal entry and calls PostEntries
+		{"some.unknown", 0},
 	}
 
 	for _, tt := range tests {
@@ -289,19 +311,9 @@ func TestLedgerWorker_EventRouting(t *testing.T) {
 			_ = w.handleEvent(context.Background(), event)
 
 			posts := ledger.getPostCalls()
-			reversals := ledger.getReverseCalls()
 
-			if tt.expectPost && len(posts) == 0 {
-				t.Error("expected post call but got none")
-			}
-			if !tt.expectPost && len(posts) > 0 {
-				t.Errorf("expected no post call, got %d", len(posts))
-			}
-			if tt.expectReverse && len(reversals) == 0 {
-				t.Error("expected reverse call but got none")
-			}
-			if !tt.expectReverse && len(reversals) > 0 {
-				t.Errorf("expected no reverse call, got %d", len(reversals))
+			if len(posts) != tt.expectPost {
+				t.Errorf("expected %d post call(s), got %d", tt.expectPost, len(posts))
 			}
 		})
 	}

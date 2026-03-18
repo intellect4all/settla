@@ -369,6 +369,8 @@ func TestBlockchainWorker_PendingPoller_ConfirmedAfterDelay(t *testing.T) {
 		transferStore:     store,
 		engine:            engine,
 		logger:            blockchainTestLogger(),
+		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
+		escalationTimeout: pendingTxEscalationTimeout,
 	}
 
 	payload := &domain.BlockchainSendPayload{
@@ -379,12 +381,15 @@ func TestBlockchainWorker_PendingPoller_ConfirmedAfterDelay(t *testing.T) {
 	}
 
 	// Simulate a pending entry tracked 10 seconds ago (well within the 1h timeout)
-	w.pendingTxs.Store(transferID, pendingEntry{
+	w.pendingMu.Lock()
+	w.pendingTxMap[transferID] = pendingEntry{
 		payload:  payload,
 		txHash:   "0xpendingHash",
 		tenantID: tenantID,
 		addedAt:  time.Now().UTC().Add(-10 * time.Second),
-	})
+	}
+	w.pendingTxCount++
+	w.pendingMu.Unlock()
 
 	w.pollPendingTransactions(context.Background())
 
@@ -398,7 +403,10 @@ func TestBlockchainWorker_PendingPoller_ConfirmedAfterDelay(t *testing.T) {
 	}
 
 	// Entry should have been removed from pending map
-	if _, ok := w.pendingTxs.Load(transferID); ok {
+	w.pendingMu.Lock()
+	_, stillExists := w.pendingTxMap[transferID]
+	w.pendingMu.Unlock()
+	if stillExists {
 		t.Error("expected pending entry to be deleted after confirmation")
 	}
 }
@@ -422,6 +430,8 @@ func TestBlockchainWorker_PendingPoller_FailedOnPoll(t *testing.T) {
 		transferStore:     store,
 		engine:            engine,
 		logger:            blockchainTestLogger(),
+		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
+		escalationTimeout: pendingTxEscalationTimeout,
 	}
 
 	payload := &domain.BlockchainSendPayload{
@@ -431,12 +441,15 @@ func TestBlockchainWorker_PendingPoller_FailedOnPoll(t *testing.T) {
 		Amount:     decimal.NewFromInt(500),
 	}
 
-	w.pendingTxs.Store(transferID, pendingEntry{
+	w.pendingMu.Lock()
+	w.pendingTxMap[transferID] = pendingEntry{
 		payload:  payload,
 		txHash:   "0xfailedHash",
 		tenantID: tenantID,
 		addedAt:  time.Now().UTC().Add(-10 * time.Second),
-	})
+	}
+	w.pendingTxCount++
+	w.pendingMu.Unlock()
 
 	w.pollPendingTransactions(context.Background())
 
@@ -449,7 +462,10 @@ func TestBlockchainWorker_PendingPoller_FailedOnPoll(t *testing.T) {
 	}
 
 	// Entry should have been removed from pending map
-	if _, ok := w.pendingTxs.Load(transferID); ok {
+	w.pendingMu.Lock()
+	_, stillExists := w.pendingTxMap[transferID]
+	w.pendingMu.Unlock()
+	if stillExists {
 		t.Error("expected pending entry to be deleted after failure")
 	}
 }
@@ -468,6 +484,8 @@ func TestBlockchainWorker_PendingPoller_EscalatesAfter1Hour(t *testing.T) {
 		engine:            engine,
 		logger:            blockchainTestLogger(),
 		reviewStore:       reviewStore,
+		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
+		escalationTimeout: pendingTxEscalationTimeout,
 	}
 
 	payload := &domain.BlockchainSendPayload{
@@ -478,12 +496,15 @@ func TestBlockchainWorker_PendingPoller_EscalatesAfter1Hour(t *testing.T) {
 	}
 
 	stuckSince := time.Now().UTC().Add(-2 * time.Hour) // well past the 1h timeout
-	w.pendingTxs.Store(transferID, pendingEntry{
+	w.pendingMu.Lock()
+	w.pendingTxMap[transferID] = pendingEntry{
 		payload:  payload,
 		txHash:   "0xstuckHash",
 		tenantID: tenantID,
 		addedAt:  stuckSince,
-	})
+	}
+	w.pendingTxCount++
+	w.pendingMu.Unlock()
 
 	w.pollPendingTransactions(context.Background())
 
@@ -508,7 +529,10 @@ func TestBlockchainWorker_PendingPoller_EscalatesAfter1Hour(t *testing.T) {
 	}
 
 	// Entry should have been removed from pending map
-	if _, ok := w.pendingTxs.Load(transferID); ok {
+	w.pendingMu.Lock()
+	_, stillExists := w.pendingTxMap[transferID]
+	w.pendingMu.Unlock()
+	if stillExists {
 		t.Error("expected pending entry to be deleted after escalation")
 	}
 }
@@ -532,6 +556,8 @@ func TestBlockchainWorker_PendingPoller_StillPending(t *testing.T) {
 		transferStore:     store,
 		engine:            engine,
 		logger:            blockchainTestLogger(),
+		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
+		escalationTimeout: pendingTxEscalationTimeout,
 	}
 
 	payload := &domain.BlockchainSendPayload{
@@ -541,12 +567,15 @@ func TestBlockchainWorker_PendingPoller_StillPending(t *testing.T) {
 		Amount:     decimal.NewFromInt(500),
 	}
 
-	w.pendingTxs.Store(transferID, pendingEntry{
+	w.pendingMu.Lock()
+	w.pendingTxMap[transferID] = pendingEntry{
 		payload:  payload,
 		txHash:   "0xstillPending",
 		tenantID: tenantID,
 		addedAt:  time.Now().UTC().Add(-5 * time.Minute),
-	})
+	}
+	w.pendingTxCount++
+	w.pendingMu.Unlock()
 
 	w.pollPendingTransactions(context.Background())
 
@@ -556,7 +585,10 @@ func TestBlockchainWorker_PendingPoller_StillPending(t *testing.T) {
 	}
 
 	// Entry should still be in the pending map
-	if _, ok := w.pendingTxs.Load(transferID); !ok {
+	w.pendingMu.Lock()
+	_, exists := w.pendingTxMap[transferID]
+	w.pendingMu.Unlock()
+	if !exists {
 		t.Error("expected pending entry to remain in map")
 	}
 }

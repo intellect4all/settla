@@ -81,8 +81,10 @@ func TestWebhookWorker_DeliverSuccess(t *testing.T) {
 	w := &WebhookWorker{
 		tenantStore: store,
 		httpClient:  server.Client(),
-		cb:          webhookTestCB(),
+		defaultCB:   webhookTestCB(),
 		logger:      webhookTestLogger(),
+		httpSem:   make(chan struct{}, 100),
+		tenantSem: newTenantSemaphore(10),
 	}
 
 	payload := domain.WebhookDeliverPayload{
@@ -152,8 +154,10 @@ func TestWebhookWorker_DeliverNon2xx_ReturnsError(t *testing.T) {
 	w := &WebhookWorker{
 		tenantStore: store,
 		httpClient:  server.Client(),
-		cb:          webhookTestCB(),
+		defaultCB:   webhookTestCB(),
 		logger:      webhookTestLogger(),
+		httpSem:   make(chan struct{}, 100),
+		tenantSem: newTenantSemaphore(10),
 	}
 
 	payload := domain.WebhookDeliverPayload{
@@ -188,7 +192,7 @@ func TestWebhookWorker_NoWebhookURL_Skipped(t *testing.T) {
 	w := &WebhookWorker{
 		tenantStore: store,
 		httpClient:  http.DefaultClient,
-		cb:          webhookTestCB(),
+		defaultCB:   webhookTestCB(),
 		logger:      webhookTestLogger(),
 	}
 
@@ -217,7 +221,7 @@ func TestWebhookWorker_TenantNotFound_ReturnsError(t *testing.T) {
 	w := &WebhookWorker{
 		tenantStore: store,
 		httpClient:  http.DefaultClient,
-		cb:          webhookTestCB(),
+		defaultCB:   webhookTestCB(),
 		logger:      webhookTestLogger(),
 	}
 
@@ -244,7 +248,7 @@ func TestWebhookWorker_EventRouting(t *testing.T) {
 	w := &WebhookWorker{
 		tenantStore: newMockTenantWebhookStore(),
 		httpClient:  http.DefaultClient,
-		cb:          webhookTestCB(),
+		defaultCB:   webhookTestCB(),
 		logger:      webhookTestLogger(),
 	}
 
