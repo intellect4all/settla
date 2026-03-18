@@ -1,33 +1,91 @@
 package grpc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/store/transferdb"
 )
 
 // RegisterOpsHandlers registers the internal ops HTTP handlers on mux at /internal/ops/*.
-func RegisterOpsHandlers(mux *http.ServeMux, store transferdb.OpsStore, logger *slog.Logger) {
+// The auditLogger parameter is optional — pass nil to disable audit logging for ops actions.
+func RegisterOpsHandlers(mux *http.ServeMux, store transferdb.OpsStore, logger *slog.Logger, auditLogger ...domain.AuditLogger) {
+	var audit domain.AuditLogger
+	if len(auditLogger) > 0 {
+		audit = auditLogger[0]
+	}
+	opsAPIKey := os.Getenv("SETTLA_OPS_API_KEY")
+	if opsAPIKey == "" {
+		if os.Getenv("NODE_ENV") == "production" {
+			logger.Error("settla-ops: SETTLA_OPS_API_KEY is required in production — ops endpoints disabled")
+			return
+		}
+		logger.Warn("settla-ops: SETTLA_OPS_API_KEY is not set — ops endpoints are unauthenticated (dev mode only)")
+	}
+
 	mux.HandleFunc("/internal/ops/", func(w http.ResponseWriter, r *http.Request) {
+		// Authenticate ops requests when SETTLA_OPS_API_KEY is configured.
+		if opsAPIKey != "" {
+			provided := r.Header.Get("X-Ops-Api-Key")
+			if provided == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing X-Ops-Api-Key header"})
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(opsAPIKey)) != 1 {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid ops API key"})
+				return
+			}
+		}
+
+		logger.Info("settla-ops: access", "method", r.Method, "path", r.URL.Path, "remote_ip", r.RemoteAddr)
+
 		// Strip prefix to get the sub-path.
 		sub := strings.TrimPrefix(r.URL.Path, "/internal/ops/")
 		sub = strings.TrimSuffix(sub, "/")
 
 		switch {
+		// ── Tenants ──────────────────────────────────────────────────────
+		// GET /internal/ops/tenants
+		case r.Method == http.MethodGet && sub == "tenants":
+			handleListTenants(w, r, store, logger)
+
+		// GET /internal/ops/tenants/{id}
+		case r.Method == http.MethodGet && strings.HasPrefix(sub, "tenants/") && !strings.Contains(sub[len("tenants/"):], "/"):
+			handleGetTenant(w, r, store, logger)
+
+		// POST /internal/ops/tenants/{id}/status
+		case r.Method == http.MethodPost && strings.HasPrefix(sub, "tenants/") && strings.HasSuffix(sub, "/status"):
+			handleUpdateTenantStatus(w, r, store, logger, audit)
+
+		// POST /internal/ops/tenants/{id}/kyb
+		case r.Method == http.MethodPost && strings.HasPrefix(sub, "tenants/") && strings.HasSuffix(sub, "/kyb"):
+			handleUpdateTenantKYB(w, r, store, logger, audit)
+
+		// POST /internal/ops/tenants/{id}/fees
+		case r.Method == http.MethodPost && strings.HasPrefix(sub, "tenants/") && strings.HasSuffix(sub, "/fees"):
+			handleUpdateTenantFees(w, r, store, logger, audit)
+
+		// POST /internal/ops/tenants/{id}/limits
+		case r.Method == http.MethodPost && strings.HasPrefix(sub, "tenants/") && strings.HasSuffix(sub, "/limits"):
+			handleUpdateTenantLimits(w, r, store, logger, audit)
+
+		// ── Manual Reviews ──────────────────────────────────────────────
 		// POST /internal/ops/manual-reviews/{id}/approve
 		case r.Method == http.MethodPost && strings.HasPrefix(sub, "manual-reviews/") && strings.HasSuffix(sub, "/approve"):
-			handleManualReviewAction(w, r, store, logger, "APPROVED")
+			handleManualReviewAction(w, r, store, logger, "APPROVED", audit)
 
 		// POST /internal/ops/manual-reviews/{id}/reject
 		case r.Method == http.MethodPost && strings.HasPrefix(sub, "manual-reviews/") && strings.HasSuffix(sub, "/reject"):
-			handleManualReviewAction(w, r, store, logger, "REJECTED")
+			handleManualReviewAction(w, r, store, logger, "REJECTED", audit)
 
 		// GET /internal/ops/manual-reviews
 		case r.Method == http.MethodGet && sub == "manual-reviews":
@@ -44,13 +102,227 @@ func RegisterOpsHandlers(mux *http.ServeMux, store transferdb.OpsStore, logger *
 
 		// POST /internal/ops/settlements/{tenantId}/mark-paid
 		case r.Method == http.MethodPost && strings.HasPrefix(sub, "settlements/") && strings.HasSuffix(sub, "/mark-paid"):
-			handleMarkSettlementPaid(w, r, store, logger)
+			handleMarkSettlementPaid(w, r, store, logger, audit)
 
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		}
 	})
 }
+
+// ── Tenant Handlers ─────────────────────────────────────────────────────────
+
+// handleListTenants handles GET /internal/ops/tenants?limit=&offset=
+func handleListTenants(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger) {
+	limit := int32(50)
+	offset := int32(0)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := fmt.Sscanf(l, "%d", &limit); err != nil || v == 0 {
+			limit = 50
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if v, err := fmt.Sscanf(o, "%d", &offset); err != nil || v == 0 {
+			offset = 0
+		}
+	}
+	tenants, err := store.ListAllTenants(r.Context(), limit, offset)
+	if err != nil {
+		logger.Error("ops: listing tenants", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list tenants"})
+		return
+	}
+	if tenants == nil {
+		tenants = []transferdb.OpsTenant{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+}
+
+// handleGetTenant handles GET /internal/ops/tenants/{id}
+func handleGetTenant(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger) {
+	sub := strings.TrimPrefix(r.URL.Path, "/internal/ops/tenants/")
+	sub = strings.TrimSuffix(sub, "/")
+	id, err := uuid.Parse(sub)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		return
+	}
+	tenant, err := store.GetTenantByID(r.Context(), id)
+	if err != nil {
+		logger.Error("ops: getting tenant", "id", id, "error", err)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "tenant not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, tenant)
+}
+
+// handleUpdateTenantStatus handles POST /internal/ops/tenants/{id}/status
+func handleUpdateTenantStatus(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, audit domain.AuditLogger) {
+	id, err := extractTenantID(r.URL.Path, "/status")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := readBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.Status != "ACTIVE" && body.Status != "SUSPENDED" && body.Status != "ONBOARDING" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be ACTIVE, SUSPENDED, or ONBOARDING"})
+		return
+	}
+	if err := store.UpdateTenantStatus(r.Context(), id, body.Status); err != nil {
+		logger.Error("ops: updating tenant status", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update tenant status"})
+		return
+	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   id,
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "tenant.status_updated",
+		EntityType: "tenant",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]string{"status": body.Status}),
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleUpdateTenantKYB handles POST /internal/ops/tenants/{id}/kyb
+func handleUpdateTenantKYB(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, audit domain.AuditLogger) {
+	id, err := extractTenantID(r.URL.Path, "/kyb")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		return
+	}
+	var body struct {
+		KybStatus string `json:"kyb_status"`
+	}
+	if err := readBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.KybStatus != "PENDING" && body.KybStatus != "IN_REVIEW" && body.KybStatus != "VERIFIED" && body.KybStatus != "REJECTED" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kyb_status must be PENDING, IN_REVIEW, VERIFIED, or REJECTED"})
+		return
+	}
+	if err := store.UpdateTenantKYBStatus(r.Context(), id, body.KybStatus); err != nil {
+		logger.Error("ops: updating tenant KYB", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update KYB status"})
+		return
+	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   id,
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "tenant.kyb_updated",
+		EntityType: "tenant",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]string{"kyb_status": body.KybStatus}),
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleUpdateTenantFees handles POST /internal/ops/tenants/{id}/fees
+func handleUpdateTenantFees(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, audit domain.AuditLogger) {
+	id, err := extractTenantID(r.URL.Path, "/fees")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		return
+	}
+	var body struct {
+		OnRampBps  int    `json:"on_ramp_bps"`
+		OffRampBps int    `json:"off_ramp_bps"`
+		MinFeeUsd  string `json:"min_fee_usd"`
+		MaxFeeUsd  string `json:"max_fee_usd"`
+	}
+	if err := readBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	feeJSON, err := json.Marshal(map[string]any{
+		"onramp_bps":  body.OnRampBps,
+		"offramp_bps": body.OffRampBps,
+		"min_fee_usd": body.MinFeeUsd,
+		"max_fee_usd": body.MaxFeeUsd,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to encode fee schedule"})
+		return
+	}
+	if err := store.UpdateTenantFees(r.Context(), id, feeJSON); err != nil {
+		logger.Error("ops: updating tenant fees", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update fee schedule"})
+		return
+	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   id,
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "tenant.fees_updated",
+		EntityType: "tenant",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]any{
+			"onramp_bps":  body.OnRampBps,
+			"offramp_bps": body.OffRampBps,
+			"min_fee_usd": body.MinFeeUsd,
+			"max_fee_usd": body.MaxFeeUsd,
+		}),
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleUpdateTenantLimits handles POST /internal/ops/tenants/{id}/limits
+func handleUpdateTenantLimits(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, audit domain.AuditLogger) {
+	id, err := extractTenantID(r.URL.Path, "/limits")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tenant id"})
+		return
+	}
+	var body struct {
+		DailyLimitUsd    string `json:"daily_limit_usd"`
+		PerTransferLimit string `json:"per_transfer_limit"`
+	}
+	if err := readBody(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.DailyLimitUsd == "" || body.PerTransferLimit == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "daily_limit_usd and per_transfer_limit are required"})
+		return
+	}
+	if err := store.UpdateTenantLimits(r.Context(), id, body.DailyLimitUsd, body.PerTransferLimit); err != nil {
+		logger.Error("ops: updating tenant limits", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update limits"})
+		return
+	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   id,
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "tenant.limits_updated",
+		EntityType: "tenant",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]string{
+			"daily_limit_usd":    body.DailyLimitUsd,
+			"per_transfer_limit": body.PerTransferLimit,
+		}),
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// extractTenantID extracts a UUID from a path like /internal/ops/tenants/{id}/suffix
+func extractTenantID(path, suffix string) (uuid.UUID, error) {
+	sub := strings.TrimPrefix(path, "/internal/ops/tenants/")
+	sub = strings.TrimSuffix(sub, suffix)
+	sub = strings.TrimSuffix(sub, "/")
+	return uuid.Parse(sub)
+}
+
+// ── Manual Review Handlers ─────────────────────────────────────────────────
 
 // handleListManualReviews handles GET /internal/ops/manual-reviews?status=
 func handleListManualReviews(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger) {
@@ -62,7 +334,10 @@ func handleListManualReviews(w http.ResponseWriter, r *http.Request, store trans
 			tenantID = &parsed
 		}
 	}
-	reviews, err := store.ListManualReviews(r.Context(), tenantID, status)
+	reviews, err := store.ListManualReviews(r.Context(), domain.AdminCaller{
+		Service: "ops_api",
+		Reason:  "manual_review_list",
+	}, tenantID, status)
 	if err != nil {
 		logger.Error("ops: listing manual reviews", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list manual reviews"})
@@ -75,7 +350,7 @@ func handleListManualReviews(w http.ResponseWriter, r *http.Request, store trans
 }
 
 // handleManualReviewAction handles POST .../approve and .../reject.
-func handleManualReviewAction(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, action string) {
+func handleManualReviewAction(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, action string, audit domain.AuditLogger) {
 	// Extract ID from path: manual-reviews/{id}/approve or .../reject
 	sub := strings.TrimPrefix(r.URL.Path, "/internal/ops/manual-reviews/")
 	// sub is now "{id}/approve" or "{id}/reject"
@@ -103,6 +378,15 @@ func handleManualReviewAction(w http.ResponseWriter, r *http.Request, store tran
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to %s review", strings.ToLower(action))})
 		return
 	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   uuid.Nil, // manual reviews are cross-tenant
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "manual_review." + strings.ToLower(action),
+		EntityType: "manual_review",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]string{"status": action, "notes": body.Notes}),
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -277,7 +561,10 @@ type settlementsReportResponse struct {
 
 // handleSettlementsReport handles GET /internal/ops/settlements/report.
 func handleSettlementsReport(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger) {
-	settlements, err := store.ListNetSettlements(r.Context(), nil)
+	settlements, err := store.ListNetSettlements(r.Context(), domain.AdminCaller{
+		Service: "ops_api",
+		Reason:  "settlements_report",
+	}, nil)
 	if err != nil {
 		logger.Error("ops: listing settlements", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list settlements"})
@@ -411,7 +698,7 @@ func settlementStatusToDashboard(s string) string {
 // The tenantId in the path is treated as a settlement ID for direct DB update.
 // If not a valid UUID or not found, the handler looks up the latest pending settlement
 // for that tenant ID instead.
-func handleMarkSettlementPaid(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger) {
+func handleMarkSettlementPaid(w http.ResponseWriter, r *http.Request, store transferdb.OpsStore, logger *slog.Logger, audit domain.AuditLogger) {
 	sub := strings.TrimPrefix(r.URL.Path, "/internal/ops/settlements/")
 	// sub is "{tenantId}/mark-paid"
 	parts := strings.Split(sub, "/")
@@ -436,7 +723,10 @@ func handleMarkSettlementPaid(w http.ResponseWriter, r *http.Request, store tran
 	// Try to mark by settlement ID directly.
 	// The dashboard passes tenant_id, so we first try to find the latest pending
 	// settlement for this tenant via a list scan.
-	settlements, listErr := store.ListNetSettlements(r.Context(), nil)
+	settlements, listErr := store.ListNetSettlements(r.Context(), domain.AdminCaller{
+		Service: "ops_api",
+		Reason:  "mark_settlement_paid",
+	}, nil)
 	if listErr == nil {
 		// Find the latest pending settlement for this tenant_id.
 		for _, s := range settlements {
@@ -446,6 +736,15 @@ func handleMarkSettlementPaid(w http.ResponseWriter, r *http.Request, store tran
 					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mark settlement as paid"})
 					return
 				}
+				auditLog(r.Context(), audit, logger, domain.AuditEntry{
+					TenantID:   s.TenantID,
+					ActorType:  "ops",
+					ActorID:    extractActorFromRequest(r),
+					Action:     "settlement.mark_paid",
+					EntityType: "settlement",
+					EntityID:   uuidPtr(s.ID),
+					NewValue:   mustJSON(map[string]string{"status": "paid", "payment_ref": body.PaymentRef}),
+				})
 				writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 				return
 			}
@@ -458,6 +757,15 @@ func handleMarkSettlementPaid(w http.ResponseWriter, r *http.Request, store tran
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mark settlement as paid"})
 		return
 	}
+	auditLog(r.Context(), audit, logger, domain.AuditEntry{
+		TenantID:   uuid.Nil, // settlement ID used directly, tenant unknown
+		ActorType:  "ops",
+		ActorID:    extractActorFromRequest(r),
+		Action:     "settlement.mark_paid",
+		EntityType: "settlement",
+		EntityID:   uuidPtr(id),
+		NewValue:   mustJSON(map[string]string{"status": "paid", "payment_ref": body.PaymentRef}),
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

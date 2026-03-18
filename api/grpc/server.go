@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -16,6 +17,9 @@ import (
 	pb "github.com/intellect4all/settla/gen/settla/v1"
 
 	"github.com/intellect4all/settla/core"
+	bankdepositcore "github.com/intellect4all/settla/core/bankdeposit"
+	depositcore "github.com/intellect4all/settla/core/deposit"
+	paymentlinkcore "github.com/intellect4all/settla/core/paymentlink"
 	"github.com/intellect4all/settla/domain"
 )
 
@@ -55,26 +59,61 @@ func WithAccountStore(s AccountStore) ServerOption {
 	return func(srv *Server) { srv.accountStore = s }
 }
 
-// Server implements the gRPC SettlementService, TreasuryService, LedgerService, AuthService, and TenantPortalService.
+// BankingPartnerStore provides banking partner lookups for the BankDepositService.
+type BankingPartnerStore interface {
+	GetBankingPartner(ctx context.Context, id uuid.UUID) (BankingPartnerRow, error)
+}
+
+// BankingPartnerRow is a simplified row type for banking partner queries.
+type BankingPartnerRow struct {
+	ID                  uuid.UUID
+	Name                string
+	WebhookSecret       string
+	SupportedCurrencies []string
+	IsActive            bool
+}
+
+// WithBankingPartnerStore sets the banking partner store for the BankDepositService.
+func WithBankingPartnerStore(s BankingPartnerStore) ServerOption {
+	return func(srv *Server) { srv.bankingPartnerStore = s }
+}
+
+// Server implements the gRPC SettlementService, TreasuryService, LedgerService, AuthService, TenantPortalService, and PortalAuthService.
 type Server struct {
 	pb.UnimplementedSettlementServiceServer
 	pb.UnimplementedTreasuryServiceServer
 	pb.UnimplementedLedgerServiceServer
 	pb.UnimplementedAuthServiceServer
 	pb.UnimplementedTenantPortalServiceServer
+	pb.UnimplementedPortalAuthServiceServer
+	pb.UnimplementedDepositServiceServer
+	pb.UnimplementedBankDepositServiceServer
+	pb.UnimplementedPaymentLinkServiceServer
+	pb.UnimplementedAnalyticsServiceServer
 
-	engine         *core.Engine
-	treasury       domain.TreasuryManager
-	ledger         domain.Ledger
-	authStore      APIKeyValidator
-	portalStore    TenantPortalStore
-	webhookStore   WebhookManagementStore
-	analyticsStore AnalyticsStore
-	accountStore   AccountStore
-	logger         *slog.Logger
+	engine             *core.Engine
+	depositEngine      *depositcore.Engine
+	bankDepositEngine  *bankdepositcore.Engine
+	treasury        domain.TreasuryManager
+	ledger          domain.Ledger
+	authStore       APIKeyValidator
+	portalStore     TenantPortalStore
+	portalAuthStore PortalAuthStore
+	webhookStore    WebhookManagementStore
+	analyticsStore     AnalyticsStore
+	extAnalyticsStore  ExtendedAnalyticsStore
+	exportStore        ExportStore
+	accountStore       AccountStore
+	bankingPartnerStore  BankingPartnerStore
+	paymentLinkService   *paymentlinkcore.Service
+	paymentLinkBaseURL   string
+	auditLogger          domain.AuditLogger
+	jwtSecret            []byte
+	logger               *slog.Logger
 }
 
 // NewServer creates a gRPC server backed by the given domain services.
+// Panics if any critical dependency (engine, treasury, ledger) is nil.
 func NewServer(
 	engine *core.Engine,
 	treasury domain.TreasuryManager,
@@ -82,6 +121,16 @@ func NewServer(
 	logger *slog.Logger,
 	opts ...ServerOption,
 ) *Server {
+	if engine == nil {
+		panic("settla-grpc: NewServer requires a non-nil engine")
+	}
+	if treasury == nil {
+		panic("settla-grpc: NewServer requires a non-nil treasury manager")
+	}
+	if ledger == nil {
+		panic("settla-grpc: NewServer requires a non-nil ledger service")
+	}
+
 	s := &Server{
 		engine:   engine,
 		treasury: treasury,
@@ -102,6 +151,11 @@ func WithAuthStore(v APIKeyValidator) ServerOption {
 	return func(s *Server) { s.authStore = v }
 }
 
+// WithAuditLogger sets the audit logger for recording administrative actions.
+func WithAuditLogger(l domain.AuditLogger) ServerOption {
+	return func(s *Server) { s.auditLogger = l }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // SettlementService
 // ──────────────────────────────────────────────────────────────────────────────
@@ -116,12 +170,20 @@ func (s *Server) CreateQuote(ctx context.Context, req *pb.CreateQuoteRequest) (*
 	if err != nil {
 		return nil, err
 	}
-
-	if req.GetSourceCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "source_currency is required")
+	if err := validateDecimalAmount(req.GetSourceAmount()); err != nil {
+		return nil, err
 	}
-	if req.GetDestCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dest_currency is required")
+
+	if err := validateCurrencyCode(req.GetSourceCurrency()); err != nil {
+		return nil, err
+	}
+	if err := validateCurrencyCode(req.GetDestCurrency()); err != nil {
+		return nil, err
+	}
+	if req.GetDestCountry() != "" {
+		if err := validateCountryCode(req.GetDestCountry()); err != nil {
+			return nil, err
+		}
 	}
 
 	quote, err := s.engine.GetQuote(ctx, tenantID, domain.QuoteRequest{
@@ -166,18 +228,26 @@ func (s *Server) CreateTransfer(ctx context.Context, req *pb.CreateTransferReque
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDecimalAmount(req.GetSourceAmount()); err != nil {
+		return nil, err
+	}
 
-	if req.GetIdempotencyKey() == "" {
-		return nil, status.Error(codes.InvalidArgument, "idempotency_key is required")
+	if err := validateNonEmpty("idempotency_key", req.GetIdempotencyKey()); err != nil {
+		return nil, err
 	}
-	if req.GetSourceCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "source_currency is required")
+	if err := validateCurrencyCode(req.GetSourceCurrency()); err != nil {
+		return nil, err
 	}
-	if req.GetDestCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "dest_currency is required")
+	if err := validateCurrencyCode(req.GetDestCurrency()); err != nil {
+		return nil, err
 	}
 	if req.GetRecipient() == nil {
 		return nil, status.Error(codes.InvalidArgument, "recipient is required")
+	}
+	if req.GetRecipient().GetCountry() != "" {
+		if err := validateCountryCode(req.GetRecipient().GetCountry()); err != nil {
+			return nil, err
+		}
 	}
 
 	coreReq := core.CreateTransferRequest{
@@ -225,6 +295,24 @@ func (s *Server) GetTransfer(ctx context.Context, req *pb.GetTransferRequest) (*
 	return &pb.GetTransferResponse{Transfer: transferToProto(transfer)}, nil
 }
 
+func (s *Server) GetTransferByExternalRef(ctx context.Context, req *pb.GetTransferByExternalRefRequest) (*pb.GetTransferByExternalRefResponse, error) {
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
+	if err != nil {
+		return nil, err
+	}
+
+	if req.GetExternalRef() == "" {
+		return nil, status.Error(codes.InvalidArgument, "external_ref is required")
+	}
+
+	transfer, err := s.engine.GetTransferByExternalRef(ctx, tenantID, req.GetExternalRef())
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+
+	return &pb.GetTransferByExternalRefResponse{Transfer: transferToProto(transfer)}, nil
+}
+
 func (s *Server) ListTransfers(ctx context.Context, req *pb.ListTransfersRequest) (*pb.ListTransfersResponse, error) {
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
 	if err != nil {
@@ -247,7 +335,16 @@ func (s *Server) ListTransfers(ctx context.Context, req *pb.ListTransfersRequest
 		}
 	}
 
-	transfers, err := s.engine.ListTransfers(ctx, tenantID, pageSize, offset)
+	// Use filtered listing when status or search filters are provided.
+	var transfers []domain.Transfer
+	statusFilter := req.GetStatusFilter()
+	searchQuery := req.GetSearchQuery()
+
+	if statusFilter != "" || searchQuery != "" {
+		transfers, err = s.engine.ListTransfersFiltered(ctx, tenantID, statusFilter, searchQuery, pageSize)
+	} else {
+		transfers, err = s.engine.ListTransfers(ctx, tenantID, pageSize, offset)
+	}
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -258,7 +355,7 @@ func (s *Server) ListTransfers(ctx context.Context, req *pb.ListTransfersRequest
 	}
 
 	var nextToken string
-	if len(transfers) == pageSize {
+	if statusFilter == "" && searchQuery == "" && len(transfers) == pageSize {
 		nextToken = strconv.Itoa(offset + pageSize)
 	}
 
@@ -297,6 +394,106 @@ func (s *Server) CancelTransfer(ctx context.Context, req *pb.CancelTransferReque
 	return &pb.CancelTransferResponse{Transfer: transferToProto(transfer)}, nil
 }
 
+func (s *Server) ListTransferEvents(ctx context.Context, req *pb.ListTransferEventsRequest) (*pb.ListTransferEventsResponse, error) {
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
+	if err != nil {
+		return nil, err
+	}
+
+	transferID, err := parseUUID(req.GetTransferId(), "transfer_id")
+	if err != nil {
+		return nil, err
+	}
+
+	events, err := s.engine.GetTransferEvents(ctx, tenantID, transferID)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+
+	pbEvents := make([]*pb.TransferEvent, len(events))
+	for i, e := range events {
+		pbEvents[i] = &pb.TransferEvent{
+			Id:          e.ID.String(),
+			TransferId:  e.TransferID.String(),
+			FromStatus:  string(e.FromStatus),
+			ToStatus:    string(e.ToStatus),
+			OccurredAt:  timestamppb.New(e.OccurredAt),
+			ProviderRef: e.ProviderRef,
+			Metadata:    e.Metadata,
+		}
+	}
+
+	return &pb.ListTransferEventsResponse{Events: pbEvents}, nil
+}
+
+func (s *Server) GetRoutingOptions(ctx context.Context, req *pb.GetRoutingOptionsRequest) (*pb.GetRoutingOptionsResponse, error) {
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
+	if err != nil {
+		return nil, err
+	}
+
+	amount, err := parseDecimal(req.GetAmount(), "amount")
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDecimalAmount(req.GetAmount()); err != nil {
+		return nil, err
+	}
+
+	if err := validateCurrencyCode(req.GetFromCurrency()); err != nil {
+		return nil, err
+	}
+	if err := validateCurrencyCode(req.GetToCurrency()); err != nil {
+		return nil, err
+	}
+
+	result, err := s.engine.GetRoutingOptions(ctx, tenantID, domain.QuoteRequest{
+		SourceCurrency: domain.Currency(req.GetFromCurrency()),
+		SourceAmount:   amount,
+		DestCurrency:   domain.Currency(req.GetToCurrency()),
+	})
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+
+	// Extract stablecoin from corridor (format: "GBP→USDT→NGN" → "USDT")
+	stablecoin := result.Corridor
+	if c, err := domain.ParseCorridor(result.Corridor); err == nil {
+		stablecoin = string(c.StableCoin)
+	}
+
+	// Build routes: primary + alternatives
+	routes := make([]*pb.RoutingOption, 0, 1+len(result.Alternatives))
+	routes = append(routes, &pb.RoutingOption{
+		Provider:                    result.ProviderID,
+		OffRampProvider:             result.OffRampProvider,
+		Chain:                       result.BlockchainChain,
+		Stablecoin:                  stablecoin,
+		Score:                       result.Score.StringFixed(4),
+		EstimatedFeeUsd:             result.Fee.Amount.StringFixed(2),
+		EstimatedSettlementSeconds:  int32(result.EstimatedSeconds),
+		ScoreBreakdown:              scoreBreakdownToProto(result.ScoreBreakdown),
+	})
+
+	for _, alt := range result.Alternatives {
+		routes = append(routes, &pb.RoutingOption{
+			Provider:                    alt.OnRampProvider,
+			OffRampProvider:             alt.OffRampProvider,
+			Chain:                       alt.Chain,
+			Stablecoin:                  string(alt.StableCoin),
+			Score:                       alt.Score.StringFixed(4),
+			EstimatedFeeUsd:             alt.Fee.Amount.StringFixed(2),
+			ScoreBreakdown:              scoreBreakdownToProto(alt.ScoreBreakdown),
+		})
+	}
+
+	return &pb.GetRoutingOptionsResponse{
+		Routes:          routes,
+		QuotedAt:        timestamppb.Now(),
+		ValidForSeconds: 300,
+	}, nil
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // TreasuryService
 // ──────────────────────────────────────────────────────────────────────────────
@@ -326,11 +523,11 @@ func (s *Server) GetPosition(ctx context.Context, req *pb.GetPositionRequest) (*
 		return nil, err
 	}
 
-	if req.GetCurrency() == "" {
-		return nil, status.Error(codes.InvalidArgument, "currency is required")
+	if err := validateCurrencyCode(req.GetCurrency()); err != nil {
+		return nil, err
 	}
-	if req.GetLocation() == "" {
-		return nil, status.Error(codes.InvalidArgument, "location is required")
+	if err := validateNonEmpty("location", req.GetLocation()); err != nil {
+		return nil, err
 	}
 
 	position, err := s.treasury.GetPosition(ctx, tenantID, domain.Currency(req.GetCurrency()), req.GetLocation())
@@ -425,8 +622,8 @@ func (s *Server) GetAccountBalance(ctx context.Context, req *pb.GetAccountBalanc
 		return nil, err
 	}
 
-	if req.GetAccountCode() == "" {
-		return nil, status.Error(codes.InvalidArgument, "account_code is required")
+	if err := validateNonEmpty("account_code", req.GetAccountCode()); err != nil {
+		return nil, err
 	}
 
 	balance, err := s.ledger.GetBalance(ctx, req.GetAccountCode())
@@ -448,8 +645,8 @@ func (s *Server) GetTransactions(ctx context.Context, req *pb.GetTransactionsReq
 		return nil, err
 	}
 
-	if req.GetAccountCode() == "" {
-		return nil, status.Error(codes.InvalidArgument, "account_code is required")
+	if err := validateNonEmpty("account_code", req.GetAccountCode()); err != nil {
+		return nil, err
 	}
 
 	var from, to time.Time
@@ -505,8 +702,8 @@ func (s *Server) GetTransactions(ctx context.Context, req *pb.GetTransactionsReq
 // ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) ValidateAPIKey(ctx context.Context, req *pb.ValidateAPIKeyRequest) (*pb.ValidateAPIKeyResponse, error) {
-	if req.GetKeyHash() == "" {
-		return nil, status.Error(codes.InvalidArgument, "key_hash is required")
+	if err := validateNonEmpty("key_hash", req.GetKeyHash()); err != nil {
+		return nil, err
 	}
 
 	if s.authStore == nil {
@@ -621,6 +818,15 @@ func feeBreakdownToProto(f domain.FeeBreakdown) *pb.FeeBreakdown {
 		NetworkFee:  f.NetworkFee.String(),
 		OffRampFee:  f.OffRampFee.String(),
 		TotalFeeUsd: f.TotalFeeUSD.String(),
+	}
+}
+
+func scoreBreakdownToProto(b domain.ScoreBreakdown) *pb.ScoreBreakdown {
+	return &pb.ScoreBreakdown{
+		Cost:        b.Cost.StringFixed(4),
+		Speed:       b.Speed.StringFixed(4),
+		Liquidity:   b.Liquidity.StringFixed(4),
+		Reliability: b.Reliability.StringFixed(4),
 	}
 }
 
@@ -763,6 +969,13 @@ func parseDecimal(s, field string) (decimal.Decimal, error) {
 // Error mapping: domain errors → gRPC status codes
 // ──────────────────────────────────────────────────────────────────────────────
 
+// domainErrorMessage formats a gRPC error message that embeds the domain error
+// code as a bracket-prefixed tag: "[CODE] human-readable message". The gateway
+// parses this prefix to extract the machine-readable code for API responses.
+func domainErrorMessage(domErr *domain.DomainError) string {
+	return fmt.Sprintf("[%s] %s", domErr.Code(), domErr.Error())
+}
+
 func mapDomainError(err error) error {
 	if err == nil {
 		return nil
@@ -773,31 +986,45 @@ func mapDomainError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 
+	msg := domainErrorMessage(domErr)
+
 	switch domErr.Code() {
 	case domain.CodeQuoteExpired, domain.CodeInvalidTransition, domain.CodePositionLocked,
-		domain.CodeCorridorDisabled, domain.CodeTenantSuspended, domain.CodeOptimisticLock:
-		return status.Error(codes.FailedPrecondition, domErr.Error())
+		domain.CodeCorridorDisabled, domain.CodeTenantSuspended, domain.CodeOptimisticLock,
+		domain.CodeEmailNotVerified, domain.CodeTokenExpired,
+		domain.CodeDepositExpired, domain.CodePaymentLinkExpired,
+		domain.CodePaymentLinkExhausted, domain.CodePaymentLinkDisabled:
+		return status.Error(codes.FailedPrecondition, msg)
 
-	case domain.CodeInsufficientFunds, domain.CodeReservationFailed, domain.CodeDailyLimitExceeded:
-		return status.Error(codes.ResourceExhausted, domErr.Error())
+	case domain.CodeInsufficientFunds, domain.CodeReservationFailed,
+		domain.CodeReservationLockTimeout, domain.CodeReservationInsufficientFunds,
+		domain.CodeDailyLimitExceeded, domain.CodeRateLimitExceeded:
+		return status.Error(codes.ResourceExhausted, msg)
 
-	case domain.CodeTransferNotFound, domain.CodeAccountNotFound, domain.CodeTenantNotFound:
-		return status.Error(codes.NotFound, domErr.Error())
+	case domain.CodeTransferNotFound, domain.CodeAccountNotFound, domain.CodeTenantNotFound,
+		domain.CodeDepositNotFound, domain.CodeBankDepositNotFound, domain.CodePaymentLinkNotFound:
+		return status.Error(codes.NotFound, msg)
 
-	case domain.CodeIdempotencyConflict:
-		return status.Error(codes.AlreadyExists, domErr.Error())
+	case domain.CodeIdempotencyConflict, domain.CodeEmailAlreadyExists, domain.CodeSlugConflict:
+		return status.Error(codes.AlreadyExists, msg)
 
 	case domain.CodeAmountTooLow, domain.CodeAmountTooHigh, domain.CodeCurrencyMismatch,
-		domain.CodeLedgerImbalance:
-		return status.Error(codes.InvalidArgument, domErr.Error())
+		domain.CodeLedgerImbalance, domain.CodePaymentMismatch,
+		domain.CodeCryptoDisabled, domain.CodeChainNotSupported,
+		domain.CodeBankDepositsDisabled, domain.CodeCurrencyNotSupported:
+		return status.Error(codes.InvalidArgument, msg)
 
-	case domain.CodeUnauthorized:
-		return status.Error(codes.PermissionDenied, domErr.Error())
+	case domain.CodeUnauthorized, domain.CodeInvalidCredentials:
+		return status.Error(codes.Unauthenticated, msg)
 
-	case domain.CodeProviderError, domain.CodeChainError:
-		return status.Error(codes.Unavailable, domErr.Error())
+	case domain.CodeProviderError, domain.CodeChainError, domain.CodeProviderUnavailable,
+		domain.CodeNetworkError, domain.CodeAddressPoolEmpty, domain.CodeVirtualAccountPoolEmpty:
+		return status.Error(codes.Unavailable, msg)
+
+	case domain.CodeBlockchainReorg, domain.CodeCompensationFailed:
+		return status.Error(codes.Internal, msg)
 
 	default:
-		return status.Error(codes.Internal, domErr.Error())
+		return status.Error(codes.Internal, msg)
 	}
 }
