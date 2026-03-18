@@ -17,6 +17,9 @@ const (
 	StreamBlockchain       = "SETTLA_BLOCKCHAIN"
 	StreamWebhooks         = "SETTLA_WEBHOOKS"
 	StreamProviderWebhooks = "SETTLA_PROVIDER_WEBHOOKS"
+	StreamCryptoDeposits   = "SETTLA_CRYPTO_DEPOSITS"
+	StreamEmails           = "SETTLA_EMAILS"
+	StreamBankDeposits     = "SETTLA_BANK_DEPOSITS"
 	StreamNameDLQ          = "SETTLA_DLQ"
 )
 
@@ -75,6 +78,18 @@ func AllStreams() []StreamDefinition {
 		{
 			Name:     StreamProviderWebhooks,
 			Subjects: []string{"settla.provider.inbound.partition.*.>"},
+		},
+		{
+			Name:     StreamCryptoDeposits,
+			Subjects: []string{"settla.deposit.partition.*.>"},
+		},
+		{
+			Name:     StreamEmails,
+			Subjects: []string{"settla.email.partition.*.>"},
+		},
+		{
+			Name:     StreamBankDeposits,
+			Subjects: []string{"settla.bank_deposit.partition.*.>", "settla.inbound.bank.>"},
 		},
 		{
 			// WorkQueue retention — dead letter queue for unprocessable messages.
@@ -147,6 +162,14 @@ func StreamForSubject(subject string) string {
 		return StreamBlockchain
 	case matchPrefix(subject, "settla.webhook.partition."):
 		return StreamWebhooks
+	case matchPrefix(subject, "settla.deposit.partition."):
+		return StreamCryptoDeposits
+	case matchPrefix(subject, "settla.email.partition."):
+		return StreamEmails
+	case matchPrefix(subject, "settla.bank_deposit.partition."):
+		return StreamBankDeposits
+	case matchPrefix(subject, "settla.inbound.bank."):
+		return StreamBankDeposits
 	case matchPrefix(subject, "settla.dlq."):
 		return StreamNameDLQ
 	default:

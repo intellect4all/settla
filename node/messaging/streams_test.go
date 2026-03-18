@@ -10,10 +10,10 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-func TestAllStreams_Returns8Streams(t *testing.T) {
+func TestAllStreams_Returns11Streams(t *testing.T) {
 	streams := AllStreams()
-	if len(streams) != 8 {
-		t.Fatalf("expected 8 streams (7 domain + DLQ), got %d", len(streams))
+	if len(streams) != 11 {
+		t.Fatalf("expected 11 streams (10 domain + DLQ), got %d", len(streams))
 	}
 
 	// Verify all expected stream names are present.
@@ -25,6 +25,9 @@ func TestAllStreams_Returns8Streams(t *testing.T) {
 		StreamBlockchain:       false,
 		StreamWebhooks:         false,
 		StreamProviderWebhooks: false,
+		StreamCryptoDeposits:   false,
+		StreamEmails:           false,
+		StreamBankDeposits:     false,
 		StreamNameDLQ:          false,
 	}
 	for _, s := range streams {
@@ -135,6 +138,10 @@ func TestStreamForSubject(t *testing.T) {
 		{"settla.treasury.position.updated", StreamTreasury},
 		{"settla.blockchain.partition.0.tx.confirmed", StreamBlockchain},
 		{"settla.webhook.partition.3.transfer.completed", StreamWebhooks},
+		{"settla.deposit.partition.2.deposit.tx.detected", StreamCryptoDeposits},
+		{"settla.email.partition.1.email.notify", StreamEmails},
+		{"settla.bank_deposit.partition.2.bank_deposit.session.created", StreamBankDeposits},
+		{"settla.inbound.bank.credit.received", StreamBankDeposits},
 		{"settla.dlq.SETTLA_TRANSFERS.transfer.created", StreamNameDLQ},
 		{"unknown.subject", ""},
 	}
@@ -214,6 +221,26 @@ func TestSubjectBuilders(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+
+	t.Run("DepositSubject", func(t *testing.T) {
+		tenantID := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+		got := DepositSubject(tenantID, 8, "deposit.tx.detected")
+		partition := TenantPartition(tenantID, 8)
+		want := fmt.Sprintf("settla.deposit.partition.%d.deposit.tx.detected", partition)
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("BankDepositSubject", func(t *testing.T) {
+		tenantID := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+		got := BankDepositSubject(tenantID, 8, "bank_deposit.session.created")
+		partition := TenantPartition(tenantID, 8)
+		want := fmt.Sprintf("settla.bank_deposit.partition.%d.bank_deposit.session.created", partition)
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 }
 
 func TestSubjectForEventType_AllDomainEvents(t *testing.T) {
@@ -243,6 +270,13 @@ func TestSubjectForEventType_AllDomainEvents(t *testing.T) {
 		// Treasury events → SETTLA_TREASURY
 		{domain.EventPositionUpdated, "settla.treasury.", StreamTreasury},
 		{domain.EventLiquidityAlert, "settla.treasury.", StreamTreasury},
+
+		// Deposit events → SETTLA_CRYPTO_DEPOSITS (partitioned)
+		{domain.EventDepositSessionCreated, "settla.deposit.partition.", StreamCryptoDeposits},
+		{domain.EventDepositTxDetected, "settla.deposit.partition.", StreamCryptoDeposits},
+		{domain.EventDepositTxConfirmed, "settla.deposit.partition.", StreamCryptoDeposits},
+		{domain.EventDepositSessionCredited, "settla.deposit.partition.", StreamCryptoDeposits},
+		{domain.EventDepositSessionSettled, "settla.deposit.partition.", StreamCryptoDeposits},
 	}
 
 	for _, tt := range tests {
@@ -315,6 +349,10 @@ func TestSubjectForEventType_StreamSpecificEvents(t *testing.T) {
 		{"treasury.position.snapshot", "settla.treasury.treasury.position.snapshot"},
 		{"blockchain.tx.submitted", fmt.Sprintf("settla.blockchain.partition.%d.blockchain.tx.submitted", partition)},
 		{"webhook.delivery.completed", fmt.Sprintf("settla.webhook.partition.%d.webhook.delivery.completed", partition)},
+		{"deposit.session.created", fmt.Sprintf("settla.deposit.partition.%d.deposit.session.created", partition)},
+		{"deposit.tx.detected", fmt.Sprintf("settla.deposit.partition.%d.deposit.tx.detected", partition)},
+		{"email.notify", fmt.Sprintf("settla.email.partition.%d.email.notify", partition)},
+		{"bank_deposit.session.created", fmt.Sprintf("settla.bank_deposit.partition.%d.bank_deposit.session.created", partition)},
 	}
 
 	for _, tt := range tests {
