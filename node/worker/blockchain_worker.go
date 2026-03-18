@@ -55,22 +55,29 @@ const pendingTxEscalationTimeout = 1 * time.Hour
 // pendingPollInterval is how often the pending poller checks tracked transactions.
 const pendingPollInterval = 30 * time.Second
 
+// maxPendingTxMapSize caps the in-memory pending transaction map. When exceeded,
+// new entries are skipped (they will be retried via NATS redelivery).
+const maxPendingTxMapSize = 50000
+
 // BlockchainWorker consumes blockchain intent messages from NATS and executes
 // on-chain transactions. It uses the CHECK-BEFORE-CALL pattern with
 // ProviderTransferStore to prevent double-sends.
 type BlockchainWorker struct {
-	partition         int
-	blockchainClients map[string]domain.BlockchainClient
-	transferStore     ProviderTransferStore
-	engine            SettlementEngine
-	publisher         *messaging.Publisher
-	subscriber        *messaging.StreamSubscriber
-	logger            *slog.Logger
-	blockchainCBs     map[string]*resilience.CircuitBreaker
-	pendingTxs        sync.Map // key: uuid.UUID (transferID), value: pendingEntry
-	reviewStore       BlockchainReviewStore
-	cancelPoller      context.CancelFunc
-	pollerWg          sync.WaitGroup
+	partition           int
+	blockchainClients   map[string]domain.BlockchainClient
+	transferStore       ProviderTransferStore
+	engine              SettlementEngine
+	publisher           *messaging.Publisher
+	subscriber          *messaging.StreamSubscriber
+	logger              *slog.Logger
+	blockchainCBs       map[string]*resilience.CircuitBreaker
+	escalationTimeout   time.Duration // how long before a pending tx is escalated to manual review
+	pendingMu           sync.Mutex
+	pendingTxMap        map[uuid.UUID]pendingEntry
+	pendingTxCount      int
+	reviewStore         BlockchainReviewStore
+	cancelPoller        context.CancelFunc
+	pollerWg            sync.WaitGroup
 }
 
 // NewBlockchainWorker creates a blockchain worker that subscribes to the blockchain stream.
@@ -109,10 +116,18 @@ func NewBlockchainWorker(
 			consumerName,
 			opts...,
 		),
-		logger:        logger.With("module", "blockchain-worker", "partition", partition),
-		blockchainCBs: blockchainCBs,
-		reviewStore:   reviewStore,
+		logger:            logger.With("module", "blockchain-worker", "partition", partition),
+		blockchainCBs:     blockchainCBs,
+		escalationTimeout: pendingTxEscalationTimeout,
+		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
+		reviewStore:       reviewStore,
 	}
+}
+
+// SetEscalationTimeout overrides the duration after which a pending blockchain
+// transaction is escalated to manual review. Default: 1 hour.
+func (w *BlockchainWorker) SetEscalationTimeout(d time.Duration) {
+	w.escalationTimeout = d
 }
 
 // Start begins consuming blockchain intent messages. Blocks until ctx is cancelled.
@@ -368,7 +383,12 @@ func (w *BlockchainWorker) checkPendingTx(ctx context.Context, payload *domain.B
 
 		existing.Status = "confirmed"
 		_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "blockchain", existing)
-		w.pendingTxs.Delete(payload.TransferID)
+		w.pendingMu.Lock()
+		if _, exists := w.pendingTxMap[payload.TransferID]; exists {
+			delete(w.pendingTxMap, payload.TransferID)
+			w.pendingTxCount--
+		}
+		w.pendingMu.Unlock()
 		pendingTxRecovered.Inc()
 
 		result := domain.IntentResult{
@@ -386,7 +406,12 @@ func (w *BlockchainWorker) checkPendingTx(ctx context.Context, payload *domain.B
 
 		existing.Status = "failed"
 		_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "blockchain", existing)
-		w.pendingTxs.Delete(payload.TransferID)
+		w.pendingMu.Lock()
+		if _, exists := w.pendingTxMap[payload.TransferID]; exists {
+			delete(w.pendingTxMap, payload.TransferID)
+			w.pendingTxCount--
+		}
+		w.pendingMu.Unlock()
 		pendingTxRecovered.Inc()
 
 		result := domain.IntentResult{
@@ -408,15 +433,33 @@ func (w *BlockchainWorker) checkPendingTx(ctx context.Context, payload *domain.B
 }
 
 // trackPending adds a transfer to the pending map if not already tracked.
+// If the map exceeds maxPendingTxMapSize, new entries are skipped to bound
+// memory usage — they will be retried via NATS redelivery.
 func (w *BlockchainWorker) trackPending(payload *domain.BlockchainSendPayload, txHash string) {
-	if _, loaded := w.pendingTxs.LoadOrStore(payload.TransferID, pendingEntry{
+	w.pendingMu.Lock()
+	defer w.pendingMu.Unlock()
+
+	if w.pendingTxCount >= maxPendingTxMapSize {
+		w.logger.Warn("settla-blockchain-worker: pending tx map at capacity, skipping track (will retry via NATS redelivery)",
+			"transfer_id", payload.TransferID,
+			"tx_hash", txHash,
+			"max_size", maxPendingTxMapSize,
+		)
+		return
+	}
+
+	if _, exists := w.pendingTxMap[payload.TransferID]; exists {
+		return // already tracked
+	}
+
+	w.pendingTxMap[payload.TransferID] = pendingEntry{
 		payload:  payload,
 		txHash:   txHash,
 		tenantID: payload.TenantID,
 		addedAt:  time.Now().UTC(),
-	}); !loaded {
-		pendingTxCount.Inc()
 	}
+	w.pendingTxCount++
+	pendingTxCount.Inc()
 }
 
 // startPendingPoller runs a 30s ticker that checks all tracked pending transactions.
@@ -444,23 +487,45 @@ const maxPendingChecksPerPoll = 100
 // Escalations are processed first (cheap, no RPC). RPC checks are capped at
 // maxPendingChecksPerPoll per cycle to bound latency.
 func (w *BlockchainWorker) pollPendingTransactions(ctx context.Context) {
-	checked := 0
-	w.pendingTxs.Range(func(key, value any) bool {
-		transferID := key.(uuid.UUID)
-		entry := value.(pendingEntry)
+	pollCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 
-		// Check if stuck long enough for escalation — use LoadAndDelete to
-		// prevent double-escalation if two poll cycles overlap.
-		if time.Since(entry.addedAt) > pendingTxEscalationTimeout {
-			if _, deleted := w.pendingTxs.LoadAndDelete(key); deleted {
-				w.escalatePendingTx(ctx, transferID, entry)
+	// Snapshot entries under lock
+	w.pendingMu.Lock()
+	entries := make([]struct {
+		id    uuid.UUID
+		entry pendingEntry
+	}, 0, len(w.pendingTxMap))
+	for id, entry := range w.pendingTxMap {
+		entries = append(entries, struct {
+			id    uuid.UUID
+			entry pendingEntry
+		}{id: id, entry: entry})
+	}
+	w.pendingMu.Unlock()
+
+	checked := 0
+	for _, item := range entries {
+		transferID := item.id
+		entry := item.entry
+
+		// Check if stuck long enough for escalation
+		if time.Since(entry.addedAt) > w.escalationTimeout {
+			w.pendingMu.Lock()
+			if _, exists := w.pendingTxMap[transferID]; exists {
+				delete(w.pendingTxMap, transferID)
+				w.pendingTxCount--
+				w.pendingMu.Unlock()
+				w.escalatePendingTx(pollCtx, transferID, entry)
+			} else {
+				w.pendingMu.Unlock()
 			}
-			return true
+			continue
 		}
 
 		// Cap RPC checks per cycle to avoid slow iterations at scale.
 		if checked >= maxPendingChecksPerPoll {
-			return false
+			break
 		}
 		checked++
 
@@ -469,14 +534,13 @@ func (w *BlockchainWorker) pollPendingTransactions(ctx context.Context) {
 			TxHash: entry.txHash,
 			Status: "pending",
 		}
-		if err := w.checkPendingTx(ctx, entry.payload, existing); err != nil {
+		if err := w.checkPendingTx(pollCtx, entry.payload, existing); err != nil {
 			w.logger.Warn("settla-blockchain-worker: pending poller check failed",
 				"transfer_id", transferID,
 				"error", err,
 			)
 		}
-		return true
-	})
+	}
 }
 
 // escalatePendingTx creates a manual review for a pending transaction that has

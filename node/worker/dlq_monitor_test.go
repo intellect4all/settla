@@ -188,8 +188,9 @@ func TestDLQMonitor_RingBufferOverflow(t *testing.T) {
 		byEventType:    make(map[string]int64),
 	}
 
-	// Insert 1005 entries — buffer should keep only the newest 1000.
-	for i := range 1005 {
+	// Insert dlqMaxBufferSize+5 entries — buffer should keep only the newest dlqMaxBufferSize.
+	totalInserted := dlqMaxBufferSize + 5
+	for i := range totalInserted {
 		m.mu.Lock()
 		m.entries[m.head] = DLQEntry{
 			ID:           fmt.Sprintf("entry-%d", i),
@@ -216,17 +217,18 @@ func TestDLQMonitor_RingBufferOverflow(t *testing.T) {
 		t.Fatalf("ListEntries returned %d, want %d", len(entries), dlqMaxBufferSize)
 	}
 
-	// Newest should be entry-1004.
-	if entries[0].ID != "entry-1004" {
-		t.Errorf("newest = %q, want entry-1004", entries[0].ID)
+	// Newest should be the last entry inserted.
+	newestID := fmt.Sprintf("entry-%d", totalInserted-1)
+	if entries[0].ID != newestID {
+		t.Errorf("newest = %q, want %s", entries[0].ID, newestID)
 	}
-	// Oldest should be entry-5 (first 5 were evicted).
+	// Oldest should be entry-5 (first 5 were evicted by the overflow).
 	if entries[dlqMaxBufferSize-1].ID != "entry-5" {
 		t.Errorf("oldest = %q, want entry-5", entries[dlqMaxBufferSize-1].ID)
 	}
 
 	stats := m.Stats()
-	if stats.TotalReceived != 1005 {
+	if stats.TotalReceived != int64(totalInserted) {
 		t.Errorf("TotalReceived = %d, want 1005", stats.TotalReceived)
 	}
 }

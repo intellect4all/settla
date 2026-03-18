@@ -20,7 +20,7 @@ import (
 
 const (
 	dlqConsumerName  = "settla-dlq-monitor"
-	dlqMaxBufferSize = 1000
+	dlqMaxBufferSize = 10000
 )
 
 // DLQEntry represents a dead-lettered message stored in the monitor's ring buffer.
