@@ -5,7 +5,12 @@ import { authPlugin, hashApiKey } from "../auth/plugin.js";
 import { quoteRoutes } from "../routes/quotes.js";
 import { transferRoutes } from "../routes/transfers.js";
 import { healthRoutes } from "../routes/health.js";
+import { paymentLinkRoutes } from "../routes/payment-links.js";
+import { depositRoutes } from "../routes/deposits.js";
 import { buildApp } from "../index.js";
+
+// Ensure JWT secret is set for tests
+process.env.SETTLA_JWT_SECRET ??= "test-jwt-secret-for-vitest-only";
 
 // ── Mock gRPC client ────────────────────────────────────────────────────────
 
@@ -60,6 +65,48 @@ function createMockGrpc() {
     getPositions: vi.fn().mockResolvedValue({ positions: [] }),
     getPosition: vi.fn().mockResolvedValue({}),
     getLiquidityReport: vi.fn().mockResolvedValue({}),
+    // Deposit service
+    createDepositSession: vi.fn().mockResolvedValue({
+      session: { id: "ds-001", status: "PENDING_PAYMENT" },
+    }),
+    getDepositSession: vi.fn().mockResolvedValue({
+      session: { id: "ds-001", status: "PENDING_PAYMENT" },
+    }),
+    listDepositSessions: vi.fn().mockResolvedValue({
+      sessions: [],
+      total: 0,
+    }),
+    cancelDepositSession: vi.fn().mockResolvedValue({
+      session: { id: "ds-001", status: "CANCELLED" },
+    }),
+    getDepositPublicStatus: vi.fn().mockResolvedValue({
+      id: "ds-001",
+      status: "PENDING_PAYMENT",
+      chain: "tron",
+      token: "USDT",
+      depositAddress: "Taddr001",
+      expectedAmount: "100",
+      receivedAmount: "0",
+    }),
+    // Payment link service
+    createPaymentLink: vi.fn().mockResolvedValue({
+      link: { id: "pl-001", shortCode: "ABC123", status: "ACTIVE" },
+    }),
+    getPaymentLink: vi.fn().mockResolvedValue({
+      link: { id: "pl-001", shortCode: "ABC123", status: "ACTIVE" },
+    }),
+    listPaymentLinks: vi.fn().mockResolvedValue({
+      links: [],
+      total: 0,
+    }),
+    disablePaymentLink: vi.fn().mockResolvedValue({}),
+    resolvePaymentLink: vi.fn().mockResolvedValue({
+      link: { id: "pl-001", shortCode: "ABC123", status: "ACTIVE", amount: "100" },
+    }),
+    redeemPaymentLink: vi.fn().mockResolvedValue({
+      session: { id: "ds-002", status: "PENDING_PAYMENT" },
+      link: { id: "pl-001", shortCode: "ABC123" },
+    }),
   };
 }
 
@@ -105,6 +152,8 @@ async function buildTestApp(mockGrpc?: ReturnType<typeof createMockGrpc>) {
   await app.register(healthRoutes);
   await app.register(quoteRoutes, { grpc: grpc as any });
   await app.register(transferRoutes, { grpc: grpc as any });
+  await app.register(depositRoutes, { grpc: grpc as any });
+  await app.register(paymentLinkRoutes, { grpc: grpc as any });
 
   await app.ready();
   return { app, grpc };
@@ -567,6 +616,63 @@ describe("Rate Limiting", () => {
   });
 });
 
+describe("API Docs", () => {
+  it("GET /docs returns 200", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+    });
+
+    const res = await app.inject({ method: "GET", url: "/docs/" });
+    expect(res.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("GET /openapi.json returns valid OpenAPI spec", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+    });
+
+    const res = await app.inject({ method: "GET", url: "/openapi.json" });
+    expect(res.statusCode).toBe(200);
+
+    const spec = res.json();
+    expect(spec.openapi).toMatch(/^3\./);
+    expect(spec.info.title).toBe("Settla API");
+    expect(spec.tags).toBeDefined();
+    expect(spec.tags.length).toBeGreaterThan(0);
+
+    await app.close();
+  });
+
+  it("GET /openapi.json does not require auth", async () => {
+    const redis = createMockRedis();
+    const app = await buildApp({
+      grpc: createMockGrpc() as any,
+      redis,
+      resolveTenant: async () => null,
+      skipGrpcPool: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/openapi.json",
+      // No authorization header
+    });
+    expect(res.statusCode).toBe(200);
+
+    await app.close();
+  });
+});
+
 describe("Webhook Dedup", () => {
   it("deduplicates identical webhooks", async () => {
     const redis = createMockRedis();
@@ -643,6 +749,128 @@ describe("Security Headers", () => {
     expect(res.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
 
     await app.close();
+  });
+});
+
+describe("Payment Links", () => {
+  let app: FastifyInstance;
+  let grpc: ReturnType<typeof createMockGrpc>;
+
+  beforeAll(async () => {
+    ({ app, grpc } = await buildTestApp());
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("POST /v1/payment-links — creates payment link with auth", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/payment-links",
+      headers: {
+        authorization: `Bearer ${LEMFI_KEY}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        amount: "100",
+        currency: "USDT",
+        chain: "tron",
+        token: "USDT",
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(grpc.createPaymentLink).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: "t-001" }),
+      expect.any(String),
+    );
+  });
+
+  it("GET /v1/payment-links — lists payment links with auth", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/payment-links",
+      headers: { authorization: `Bearer ${LEMFI_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("GET /v1/payment-links/:id — gets payment link with auth", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/payment-links/00000000-0000-0000-0000-000000000001",
+      headers: { authorization: `Bearer ${LEMFI_KEY}` },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("DELETE /v1/payment-links/:id — disables payment link with auth", async () => {
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/v1/payment-links/00000000-0000-0000-0000-000000000001",
+      headers: { authorization: `Bearer ${LEMFI_KEY}` },
+    });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it("GET /v1/payment-links/resolve/:code — resolves without auth", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/payment-links/resolve/ABC123",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("POST /v1/payment-links/redeem/:code — redeems without auth", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/payment-links/redeem/ABC123",
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("GET /v1/deposits/:id/public-status — returns status without auth", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/deposits/00000000-0000-0000-0000-000000000001/public-status",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("rejects POST /v1/payment-links without auth", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/payment-links",
+      headers: { "content-type": "application/json" },
+      payload: {
+        amount: "100",
+        currency: "USDT",
+        chain: "tron",
+        token: "USDT",
+      },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("uses tenantId from auth context, not body", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/v1/payment-links",
+      headers: {
+        authorization: `Bearer ${LEMFI_KEY}`,
+        "content-type": "application/json",
+      },
+      payload: {
+        amount: "100",
+        currency: "USDT",
+        chain: "tron",
+        token: "USDT",
+      },
+    });
+    expect(grpc.createPaymentLink).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: "t-001" }),
+      expect.any(String),
+    );
   });
 });
 
