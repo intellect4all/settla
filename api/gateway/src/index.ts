@@ -16,7 +16,7 @@
 import Fastify from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifySwagger from "@fastify/swagger";
-import fastifySwaggerUi from "@fastify/swagger-ui";
+import scalarFastifyApiReference from "@scalar/fastify-api-reference";
 import IORedis from "ioredis";
 import type { Redis } from "ioredis";
 import { config } from "./config.js";
@@ -28,8 +28,18 @@ import { healthRoutes } from "./routes/health.js";
 import { quoteRoutes } from "./routes/quotes.js";
 import { transferRoutes } from "./routes/transfers.js";
 import { treasuryRoutes } from "./routes/treasury.js";
+import { ledgerRoutes } from "./routes/ledger.js";
 import { webhookRoutes } from "./routes/webhooks.js";
+import { routeRoutes } from "./routes/routes.js";
 import { tenantPortalRoutes } from "./routes/tenant-portal.js";
+import { authRoutes } from "./routes/auth.js";
+import { depositRoutes } from "./routes/deposits.js";
+import { bankDepositRoutes } from "./routes/bank-deposits.js";
+import { bankWebhookRoutes } from "./routes/bank-webhook.js";
+import { mockBankRoutes } from "./routes/mock-bank.js";
+import { paymentLinkRoutes } from "./routes/payment-links.js";
+import { analyticsRoutes } from "./routes/analytics.js";
+import { verifyRoutes } from "./routes/verify.js";
 import { opsRoutes } from "./routes/ops.js";
 import { metricsPlugin } from "./metrics.js";
 import { loadShedding } from "./middleware/load-shedding.js";
@@ -78,7 +88,8 @@ export async function buildApp(deps?: {
   await server.register(loadShedding, {
     maxConcurrent: Number(process.env.SETTLA_LOAD_SHED_MAX_CONCURRENT) || 1000,
     targetLatencyMs: Number(process.env.SETTLA_LOAD_SHED_TARGET_LATENCY_MS) || 50,
-    initialLimit: Number(process.env.SETTLA_LOAD_SHED_INITIAL_LIMIT) || 200,
+    initialLimit: Number(process.env.SETTLA_LOAD_SHED_INITIAL_LIMIT) || 400,
+    minLimit: Number(process.env.SETTLA_LOAD_SHED_MIN_LIMIT) || 20,
   });
   await server.register(gracefulDrain);
 
@@ -98,7 +109,7 @@ export async function buildApp(deps?: {
     if (config.env === "production") {
       reply.header(
         "Strict-Transport-Security",
-        "max-age=31536000; includeSubDomains",
+        "max-age=31536000; includeSubDomains; preload",
       );
     }
   });
@@ -108,15 +119,45 @@ export async function buildApp(deps?: {
     openapi: {
       info: {
         title: "Settla API",
-        description: "B2B stablecoin settlement infrastructure (BFF behind Tyk)",
+        description:
+          "B2B stablecoin settlement infrastructure for fintechs. " +
+          "Settla enables cross-border payments via stablecoin rails with " +
+          "smart routing, real-time treasury management, and automatic settlement.",
         version: "1.0.0",
+        contact: {
+          name: "Settla Engineering",
+          url: "https://settla.io",
+          email: "support@settla.io",
+        },
       },
-      servers: [{ url: `http://localhost:${config.port}` }],
+      servers: [
+        { url: "https://api.settla.io", description: "Production" },
+        { url: "https://sandbox.settla.io", description: "Sandbox" },
+        { url: `http://localhost:${config.port}`, description: "Local" },
+      ],
+      tags: [
+        { name: "Quotes", description: "Get real-time FX quotes for cross-border transfers" },
+        { name: "Transfers", description: "Create and manage cross-border stablecoin transfers" },
+        { name: "Treasury", description: "View treasury positions and liquidity reports" },
+        { name: "Ledger", description: "Query ledger accounts, balances, and transaction history" },
+        { name: "Crypto Deposits", description: "Accept on-chain stablecoin deposits from payers" },
+        { name: "Bank Deposits", description: "Accept fiat bank deposits via virtual accounts" },
+        { name: "Payment Links", description: "Create shareable payment links for crypto deposits" },
+        { name: "Routes", description: "Query available settlement routes and scoring" },
+        { name: "Verification", description: "Verify and look up transactions by ID, reference, or hash" },
+        { name: "Account", description: "Tenant profile, API keys, webhook configuration, and analytics" },
+        { name: "Analytics", description: "Transfer, fee, provider, and reconciliation analytics" },
+        { name: "Webhooks", description: "Inbound provider webhook ingestion" },
+        { name: "Auth", description: "Tenant registration, login, email verification, and KYB" },
+      ],
       components: {
         securitySchemes: {
           bearerAuth: {
             type: "http",
             scheme: "bearer",
+            description:
+              "Use an API key (sk_live_* or sk_test_*) or a portal JWT token. " +
+              "Pass it as: Authorization: Bearer <token>",
           },
         },
       },
@@ -124,8 +165,25 @@ export async function buildApp(deps?: {
     },
   });
 
-  await server.register(fastifySwaggerUi, {
+  await server.register(scalarFastifyApiReference, {
     routePrefix: "/docs",
+    configuration: {
+      theme: "kepler",
+      metaData: { title: "Settla API Reference" },
+      servers: [
+        { url: "https://api.settla.io", description: "Production" },
+        { url: "https://sandbox.settla.io", description: "Sandbox" },
+        { url: `http://localhost:${config.port}`, description: "Local" },
+      ],
+      authentication: {
+        preferredSecurityScheme: "bearerAuth",
+      },
+    },
+  });
+
+  // ── Raw OpenAPI spec endpoint ──────────────────────────────────────────
+  server.get("/openapi.json", { schema: { hide: true } }, async (_req, reply) => {
+    return reply.send(server.swagger());
   });
 
   // ── Infrastructure ──────────────────────────────────────────────────────
@@ -175,6 +233,8 @@ export async function buildApp(deps?: {
     grpcClient = new SettlaGrpcClient(pool);
 
     server.addHook("onClose", async () => {
+      // Drain in-flight gRPC requests before closing channels
+      await pool.drain();
       await pool.close();
     });
   }
@@ -184,6 +244,7 @@ export async function buildApp(deps?: {
     redis,
     config.tenantCacheTtlMs,
     config.redisCacheTtlSeconds,
+    config.tenantCacheMaxLocal,
   );
 
   const resolveTenant =
@@ -225,13 +286,17 @@ export async function buildApp(deps?: {
       }
     });
 
-  // SEC-2: pass redis to authPlugin for cross-instance key revocation via pub/sub
-  await server.register(authPlugin, { cache: authCache, resolveTenant, redis });
+  // Pass redis to authPlugin for cross-instance key revocation via pub/sub
+  const jwtSecret = process.env.SETTLA_JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error("SETTLA_JWT_SECRET must be set — refusing to start without a JWT signing secret");
+  }
+  await server.register(authPlugin, { cache: authCache, resolveTenant, redis, jwtSecret });
 
   // ── Metrics ─────────────────────────────────────────────────────────────
   await server.register(metricsPlugin);
 
-  // ── Per-tenant rate limiting (SEC-7) ────────────────────────────────────
+  // ── Per-tenant rate limiting ─────────────────────────────────────────────
   // Distributed rate limiter: L1 local Map + L2 Redis INCR/EXPIRE.
   // Applied after auth so tenantId is always available.
   await server.register(rateLimitPlugin, {
@@ -242,11 +307,21 @@ export async function buildApp(deps?: {
   // ── Routes ──────────────────────────────────────────────────────────────
   await server.register(healthRoutes);
   await server.register(quoteRoutes, { grpc: grpcClient });
-  await server.register(transferRoutes, { grpc: grpcClient });
+  await server.register(transferRoutes, { grpc: grpcClient, redis });
   await server.register(treasuryRoutes, { grpc: grpcClient });
-  // SEC-2: pass invalidateAuthCache so the revoke route can flush caches
+  await server.register(ledgerRoutes, { grpc: grpcClient });
+  await server.register(routeRoutes, { grpc: grpcClient });
+  // Pass invalidateAuthCache so the revoke route can flush caches
   await server.register(tenantPortalRoutes, { grpc: grpcClient });
+  await server.register(authRoutes, { grpc: grpcClient, redis });
+  await server.register(depositRoutes, { grpc: grpcClient });
+  await server.register(bankDepositRoutes, { grpc: grpcClient });
+  await server.register(verifyRoutes, { grpc: grpcClient });
   await server.register(webhookRoutes, { redis, natsUrl: deps?.natsUrl ?? config.natsUrl });
+  await server.register(bankWebhookRoutes, { redis, natsUrl: deps?.natsUrl ?? config.natsUrl, grpc: grpcClient });
+  await server.register(mockBankRoutes, { natsUrl: deps?.natsUrl ?? config.natsUrl });
+  await server.register(paymentLinkRoutes, { grpc: grpcClient });
+  await server.register(analyticsRoutes, { grpc: grpcClient });
   await server.register(opsRoutes);
 
   return server;
@@ -256,6 +331,11 @@ export async function buildApp(deps?: {
 
 async function start() {
   const server = await buildApp();
+
+  // Warn if webhook secrets loaded from env in production
+  if (config.env === "production" && process.env.SETTLA_WEBHOOK_SECRETS) {
+    server.log.warn("Webhook secrets loaded from env var — use a secret manager (Vault, AWS Secrets Manager) in production");
+  }
 
   try {
     await server.listen({ port: config.port, host: config.host });
