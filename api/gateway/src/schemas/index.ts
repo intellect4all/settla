@@ -36,9 +36,9 @@ const routeInfoSchema = {
 const senderSchema = {
   type: "object" as const,
   properties: {
-    id: { type: "string" as const },
-    name: { type: "string" as const },
-    email: { type: "string" as const },
+    id: { type: "string" as const, maxLength: 255 },
+    name: { type: "string" as const, minLength: 1, maxLength: 255 },
+    email: { type: "string" as const, format: "email", maxLength: 254 },
     country: { type: "string" as const, enum: [...SUPPORTED_COUNTRIES] },
   },
 };
@@ -46,12 +46,12 @@ const senderSchema = {
 const recipientSchema = {
   type: "object" as const,
   properties: {
-    name: { type: "string" as const },
-    account_number: { type: "string" as const },
-    sort_code: { type: "string" as const },
-    bank_name: { type: "string" as const },
+    name: { type: "string" as const, minLength: 1, maxLength: 255 },
+    account_number: { type: "string" as const, minLength: 4, maxLength: 34, pattern: "^[a-zA-Z0-9\\-]+$" },
+    sort_code: { type: "string" as const, pattern: "^\\d{6}$" },
+    bank_name: { type: "string" as const, maxLength: 255 },
     country: { type: "string" as const, enum: [...SUPPORTED_COUNTRIES] },
-    iban: { type: "string" as const },
+    iban: { type: "string" as const, minLength: 15, maxLength: 34, pattern: "^[A-Z]{2}\\d{2}[A-Z0-9]{11,30}$" },
   },
 };
 
@@ -79,7 +79,7 @@ export const createQuoteBodySchema = {
   required: ["source_currency", "source_amount", "dest_currency"],
   properties: {
     source_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
-    source_amount: { type: "string" as const, pattern: "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$" },
+    source_amount: { type: "string" as const, pattern: "^(?:0|[1-9]\\d*)(?:\\.\\d{0,8})?$", minLength: 1, maxLength: 20 },
     dest_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
     dest_country: { type: "string" as const, enum: [...SUPPORTED_COUNTRIES] },
   },
@@ -147,7 +147,7 @@ export const createTransferBodySchema = {
     idempotency_key: { type: "string" as const, minLength: 1, maxLength: 255 },
     external_ref: { type: "string" as const, maxLength: 255 },
     source_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
-    source_amount: { type: "string" as const, pattern: "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$" },
+    source_amount: { type: "string" as const, pattern: "^(?:0|[1-9]\\d*)(?:\\.\\d{0,8})?$", minLength: 1, maxLength: 20 },
     dest_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
     sender: senderSchema,
     recipient: {
@@ -155,6 +155,7 @@ export const createTransferBodySchema = {
       required: ["name", "country"],
     },
     quote_id: { type: "string" as const, format: "uuid" },
+    metadata: { type: "object" as const },
   },
   additionalProperties: false,
 };
@@ -242,7 +243,7 @@ export const webhookConfigBodySchema = {
   type: "object" as const,
   required: ["webhook_url"],
   properties: {
-    webhook_url: { type: "string" as const, format: "uri", maxLength: 2048 },
+    webhook_url: { type: "string" as const, format: "uri", pattern: "^https://", maxLength: 2048 },
   },
   additionalProperties: false,
 };
@@ -609,12 +610,213 @@ export const testWebhookResponseSchema = {
   },
 };
 
+// ── Routing options schemas ──────────────────────────────────────────────────
+
+const scoreBreakdownSchema = {
+  type: "object" as const,
+  properties: {
+    cost: { type: "string" as const },
+    speed: { type: "string" as const },
+    liquidity: { type: "string" as const },
+    reliability: { type: "string" as const },
+  },
+};
+
+const routingOptionSchema = {
+  type: "object" as const,
+  properties: {
+    provider: { type: "string" as const },
+    off_ramp_provider: { type: "string" as const },
+    chain: { type: "string" as const },
+    stablecoin: { type: "string" as const },
+    score: { type: "string" as const },
+    estimated_fee_usd: { type: "string" as const },
+    estimated_settlement_seconds: { type: "integer" as const },
+    score_breakdown: scoreBreakdownSchema,
+  },
+};
+
+export const getRoutingOptionsBodySchema = {
+  type: "object" as const,
+  required: ["from_currency", "to_currency", "amount"],
+  properties: {
+    from_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
+    to_currency: { type: "string" as const, enum: [...SUPPORTED_CURRENCIES] },
+    amount: { type: "string" as const, pattern: "^(?:0|[1-9]\\d*)(?:\\.\\d{0,8})?$", minLength: 1, maxLength: 20 },
+  },
+  additionalProperties: false,
+};
+
+export const routingOptionsResponseSchema = {
+  type: "object" as const,
+  properties: {
+    routes: {
+      type: "array" as const,
+      items: routingOptionSchema,
+    },
+    quoted_at: { type: "string" as const },
+    valid_for_seconds: { type: "integer" as const },
+  },
+};
+
+// ── Extended analytics schemas ──────────────────────────────────────────────
+
+const depositAnalyticsDataSchema = {
+  type: "object" as const,
+  properties: {
+    total_sessions: { type: "integer" as const },
+    completed_sessions: { type: "integer" as const },
+    expired_sessions: { type: "integer" as const },
+    failed_sessions: { type: "integer" as const },
+    conversion_rate: { type: "string" as const },
+    total_received: { type: "string" as const },
+    total_fees: { type: "string" as const },
+    total_net: { type: "string" as const },
+  },
+};
+
+export const analyticsTransferResponseSchema = {
+  type: "object" as const,
+  properties: {
+    corridors: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          source_currency: { type: "string" as const },
+          dest_currency: { type: "string" as const },
+          transfer_count: { type: "integer" as const },
+          volume_usd: { type: "string" as const },
+          fees_usd: { type: "string" as const },
+          completed: { type: "integer" as const },
+          failed: { type: "integer" as const },
+          success_rate: { type: "string" as const },
+          avg_latency_ms: { type: "integer" as const },
+        },
+      },
+    },
+    statuses: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          status: { type: "string" as const },
+          count: { type: "integer" as const },
+        },
+      },
+    },
+    total_count: { type: "integer" as const },
+    total_volume_usd: { type: "string" as const },
+    total_fees_usd: { type: "string" as const },
+    sample_count: { type: "integer" as const },
+    p50_ms: { type: "integer" as const },
+    p90_ms: { type: "integer" as const },
+    p95_ms: { type: "integer" as const },
+    p99_ms: { type: "integer" as const },
+  },
+};
+
+export const analyticsFeeResponseSchema = {
+  type: "object" as const,
+  properties: {
+    entries: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        properties: {
+          source_currency: { type: "string" as const },
+          dest_currency: { type: "string" as const },
+          transfer_count: { type: "integer" as const },
+          volume_usd: { type: "string" as const },
+          on_ramp_fees_usd: { type: "string" as const },
+          off_ramp_fees_usd: { type: "string" as const },
+          network_fees_usd: { type: "string" as const },
+          total_fees_usd: { type: "string" as const },
+        },
+      },
+    },
+    total_fees_usd: { type: "string" as const },
+  },
+};
+
+const providerPerformanceSchema = {
+  type: "object" as const,
+  properties: {
+    provider: { type: "string" as const },
+    source_currency: { type: "string" as const },
+    dest_currency: { type: "string" as const },
+    transaction_count: { type: "integer" as const },
+    completed: { type: "integer" as const },
+    failed: { type: "integer" as const },
+    success_rate: { type: "string" as const },
+    avg_settlement_ms: { type: "integer" as const },
+    total_volume: { type: "string" as const },
+  },
+};
+
+export const analyticsProviderResponseSchema = {
+  type: "object" as const,
+  properties: {
+    providers: {
+      type: "array" as const,
+      items: providerPerformanceSchema,
+    },
+  },
+};
+
+export const analyticsReconciliationResponseSchema = {
+  type: "object" as const,
+  properties: {
+    total_runs: { type: "integer" as const },
+    checks_passed: { type: "integer" as const },
+    checks_failed: { type: "integer" as const },
+    pass_rate: { type: "string" as const },
+    last_run_at: { type: "string" as const },
+    needs_review_count: { type: "integer" as const },
+  },
+};
+
+export const analyticsDepositResponseSchema = {
+  type: "object" as const,
+  properties: {
+    crypto: depositAnalyticsDataSchema,
+    bank: depositAnalyticsDataSchema,
+  },
+};
+
+export const analyticsExportJobSchema = {
+  type: "object" as const,
+  properties: {
+    id: { type: "string" as const },
+    status: { type: "string" as const },
+    export_type: { type: "string" as const },
+    row_count: { type: "integer" as const },
+    download_url: { type: "string" as const },
+    download_expires_at: { type: "string" as const },
+    error_message: { type: "string" as const },
+    created_at: { type: "string" as const },
+    completed_at: { type: "string" as const },
+  },
+};
+
+export const analyticsExportBodySchema = {
+  type: "object" as const,
+  required: ["export_type"],
+  properties: {
+    export_type: { type: "string" as const, enum: ["transfers", "fees", "providers", "deposits"] },
+    period: { type: "string" as const, enum: ["24h", "7d", "30d"] },
+    format: { type: "string" as const, enum: ["csv", "json"] },
+  },
+  additionalProperties: false,
+};
+
 // ── Error schemas ───────────────────────────────────────────────────────────
 
 export const errorResponseSchema = {
   type: "object" as const,
   properties: {
     error: { type: "string" as const },
+    code: { type: "string" as const },
     message: { type: "string" as const },
     request_id: { type: "string" as const },
   },

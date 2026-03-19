@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { Redis } from "ioredis";
 import type { SettlaGrpcClient } from "../grpc/client.js";
 import {
   transferResponseSchema,
@@ -7,7 +8,10 @@ import {
   listTransfersQuerySchema,
   errorResponseSchema,
 } from "../schemas/index.js";
-import { mapGrpcError } from "../errors.js";
+import { mapGrpcError, assertTenantMatch } from "../errors.js";
+
+/** TTL for idempotency cache entries (default 2 hours, configurable via env). */
+const IDEMPOTENCY_CACHE_TTL_SECONDS = Number(process.env.SETTLA_IDEMPOTENCY_TTL_SECONDS) || 7200;
 
 function mapTransfer(t: any): any {
   if (!t) return {};
@@ -72,9 +76,9 @@ function mapTransfer(t: any): any {
 
 export async function transferRoutes(
   app: FastifyInstance,
-  opts: { grpc: SettlaGrpcClient },
+  opts: { grpc: SettlaGrpcClient; redis?: Redis | null },
 ): Promise<void> {
-  const { grpc } = opts;
+  const { grpc, redis } = opts;
 
   app.post<{
     Body: {
@@ -103,6 +107,9 @@ export async function transferRoutes(
     "/v1/transfers",
     {
       schema: {
+        tags: ["Transfers"],
+        summary: "Create a transfer",
+        operationId: "createTransfer",
         body: createTransferBodySchema,
         response: {
           201: transferResponseSchema,
@@ -117,6 +124,58 @@ export async function transferRoutes(
       const { tenantAuth } = request;
       const body = request.body;
 
+      // sort_code and iban are mutually exclusive — a recipient uses one scheme or the other.
+      if (body.recipient.sort_code && body.recipient.iban) {
+        return reply.status(400).send({
+          error: "BAD_REQUEST",
+          code: "BAD_REQUEST",
+          message: "sort_code and iban are mutually exclusive",
+          request_id: request.id,
+        });
+      }
+
+      // Amount range validation
+      const amount = Number(body.source_amount);
+      if (Number.isNaN(amount) || amount < 0.01 || amount > 10_000_000) {
+        return reply.status(400).send({
+          error: "BAD_REQUEST",
+          code: "AMOUNT_OUT_OF_RANGE",
+          message: "source_amount must be between 0.01 and 10,000,000",
+          request_id: request.id,
+        });
+      }
+
+      // UK recipient validation — GB requires sort_code or iban
+      if (
+        body.recipient.country === "GB" &&
+        !body.recipient.sort_code &&
+        !body.recipient.iban
+      ) {
+        return reply.status(400).send({
+          error: "BAD_REQUEST",
+          code: "MISSING_PAYMENT_DETAILS",
+          message: "GB recipients require either sort_code or iban",
+          request_id: request.id,
+        });
+      }
+
+      // Redis idempotency cache — return cached response on duplicate
+      const idempKey = `idem:${tenantAuth.tenantId}:${body.idempotency_key}`;
+      if (redis) {
+        try {
+          const cached = await redis.get(idempKey);
+          if (cached) {
+            request.log.info(
+              { idempotency_key: body.idempotency_key },
+              "transfer: returning cached idempotent response",
+            );
+            return reply.status(201).send(JSON.parse(cached));
+          }
+        } catch {
+          // Redis unavailable — proceed without cache
+        }
+      }
+
       try {
         const result = await grpc.createTransfer({
           tenantId: tenantAuth.tenantId,
@@ -129,7 +188,19 @@ export async function transferRoutes(
           recipient: body.recipient,
           quoteId: body.quote_id,
         }, request.id);
-        return reply.status(201).send(mapTransfer(result.transfer));
+        assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
+        const mapped = mapTransfer(result.transfer);
+
+        // Cache successful response for idempotency (1hr TTL)
+        if (redis) {
+          try {
+            await redis.set(idempKey, JSON.stringify(mapped), "EX", IDEMPOTENCY_CACHE_TTL_SECONDS);
+          } catch {
+            // Best-effort cache write
+          }
+        }
+
+        return reply.status(201).send(mapped);
       } catch (err) {
         return mapGrpcError(request, reply, err);
       }
@@ -142,6 +213,9 @@ export async function transferRoutes(
     "/v1/transfers/:transferId",
     {
       schema: {
+        tags: ["Transfers"],
+        summary: "Get a transfer by ID",
+        operationId: "getTransfer",
         params: {
           type: "object",
           properties: { transferId: { type: "string", format: "uuid" } },
@@ -160,6 +234,7 @@ export async function transferRoutes(
           tenantId: tenantAuth.tenantId,
           transferId: request.params.transferId,
         }, request.id);
+        assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -168,12 +243,22 @@ export async function transferRoutes(
   );
 
   app.get<{
-    Querystring: { page_size?: number; page_token?: string };
+    Querystring: { page_size?: number; page_token?: string; status?: string; search?: string };
   }>(
     "/v1/transfers",
     {
       schema: {
-        querystring: listTransfersQuerySchema,
+        tags: ["Transfers"],
+        summary: "List transfers",
+        operationId: "listTransfers",
+        querystring: {
+          ...listTransfersQuerySchema,
+          properties: {
+            ...(listTransfersQuerySchema as any).properties,
+            status: { type: "string", description: "Filter by exact status (e.g. COMPLETED, FAILED)" },
+            search: { type: "string", description: "Substring search on id, external_ref, or idempotency_key" },
+          },
+        },
         response: {
           200: listTransfersResponseSchema,
         },
@@ -186,12 +271,54 @@ export async function transferRoutes(
           tenantId: tenantAuth.tenantId,
           pageSize: request.query.page_size,
           pageToken: request.query.page_token,
+          statusFilter: request.query.status || "",
+          searchQuery: request.query.search || "",
         }, request.id);
+        for (const t of result.transfers || []) {
+          assertTenantMatch(tenantAuth.tenantId, t.tenantId, 'transfer');
+        }
         return reply.send({
           transfers: (result.transfers || []).map(mapTransfer),
           next_page_token: result.nextPageToken,
           total_count: result.totalCount,
         });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  app.get<{ Params: { transferId: string } }>(
+    "/v1/transfers/:transferId/events",
+    {
+      schema: {
+        tags: ["Transfers"],
+        summary: "Get transfer events",
+        operationId: "getTransferEvents",
+        params: {
+          type: "object",
+          required: ["transferId"],
+          properties: { transferId: { type: "string", format: "uuid" } },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              events: { type: "array", items: { type: "object", additionalProperties: true } },
+            },
+          },
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tenantAuth } = request;
+      try {
+        const result = await grpc.listTransferEvents(
+          { tenantId: tenantAuth.tenantId, transferId: request.params.transferId },
+          request.id,
+        );
+        return reply.send({ events: result.events ?? [] });
       } catch (err) {
         return mapGrpcError(request, reply, err);
       }
@@ -205,6 +332,9 @@ export async function transferRoutes(
     "/v1/transfers/:transferId/cancel",
     {
       schema: {
+        tags: ["Transfers"],
+        summary: "Cancel a transfer",
+        operationId: "cancelTransfer",
         params: {
           type: "object",
           properties: { transferId: { type: "string", format: "uuid" } },
@@ -229,6 +359,7 @@ export async function transferRoutes(
           transferId: request.params.transferId,
           reason: request.body.reason,
         }, request.id);
+        assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
         return mapGrpcError(request, reply, err);
