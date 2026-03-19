@@ -28,6 +28,7 @@ export const config = {
     treasury: Number(process.env.SETTLA_GRPC_DEADLINE_TREASURY_MS) || 5000,
     auth: Number(process.env.SETTLA_GRPC_DEADLINE_AUTH_MS) || 5000,
     portal: Number(process.env.SETTLA_GRPC_DEADLINE_PORTAL_MS) || 5000,
+    ledger: Number(process.env.SETTLA_GRPC_DEADLINE_LEDGER_MS) || 5000,
   },
 
   // Redis (L2 cache, idempotency, webhook dedup)
@@ -46,6 +47,10 @@ export const config = {
     (Number(process.env.SETTLA_TENANT_CACHE_TTL_SECONDS) || 30) * 1000,
   redisCacheTtlSeconds: 300, // 5 minutes
 
+  // Max entries in the L1 (in-process) tenant auth cache.
+  // Default 500K supports up to ~1M concurrent tenants with reasonable hit rates.
+  tenantCacheMaxLocal: Number(process.env.SETTLA_TENANT_CACHE_MAX_LOCAL) || 500_000,
+
   // NATS for publishing inbound webhook events
   natsUrl: process.env.SETTLA_NATS_URL || "nats://localhost:4222",
 
@@ -56,17 +61,27 @@ export const config = {
   nodeHttpUrl: process.env.SETTLA_NODE_HTTP_URL || "http://localhost:9091",
 
   // Webhook HMAC secrets per provider (JSON map: { "provider-id": "secret" })
+  // WARNING: In production, use a secret manager (Vault, AWS Secrets Manager)
+  // instead of environment variables for webhook secrets.
   webhookSecrets: parseJsonEnv("SETTLA_WEBHOOK_SECRETS", "{}"),
 
   // Webhook dedup TTL in seconds (72 hours)
   webhookDedupTtlSeconds: Number(process.env.SETTLA_WEBHOOK_DEDUP_TTL) || 259200,
 
-  // Per-tenant rate limit: max requests per second per tenant (SEC-7)
-  rateLimitPerTenant: Number(process.env.SETTLA_RATE_LIMIT_PER_TENANT) || 1000,
+  // Per-tenant rate limit: max requests per second per tenant
+  rateLimitPerTenant: Number(process.env.SETTLA_RATE_LIMIT_PER_TENANT) || 5000,
 
   // Per-provider webhook rate limit: max requests per second per provider
   webhookRateLimitPerProvider: Number(process.env.SETTLA_WEBHOOK_RATE_LIMIT_PER_PROVIDER) || 200,
 
-  // CORS origin — permissive in dev, configure in production via env var
-  corsOrigin: process.env.SETTLA_CORS_ORIGIN || "*",
+  // Per-IP webhook rate limit: max requests per second per source IP
+  webhookIpRateLimit: Number(process.env.SETTLA_WEBHOOK_IP_RATE_LIMIT) || 100,
+
+  // Global webhook rate limit: max requests per second across all providers
+  webhookGlobalRateLimit: Number(process.env.SETTLA_WEBHOOK_GLOBAL_RATE_LIMIT) || 10_000,
+
+  // CORS origin — permissive in dev, MUST be configured in production via env var.
+  // In production, if SETTLA_CORS_ORIGIN is unset, default to rejecting cross-origin (false).
+  corsOrigin: process.env.SETTLA_CORS_ORIGIN
+    || ((process.env.SETTLA_ENV || "development") === "production" ? false as const : "*"),
 } as const;

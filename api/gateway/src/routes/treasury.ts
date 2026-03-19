@@ -5,7 +5,7 @@ import {
   positionResponseSchema,
   errorResponseSchema,
 } from "../schemas/index.js";
-import { mapGrpcError } from "../errors.js";
+import { mapGrpcError, assertTenantMatch } from "../errors.js";
 
 export async function treasuryRoutes(
   app: FastifyInstance,
@@ -17,6 +17,9 @@ export async function treasuryRoutes(
     "/v1/treasury/positions",
     {
       schema: {
+        tags: ["Treasury"],
+        summary: "List treasury positions",
+        operationId: "listPositions",
         response: {
           200: positionsResponseSchema,
           401: errorResponseSchema,
@@ -29,6 +32,9 @@ export async function treasuryRoutes(
         const result = await grpc.getPositions({
           tenantId: tenantAuth.tenantId,
         }, request.id);
+        for (const p of result.positions || []) {
+          assertTenantMatch(tenantAuth.tenantId, p.tenantId, 'position');
+        }
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -42,6 +48,9 @@ export async function treasuryRoutes(
     "/v1/treasury/positions/:currency/:location",
     {
       schema: {
+        tags: ["Treasury"],
+        summary: "Get a treasury position",
+        operationId: "getPosition",
         params: {
           type: "object",
           properties: {
@@ -75,6 +84,9 @@ export async function treasuryRoutes(
     "/v1/treasury/liquidity",
     {
       schema: {
+        tags: ["Treasury"],
+        summary: "Get liquidity report",
+        operationId: "getLiquidityReport",
         response: {
           200: {
             type: "object",

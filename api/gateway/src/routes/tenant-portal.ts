@@ -14,6 +14,12 @@ import {
   feeReportQuerySchema,
   feeReportResponseSchema,
   analyticsPeriodQuerySchema,
+  analyticsFeeResponseSchema,
+  analyticsProviderResponseSchema,
+  analyticsReconciliationResponseSchema,
+  analyticsDepositResponseSchema,
+  analyticsExportJobSchema,
+  analyticsExportBodySchema,
   statusDistributionResponseSchema,
   corridorMetricsResponseSchema,
   latencyPercentilesResponseSchema,
@@ -84,6 +90,9 @@ export async function tenantPortalRoutes(
     "/v1/me",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get tenant profile",
+        operationId: "getTenantProfile",
         response: {
           200: tenantProfileResponseSchema,
           401: errorResponseSchema,
@@ -108,6 +117,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Update webhook config",
+        operationId: "updateWebhookConfig",
         body: webhookConfigBodySchema,
         response: {
           200: webhookConfigResponseSchema,
@@ -138,6 +150,9 @@ export async function tenantPortalRoutes(
     "/v1/me/api-keys",
     {
       schema: {
+        tags: ["Account"],
+        summary: "List API keys",
+        operationId: "listApiKeys",
         response: {
           200: apiKeyListResponseSchema,
           401: errorResponseSchema,
@@ -164,6 +179,9 @@ export async function tenantPortalRoutes(
     "/v1/me/api-keys",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Create an API key",
+        operationId: "createApiKey",
         body: createApiKeyBodySchema,
         response: {
           201: createApiKeyResponseSchema,
@@ -197,6 +215,9 @@ export async function tenantPortalRoutes(
     "/v1/me/api-keys/:keyId",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Revoke an API key",
+        operationId: "revokeApiKey",
         params: {
           type: "object",
           properties: { keyId: { type: "string", format: "uuid" } },
@@ -217,7 +238,7 @@ export async function tenantPortalRoutes(
           keyId: request.params.keyId,
         }, request.id);
 
-        // SEC-2: immediately invalidate the revoked key from L1+L2 auth caches
+        // Immediately invalidate the revoked key from L1+L2 auth caches
         // and broadcast to peer gateways via Redis pub/sub.
         // result.keyHash is the SHA-256 hex of the revoked raw key, returned by
         // the Go server after looking it up from the DB before deactivation.
@@ -245,6 +266,9 @@ export async function tenantPortalRoutes(
     "/v1/me/api-keys/:keyId/rotate",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Rotate an API key",
+        operationId: "rotateApiKey",
         params: {
           type: "object",
           properties: { keyId: { type: "string", format: "uuid" } },
@@ -284,6 +308,9 @@ export async function tenantPortalRoutes(
     "/v1/me/dashboard",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get dashboard metrics",
+        operationId: "getDashboardMetrics",
         response: {
           200: dashboardMetricsResponseSchema,
           401: errorResponseSchema,
@@ -324,6 +351,9 @@ export async function tenantPortalRoutes(
     "/v1/me/transfers/stats",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get transfer stats",
+        operationId: "getTransferStats",
         querystring: transferStatsQuerySchema,
         response: {
           200: transferStatsResponseSchema,
@@ -362,6 +392,9 @@ export async function tenantPortalRoutes(
     "/v1/me/fees/report",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get fee breakdown",
+        operationId: "getFeeReport",
         querystring: feeReportQuerySchema,
         response: {
           200: feeReportResponseSchema,
@@ -405,6 +438,9 @@ export async function tenantPortalRoutes(
     "/v1/me/analytics/status-distribution",
     {
       schema: {
+        tags: ["Analytics"],
+        summary: "Get status distribution",
+        operationId: "getStatusDistribution",
         querystring: analyticsPeriodQuerySchema,
         response: { 200: statusDistributionResponseSchema, 401: errorResponseSchema },
       },
@@ -432,6 +468,9 @@ export async function tenantPortalRoutes(
     "/v1/me/analytics/corridors",
     {
       schema: {
+        tags: ["Analytics"],
+        summary: "Get corridor metrics",
+        operationId: "getCorridorMetrics",
         querystring: analyticsPeriodQuerySchema,
         response: { 200: corridorMetricsResponseSchema, 401: errorResponseSchema },
       },
@@ -466,6 +505,9 @@ export async function tenantPortalRoutes(
     "/v1/me/analytics/latency",
     {
       schema: {
+        tags: ["Analytics"],
+        summary: "Get latency percentiles",
+        operationId: "getLatencyPercentiles",
         querystring: analyticsPeriodQuerySchema,
         response: { 200: latencyPercentilesResponseSchema, 401: errorResponseSchema },
       },
@@ -494,6 +536,9 @@ export async function tenantPortalRoutes(
     "/v1/me/analytics/comparison",
     {
       schema: {
+        tags: ["Analytics"],
+        summary: "Get volume comparison",
+        operationId: "getVolumeComparison",
         querystring: volumeComparisonQuerySchema,
         response: { 200: volumeComparisonResponseSchema, 401: errorResponseSchema },
       },
@@ -523,6 +568,9 @@ export async function tenantPortalRoutes(
     "/v1/me/analytics/activity",
     {
       schema: {
+        tags: ["Analytics"],
+        summary: "Get recent activity",
+        operationId: "getRecentActivity",
         querystring: recentActivityQuerySchema,
         response: { 200: recentActivityResponseSchema, 401: errorResponseSchema },
       },
@@ -552,6 +600,215 @@ export async function tenantPortalRoutes(
     },
   );
 
+  // ── GET /v1/me/analytics/fees ─────────────────────────────────────────
+  app.get<{ Querystring: { period?: string } }>(
+    "/v1/me/analytics/fees",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Get fee analytics",
+        operationId: "getFeeAnalytics",
+        querystring: analyticsPeriodQuerySchema,
+        response: { 200: analyticsFeeResponseSchema, 401: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.getFeeAnalytics({
+          tenantId: request.tenantAuth.tenantId,
+          period: request.query.period || "7d",
+        }, request.id);
+        return reply.send({
+          entries: (result.entries || []).map((e: any) => ({
+            source_currency: e.sourceCurrency,
+            dest_currency: e.destCurrency,
+            transfer_count: e.transferCount,
+            volume_usd: e.volumeUsd,
+            on_ramp_fees_usd: e.onRampFeesUsd,
+            off_ramp_fees_usd: e.offRampFeesUsd,
+            network_fees_usd: e.networkFeesUsd,
+            total_fees_usd: e.totalFeesUsd,
+          })),
+          total_fees_usd: result.totalFeesUsd,
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  // ── GET /v1/me/analytics/providers ──────────────────────────────────────
+  app.get<{ Querystring: { period?: string } }>(
+    "/v1/me/analytics/providers",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Get provider analytics",
+        operationId: "getProviderAnalytics",
+        querystring: analyticsPeriodQuerySchema,
+        response: { 200: analyticsProviderResponseSchema, 401: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.getProviderAnalytics({
+          tenantId: request.tenantAuth.tenantId,
+          period: request.query.period || "7d",
+        }, request.id);
+        return reply.send({
+          providers: (result.providers || []).map((p: any) => ({
+            provider: p.provider,
+            source_currency: p.sourceCurrency,
+            dest_currency: p.destCurrency,
+            transaction_count: p.transactionCount,
+            completed: p.completed,
+            failed: p.failed,
+            success_rate: p.successRate,
+            avg_settlement_ms: p.avgSettlementMs,
+            total_volume: p.totalVolume,
+          })),
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  // ── GET /v1/me/analytics/reconciliation ─────────────────────────────────
+  app.get(
+    "/v1/me/analytics/reconciliation",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Get reconciliation analytics",
+        operationId: "getReconciliationAnalytics",
+        response: { 200: analyticsReconciliationResponseSchema, 401: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.getReconciliationAnalytics({
+          tenantId: request.tenantAuth.tenantId,
+        }, request.id);
+        return reply.send({
+          total_runs: result.totalRuns,
+          checks_passed: result.checksPassed,
+          checks_failed: result.checksFailed,
+          pass_rate: result.passRate,
+          last_run_at: result.lastRunAt?.seconds ? new Date(Number(result.lastRunAt.seconds) * 1000).toISOString() : null,
+          needs_review_count: result.needsReviewCount,
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  // ── GET /v1/me/analytics/deposits ───────────────────────────────────────
+  app.get<{ Querystring: { period?: string } }>(
+    "/v1/me/analytics/deposits",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Get deposit analytics",
+        operationId: "getDepositAnalytics",
+        querystring: analyticsPeriodQuerySchema,
+        response: { 200: analyticsDepositResponseSchema, 401: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.getDepositAnalytics({
+          tenantId: request.tenantAuth.tenantId,
+          period: request.query.period || "7d",
+        }, request.id);
+        const mapDeposit = (d: any) => d ? {
+          total_sessions: d.totalSessions,
+          completed_sessions: d.completedSessions,
+          expired_sessions: d.expiredSessions,
+          failed_sessions: d.failedSessions,
+          conversion_rate: d.conversionRate,
+          total_received: d.totalReceived,
+          total_fees: d.totalFees,
+          total_net: d.totalNet,
+        } : {};
+        return reply.send({
+          crypto: mapDeposit(result.crypto),
+          bank: mapDeposit(result.bank),
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  // ── POST /v1/me/analytics/export ────────────────────────────────────────
+  app.post<{ Body: { export_type: string; period?: string; format?: string } }>(
+    "/v1/me/analytics/export",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Create analytics export",
+        operationId: "createAnalyticsExport",
+        body: analyticsExportBodySchema,
+        response: {
+          201: { type: "object" as const, properties: { job: analyticsExportJobSchema } },
+          401: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.createAnalyticsExport({
+          tenantId: request.tenantAuth.tenantId,
+          exportType: request.body.export_type,
+          period: request.body.period || "7d",
+          format: request.body.format || "csv",
+        }, request.id);
+        return reply.status(201).send({
+          job: mapExportJob(result.job),
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
+  // ── GET /v1/me/analytics/export/:jobId ──────────────────────────────────
+  app.get<{ Params: { jobId: string } }>(
+    "/v1/me/analytics/export/:jobId",
+    {
+      schema: {
+        tags: ["Analytics"],
+        summary: "Get analytics export job",
+        operationId: "getAnalyticsExportJob",
+        params: {
+          type: "object",
+          properties: { jobId: { type: "string", format: "uuid" } },
+          required: ["jobId"],
+        },
+        response: {
+          200: { type: "object" as const, properties: { job: analyticsExportJobSchema } },
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await grpc.getAnalyticsExport({
+          tenantId: request.tenantAuth.tenantId,
+          jobId: request.params.jobId,
+        }, request.id);
+        return reply.send({
+          job: mapExportJob(result.job),
+        });
+      } catch (err) {
+        return mapGrpcError(request, reply, err);
+      }
+    },
+  );
+
   // ── GET /v1/me/webhooks/deliveries — delivery history ─────────────────
   app.get<{
     Querystring: { event_type?: string; status?: string; page_size?: number; page_offset?: number };
@@ -559,6 +816,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/deliveries",
     {
       schema: {
+        tags: ["Account"],
+        summary: "List webhook deliveries",
+        operationId: "listWebhookDeliveries",
         querystring: webhookDeliveriesQuerySchema,
         response: {
           200: webhookDeliveriesResponseSchema,
@@ -593,6 +853,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/deliveries/:deliveryId",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get webhook delivery",
+        operationId: "getWebhookDelivery",
         params: {
           type: "object",
           properties: { deliveryId: { type: "string", format: "uuid" } },
@@ -629,6 +892,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/stats",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get webhook stats",
+        operationId: "getWebhookStats",
         querystring: webhookDeliveryStatsQuerySchema,
         response: {
           200: webhookDeliveryStatsResponseSchema,
@@ -663,6 +929,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/subscriptions",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Get event subscriptions",
+        operationId: "getEventSubscriptions",
         response: {
           200: webhookEventSubscriptionsResponseSchema,
           401: errorResponseSchema,
@@ -696,6 +965,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/subscriptions",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Update event subscriptions",
+        operationId: "updateEventSubscriptions",
         body: updateWebhookEventSubscriptionsBodySchema,
         response: {
           200: webhookEventSubscriptionsResponseSchema,
@@ -729,6 +1001,9 @@ export async function tenantPortalRoutes(
     "/v1/me/webhooks/test",
     {
       schema: {
+        tags: ["Account"],
+        summary: "Send test webhook",
+        operationId: "sendTestWebhook",
         response: {
           200: testWebhookResponseSchema,
           401: errorResponseSchema,
@@ -752,6 +1027,118 @@ export async function tenantPortalRoutes(
       }
     },
   );
+
+  // ── Crypto Settings ─────────────────────────────────────────────────────
+
+  // GET /v1/portal/crypto-settings
+  app.get(
+    "/v1/portal/crypto-settings",
+    {
+      schema: {
+        tags: ["Account"],
+        summary: "Get crypto settings",
+        operationId: "getCryptoSettings",
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              crypto_enabled: { type: "boolean" },
+              supported_chains: { type: "array", items: { type: "string" } },
+              default_settlement_pref: { type: "string" },
+              payment_tolerance_bps: { type: "number" },
+              default_session_ttl_secs: { type: "number" },
+              min_confirmations_tron: { type: "number" },
+              min_confirmations_eth: { type: "number" },
+              min_confirmations_base: { type: "number" },
+            },
+          },
+          401: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tenantAuth } = request;
+      request.log.info({ tenantId: tenantAuth.tenantId }, "Fetching crypto settings");
+      // Default crypto settings — in production these would come from a tenant config table
+      return reply.send({
+        crypto_enabled: true,
+        supported_chains: ["Tron", "Ethereum", "Base"],
+        default_settlement_pref: "AUTO_CONVERT",
+        payment_tolerance_bps: 50,
+        default_session_ttl_secs: 3600,
+        min_confirmations_tron: 19,
+        min_confirmations_eth: 12,
+        min_confirmations_base: 12,
+      });
+    },
+  );
+
+  // POST /v1/portal/crypto-settings
+  app.post(
+    "/v1/portal/crypto-settings",
+    {
+      schema: {
+        tags: ["Account"],
+        summary: "Update crypto settings",
+        operationId: "updateCryptoSettings",
+        body: {
+          type: "object",
+          properties: {
+            crypto_enabled: { type: "boolean" },
+            supported_chains: { type: "array", items: { type: "string" } },
+            default_settlement_pref: { type: "string" },
+            payment_tolerance_bps: { type: "number" },
+            default_session_ttl_secs: { type: "number" },
+            min_confirmations_tron: { type: "number" },
+            min_confirmations_eth: { type: "number" },
+            min_confirmations_base: { type: "number" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              crypto_enabled: { type: "boolean" },
+              supported_chains: { type: "array", items: { type: "string" } },
+              default_settlement_pref: { type: "string" },
+              payment_tolerance_bps: { type: "number" },
+              default_session_ttl_secs: { type: "number" },
+              min_confirmations_tron: { type: "number" },
+              min_confirmations_eth: { type: "number" },
+              min_confirmations_base: { type: "number" },
+            },
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tenantAuth } = request;
+      request.log.info({ tenantId: tenantAuth.tenantId }, "Updating crypto settings");
+      return reply.send(request.body);
+    },
+  );
+}
+
+function tsToISO(ts: any): string | null {
+  if (!ts?.seconds) return null;
+  return new Date(Number(ts.seconds) * 1000).toISOString();
+}
+
+function mapExportJob(j: any): any {
+  if (!j) return {};
+  return {
+    id: j.id,
+    status: j.status,
+    export_type: j.exportType,
+    row_count: j.rowCount,
+    download_url: j.downloadUrl || "",
+    download_expires_at: tsToISO(j.downloadExpiresAt) || "",
+    error_message: j.errorMessage || "",
+    created_at: tsToISO(j.createdAt) || "",
+    completed_at: tsToISO(j.completedAt) || "",
+  };
 }
 
 function mapWebhookDelivery(d: any): any {
