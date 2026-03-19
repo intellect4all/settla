@@ -4,7 +4,7 @@
     :class="bannerClasses"
     class="flex items-center gap-3 px-4 py-3 rounded-lg text-sm border"
   >
-    <span class="text-lg shrink-0">{{ icon }}</span>
+    <Icon :name="iconName" :size="18" class="shrink-0" />
     <div class="flex-1 min-w-0">
       <p class="font-medium">{{ title }}</p>
       <p v-if="description" class="text-xs opacity-80 mt-0.5">{{ description }}</p>
@@ -14,7 +14,7 @@
       class="text-current opacity-50 hover:opacity-100 transition-opacity shrink-0"
       @click="visible = false"
     >
-      &#10005;
+      <Icon name="x" :size="16" />
     </button>
   </div>
 </template>
@@ -41,12 +41,12 @@ const bannerClasses = computed(() => {
   }
 })
 
-const icon = computed(() => {
+const iconName = computed(() => {
   switch (props.type) {
-    case 'error': return '&#9888;'
-    case 'success': return '&#10004;'
-    case 'info': return '&#8505;'
-    default: return '&#9888;'
+    case 'error': return 'alert-triangle'
+    case 'success': return 'check-circle'
+    case 'info': return 'info'
+    default: return 'alert-triangle'
   }
 })
 </script>

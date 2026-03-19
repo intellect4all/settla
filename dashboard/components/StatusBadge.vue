@@ -2,9 +2,10 @@
   <span
     :class="[badgeClasses, sizeClass]"
     class="inline-flex items-center font-medium rounded-full"
+    role="status"
   >
     <span v-if="showDot" :class="dotClass" class="w-1.5 h-1.5 rounded-full mr-1.5" />
-    {{ label }}
+    <span class="mr-0.5" aria-hidden="true">{{ statusIcon }}</span>{{ label }}
   </span>
 </template>
 
@@ -40,6 +41,27 @@ const statusConfig: Record<string, { label: string; bg: string; text: string; do
 }
 
 const cfg = computed(() => statusConfig[props.status] || { label: props.status, bg: 'bg-surface-700/50', text: 'text-surface-400', dot: 'bg-surface-500' })
+
+// Unicode symbols so color-blind users can distinguish statuses without relying on color alone
+const statusIcons: Record<string, string> = {
+  COMPLETED: '\u2713',   // checkmark
+  ACTIVE: '\u2713',
+  VERIFIED: '\u2713',
+  FAILED: '\u2717',      // X mark
+  SUSPENDED: '\u2717',
+  REJECTED: '\u2717',
+  PENDING: '\u25CB',     // circle (clock-like)
+  ONBOARDING: '\u25CB',
+  CREATED: '\u25CB',
+  ON_RAMPING: '\u25B6',  // play/arrow (in progress)
+  OFF_RAMPING: '\u25B6',
+  SETTLING: '\u25B6',
+  COMPLETING: '\u25B6',
+  REFUNDING: '\u21BA',   // counter-clockwise arrow
+  REFUNDED: '\u21BA',
+  FUNDED: '\u25C6',      // diamond
+}
+const statusIcon = computed(() => statusIcons[props.status] ?? '')
 const label = computed(() => cfg.value.label)
 const badgeClasses = computed(() => `${cfg.value.bg} ${cfg.value.text}`)
 const dotClass = computed(() => cfg.value.dot)

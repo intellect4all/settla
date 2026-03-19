@@ -7,7 +7,7 @@
       </span>
     </div>
     <div class="mt-2">
-      <p class="text-2xl font-semibold text-surface-100 font-mono tabular-nums">
+      <p class="text-2xl font-semibold font-mono tabular-nums">
         <slot>{{ displayValue }}</slot>
       </p>
     </div>
@@ -23,5 +23,5 @@ const props = defineProps<{
   trend?: number
 }>()
 
-const displayValue = computed(() => props.value ?? '&#8212;')
+const displayValue = computed(() => props.value ?? '\u2014')
 </script>
