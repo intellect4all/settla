@@ -2,12 +2,14 @@
   <div class="card p-4">
     <div class="flex items-center justify-between mb-3">
       <div>
-        <h4 class="text-sm font-semibold text-surface-200">{{ position.currency }}</h4>
+        <h4 class="text-sm font-semibold">{{ position.currency }}</h4>
         <p class="text-xs text-surface-500 mt-0.5">{{ position.location }}</p>
       </div>
       <span
         :class="healthColor"
         class="w-2.5 h-2.5 rounded-full"
+        :aria-label="isBelowMin ? 'Health: critical' : 'Health: good'"
+        role="img"
       />
     </div>
 
@@ -17,7 +19,7 @@
         <span>Available</span>
         <span>Locked</span>
       </div>
-      <div class="h-2 bg-surface-800 rounded-full overflow-hidden flex">
+      <div class="h-2 bar-track rounded-full overflow-hidden flex">
         <div
           :style="{ width: availablePercent + '%' }"
           class="bg-emerald-500 rounded-l-full transition-all duration-500"
@@ -47,7 +49,7 @@
 
     <!-- Min balance warning -->
     <div v-if="isBelowMin" class="mt-3 flex items-center gap-1.5 text-xs text-amber-400 bg-amber-500/10 rounded-lg px-2.5 py-1.5">
-      <span>&#9888;</span>
+      <Icon name="alert-triangle" :size="14" />
       Below minimum ({{ format(position.min_balance, position.currency) }})
     </div>
   </div>

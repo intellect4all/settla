@@ -2,13 +2,13 @@
   <div>
     <button
       :style="{ paddingLeft: depth * 20 + 'px' }"
-      class="flex items-center gap-2 w-full px-3 py-2 text-sm rounded-lg transition-colors hover:bg-surface-800"
+      class="flex items-center gap-2 w-full px-3 py-2 text-sm rounded-lg transition-colors hover:bg-surface-800 focus-ring"
       :class="selectedCode === account.code ? 'bg-surface-800 text-violet-400' : 'text-surface-300'"
       @click="toggle"
     >
       <!-- Expand/collapse icon -->
-      <span v-if="hasChildren" class="w-4 text-center text-surface-500 text-xs transition-transform" :class="expanded ? 'rotate-90' : ''">
-        &#9654;
+      <span v-if="hasChildren" class="w-4 text-center text-surface-500 transition-transform" :class="expanded ? 'rotate-90' : ''">
+        <Icon name="chevron-right" :size="12" />
       </span>
       <span v-else class="w-4" />
 
