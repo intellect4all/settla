@@ -1,14 +1,22 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 animate-fade-in">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Routes</h1>
         <p class="text-sm text-surface-500 mt-0.5">Route comparison & chain health monitoring</p>
       </div>
     </div>
 
+    <!-- Sample data notice -->
+    <AlertBanner
+      v-if="usingSampleData"
+      type="info"
+      title="Showing sample data"
+      description="Live route and chain data will appear when the gateway and providers are connected."
+    />
+
     <!-- Route Comparison Form -->
-    <div class="card p-5 mb-6">
+    <div class="card p-5 mb-6 animate-fade-in">
       <h3 class="text-sm font-semibold text-surface-200 mb-4">Compare Routes</h3>
       <div class="flex flex-wrap gap-3 items-end">
         <div>
@@ -27,14 +35,14 @@
             <option v-for="c in currencies" :key="c" :value="c">{{ c }}</option>
           </select>
         </div>
-        <button class="btn-primary text-sm" :disabled="!canCompare || comparing" @click="compareRoutes">
-          {{ comparing ? 'Comparing...' : 'Compare Routes' }}
-        </button>
+        <AppButton size="sm" :loading="comparing" :disabled="!canCompare" @click="compareRoutes">
+          Compare Routes
+        </AppButton>
       </div>
     </div>
 
     <!-- Route Results -->
-    <div v-if="routes.length > 0" class="card overflow-hidden mb-6">
+    <div v-if="routes.length > 0" class="card overflow-hidden mb-6 animate-fade-in">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-surface-800">
@@ -81,7 +89,7 @@
               <span :class="healthDotClass(route.health)" class="inline-block w-2 h-2 rounded-full" />
             </td>
             <td class="px-4 py-3 text-center">
-              <span v-if="route.is_selected" class="text-violet-400 font-bold">&#10003;</span>
+              <Icon v-if="route.is_selected" name="check" :size="16" class="text-violet-400 inline" />
             </td>
           </tr>
         </tbody>
@@ -90,8 +98,10 @@
 
     <!-- Chain Status -->
     <h3 class="text-sm font-semibold text-surface-200 mb-3">Chain Status</h3>
-    <LoadingSpinner v-if="chainsLoading && !chains.length" />
-    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div v-if="chainsLoading && !chains.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <SkeletonLoader v-for="i in 4" :key="i" variant="card" height="140px" />
+    </div>
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in">
       <div v-for="chain in chains" :key="chain.chain" class="card p-4">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-sm font-semibold text-surface-200">{{ chain.chain }}</h4>
@@ -109,7 +119,7 @@
         </dl>
       </div>
     </div>
-    <EmptyState v-if="!chainsLoading && !chains.length" title="No chain data" description="Chain status will appear once the system is connected to providers." />
+    <EmptyState v-if="!chainsLoading && !chains.length" icon="activity" title="No chain data" description="Chain status will appear once the system is connected to providers." />
   </div>
 </template>
 
@@ -128,6 +138,7 @@ const routes = ref<RouteComparison[]>([])
 const comparing = ref(false)
 const chains = ref<ChainStatus[]>([])
 const chainsLoading = ref(true)
+const usingSampleData = ref(false)
 
 const canCompare = computed(() => amount.value && sourceCurrency.value && destCurrency.value)
 
@@ -138,6 +149,7 @@ async function compareRoutes() {
     routes.value = result.routes
   } catch {
     // Generate sample data for demo
+    usingSampleData.value = true
     routes.value = generateSampleRoutes()
   } finally {
     comparing.value = false
@@ -159,6 +171,7 @@ async function fetchChains() {
     const result = await api.getChainStatuses()
     chains.value = result.chains
   } catch {
+    usingSampleData.value = true
     chains.value = [
       { chain: 'Tron', health: 'healthy', gas_price_gwei: '0.01', block_time_ms: 3000, last_checked: new Date().toISOString() },
       { chain: 'Ethereum', health: 'healthy', gas_price_gwei: '25.00', block_time_ms: 12000, last_checked: new Date().toISOString() },

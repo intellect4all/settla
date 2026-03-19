@@ -1,34 +1,25 @@
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between animate-fade-in">
       <div>
         <h1 class="text-xl font-semibold text-surface-100">Reconciliation</h1>
         <p class="text-sm text-surface-400 mt-0.5">Automated consistency checks across treasury, ledger, and transfers</p>
       </div>
-      <button
-        class="btn-primary text-sm flex items-center gap-2"
+      <AppButton
+        variant="primary"
+        size="sm"
+        :loading="running"
         :disabled="running"
         @click="runNow"
       >
-        <span v-if="running" class="animate-spin inline-block">&#9696;</span>
-        <span v-else>&#9654;</span>
-        {{ running ? 'Running…' : 'Run now' }}
-      </button>
+        {{ running ? 'Running...' : 'Run now' }}
+      </AppButton>
     </div>
-
-    <!-- API key missing -->
-    <AlertBanner
-      v-if="api.apiKeyMissing"
-      type="warning"
-      title="API key not configured"
-      description="Set NUXT_PUBLIC_DASHBOARD_API_KEY to connect to the live backend. Showing sample data."
-      :dismissible="false"
-    />
 
     <!-- Auth / fetch error -->
     <AlertBanner
-      v-else-if="fetchError"
+      v-if="fetchError"
       type="error"
       :title="fetchError"
       description="Check your API key and gateway connectivity."
@@ -43,7 +34,7 @@
     />
 
     <!-- Last run summary -->
-    <div v-if="report" class="card p-5">
+    <div v-if="report" class="card p-5 animate-fade-in">
       <div class="flex items-center justify-between flex-wrap gap-4">
         <div class="flex items-center gap-4">
           <span
@@ -72,13 +63,16 @@
       </div>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="flex items-center justify-center py-16">
-      <LoadingSpinner />
-    </div>
+    <!-- Loading skeleton -->
+    <template v-if="loading">
+      <SkeletonLoader variant="card" height="80px" />
+      <div class="space-y-4">
+        <SkeletonLoader v-for="i in 5" :key="i" variant="card" height="72px" />
+      </div>
+    </template>
 
     <!-- Checks -->
-    <div v-else-if="report" class="space-y-4">
+    <div v-else-if="report" class="space-y-4 animate-fade-in">
       <div
         v-for="check in report.checks"
         :key="check.name"
@@ -86,7 +80,7 @@
       >
         <!-- Check header -->
         <button
-          class="w-full flex items-center justify-between p-5 text-left hover:bg-surface-800/50 transition-colors"
+          class="w-full flex items-center justify-between p-5 text-left hover:bg-surface-800/50 transition-colors focus-ring"
           @click="toggleCheck(check.name)"
         >
           <div class="flex items-center gap-4">
@@ -113,7 +107,7 @@
               class="text-xs font-semibold px-2.5 py-1 rounded-full"
               :class="checkStatusClass(check.status)"
             >{{ check.status }}</span>
-            <span class="text-surface-500 text-xs">{{ expanded.includes(check.name) ? '&#9650;' : '&#9660;' }}</span>
+            <Icon :name="expanded.includes(check.name) ? 'chevron-up' : 'chevron-down'" :size="12" class="text-surface-500" />
           </div>
         </button>
 
@@ -164,7 +158,7 @@
     <!-- Empty -->
     <EmptyState
       v-else
-      icon="&#9878;"
+      icon="shield"
       title="No reconciliation data"
       description="Click 'Run now' to execute all checks."
     />
@@ -287,7 +281,7 @@ function formatDate(iso: string) {
 }
 
 function truncate(s: string, n = 20) {
-  return s.length > n ? s.slice(0, n) + '…' : s
+  return s.length > n ? s.slice(0, n) + '...' : s
 }
 
 // ── Sample data ────────────────────────────────────────────────────────────

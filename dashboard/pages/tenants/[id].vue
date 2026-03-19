@@ -1,12 +1,26 @@
 <template>
-  <div>
-    <button class="flex items-center gap-1.5 text-sm text-surface-400 hover:text-surface-200 mb-4 transition-colors" @click="router.back()">
-      &#8592; Back
+  <div class="animate-fade-in">
+    <button class="flex items-center gap-1.5 text-sm text-surface-400 hover:text-surface-200 mb-4 transition-colors focus-ring" @click="router.back()">
+      <Icon name="chevron-right" :size="14" class="rotate-180" /> Back
     </button>
 
-    <LoadingSpinner v-if="loading && !tenant" />
+    <div v-if="loading && !tenant" class="space-y-4">
+      <SkeletonLoader variant="card" height="100px" />
+      <div class="grid grid-cols-2 gap-4">
+        <SkeletonLoader variant="card" height="200px" />
+        <SkeletonLoader variant="card" height="200px" />
+      </div>
+    </div>
 
     <template v-else-if="tenant">
+      <!-- Sample data notice -->
+      <AlertBanner
+        v-if="usingSampleData"
+        type="info"
+        title="Showing sample data"
+        description="Live tenant data will appear when the gateway is connected."
+        class="mb-6"
+      />
       <!-- Header -->
       <div class="flex items-center justify-between mb-6">
         <div>
@@ -15,7 +29,22 @@
             <StatusBadge :status="tenant.status" />
             <StatusBadge :status="tenant.kyb_status" />
           </div>
-          <p class="text-sm text-surface-500 mt-0.5">{{ tenant.slug }} &middot; {{ tenant.settlement_model }}</p>
+          <p class="text-sm text-surface-500 mt-0.5">{{ tenant.slug }} · {{ tenant.settlement_model }}</p>
+        </div>
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-2">
+          <template v-if="tenant.kyb_status !== 'VERIFIED'">
+            <AppButton size="sm" variant="primary" :loading="actionLoading" @click="approveKYB">Approve KYB</AppButton>
+          </template>
+          <template v-if="tenant.kyb_status === 'PENDING' || tenant.kyb_status === 'IN_REVIEW'">
+            <AppButton size="sm" variant="danger" :loading="actionLoading" @click="rejectKYB">Reject KYB</AppButton>
+          </template>
+          <template v-if="tenant.status === 'ACTIVE'">
+            <AppButton size="sm" variant="danger" :loading="actionLoading" @click="suspendTenant">Suspend</AppButton>
+          </template>
+          <template v-if="tenant.status === 'SUSPENDED'">
+            <AppButton size="sm" variant="primary" :loading="actionLoading" @click="activateTenant">Activate</AppButton>
+          </template>
         </div>
       </div>
 
@@ -42,9 +71,9 @@
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-sm font-semibold text-surface-200">Daily Volume vs Limit</h3>
           <span class="text-xs text-surface-500">
-            <MoneyDisplay :amount="volume?.daily_volume_usd ?? '0'" currency="USD" size="xs" />
+            <MoneyDisplay :amount="volume?.daily_volume_usd ?? '0'" currency="USD" size="sm" />
             /
-            <MoneyDisplay :amount="tenant.daily_limit_usd" currency="USD" size="xs" />
+            <MoneyDisplay :amount="tenant.daily_limit_usd" currency="USD" size="sm" />
           </span>
         </div>
         <div class="h-4 bg-surface-800 rounded-full overflow-hidden">
@@ -61,7 +90,10 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- Fee Schedule -->
         <div class="card p-5">
-          <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider mb-4">Fee Schedule</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider">Fee Schedule</h3>
+            <AppButton size="sm" variant="secondary" @click="openFeeModal">Edit</AppButton>
+          </div>
           <dl class="space-y-3 text-sm">
             <div class="flex justify-between">
               <dt class="text-surface-400">On-ramp fee</dt>
@@ -84,7 +116,10 @@
 
         <!-- Limits & Config -->
         <div class="card p-5">
-          <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider mb-4">Configuration</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider">Configuration</h3>
+            <AppButton size="sm" variant="secondary" @click="openLimitsModal">Edit Limits</AppButton>
+          </div>
           <dl class="space-y-3 text-sm">
             <div class="flex justify-between">
               <dt class="text-surface-400">Settlement model</dt>
@@ -112,6 +147,50 @@
     </template>
 
     <EmptyState v-else title="Tenant not found" />
+
+    <!-- Edit Fee Schedule Modal -->
+    <Modal :open="feeModalOpen" title="Edit Fee Schedule" @close="feeModalOpen = false">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">On-ramp fee (bps)</label>
+          <input v-model.number="feeForm.on_ramp_bps" type="number" min="0" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">Off-ramp fee (bps)</label>
+          <input v-model.number="feeForm.off_ramp_bps" type="number" min="0" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">Min fee (USD)</label>
+          <input v-model="feeForm.min_fee_usd" type="text" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">Max fee (USD)</label>
+          <input v-model="feeForm.max_fee_usd" type="text" class="input w-full" />
+        </div>
+      </div>
+      <template #footer>
+        <AppButton variant="secondary" @click="feeModalOpen = false">Cancel</AppButton>
+        <AppButton variant="primary" :loading="actionLoading" @click="saveFees">Save</AppButton>
+      </template>
+    </Modal>
+
+    <!-- Edit Limits Modal -->
+    <Modal :open="limitsModalOpen" title="Edit Limits" @close="limitsModalOpen = false">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">Daily limit (USD)</label>
+          <input v-model="limitsForm.daily_limit_usd" type="text" class="input w-full" />
+        </div>
+        <div>
+          <label class="block text-sm text-surface-400 mb-1">Per-transfer limit (USD)</label>
+          <input v-model="limitsForm.per_transfer_limit" type="text" class="input w-full" />
+        </div>
+      </div>
+      <template #footer>
+        <AppButton variant="secondary" @click="limitsModalOpen = false">Cancel</AppButton>
+        <AppButton variant="primary" :loading="actionLoading" @click="saveLimits">Save</AppButton>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -123,19 +202,38 @@ const route = useRoute()
 const router = useRouter()
 const api = useApi()
 const { bpsToPercent } = useMoney()
-const { error: showError } = useToast()
+const { success: showSuccess, error: showError } = useToast()
 
 const tenantId = computed(() => route.params.id as string)
 const tenant = ref<Tenant | null>(null)
 const volume = ref<TenantVolume | null>(null)
 const loading = ref(true)
+const actionLoading = ref(false)
+const usingSampleData = ref(false)
+
+// Fee modal
+const feeModalOpen = ref(false)
+const feeForm = reactive({
+  on_ramp_bps: 0,
+  off_ramp_bps: 0,
+  min_fee_usd: '0',
+  max_fee_usd: '0',
+})
+
+// Limits modal
+const limitsModalOpen = ref(false)
+const limitsForm = reactive({
+  daily_limit_usd: '0',
+  per_transfer_limit: '0',
+})
 
 async function fetchTenant() {
   loading.value = true
   try {
     tenant.value = await api.getTenant(tenantId.value)
+    usingSampleData.value = false
   } catch {
-    // Sample data for demo
+    usingSampleData.value = true
     tenant.value = {
       id: tenantId.value,
       name: tenantId.value === 'a0000000-0000-0000-0000-000000000001' ? 'Lemfi' : 'Fincra',
@@ -164,6 +262,7 @@ async function fetchVolume() {
     const result = await api.getTenantVolumes()
     volume.value = result.tenants.find((t: TenantVolume) => t.tenant_id === tenantId.value) ?? null
   } catch {
+    usingSampleData.value = true
     volume.value = {
       tenant_id: tenantId.value,
       tenant_name: tenant.value?.name ?? '',
@@ -173,6 +272,85 @@ async function fetchVolume() {
       success_rate: 98.7,
     }
   }
+}
+
+// Actions
+async function approveKYB() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantKYB(tenantId.value, 'VERIFIED')
+    showSuccess('KYB approved')
+    await fetchTenant()
+  } catch { showError('Failed to approve KYB') }
+  finally { actionLoading.value = false }
+}
+
+async function rejectKYB() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantKYB(tenantId.value, 'REJECTED')
+    showSuccess('KYB rejected')
+    await fetchTenant()
+  } catch { showError('Failed to reject KYB') }
+  finally { actionLoading.value = false }
+}
+
+async function suspendTenant() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantStatus(tenantId.value, 'SUSPENDED')
+    showSuccess('Tenant suspended')
+    await fetchTenant()
+  } catch { showError('Failed to suspend tenant') }
+  finally { actionLoading.value = false }
+}
+
+async function activateTenant() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantStatus(tenantId.value, 'ACTIVE')
+    showSuccess('Tenant activated')
+    await fetchTenant()
+  } catch { showError('Failed to activate tenant') }
+  finally { actionLoading.value = false }
+}
+
+function openFeeModal() {
+  if (!tenant.value) return
+  feeForm.on_ramp_bps = tenant.value.fee_schedule.on_ramp_bps
+  feeForm.off_ramp_bps = tenant.value.fee_schedule.off_ramp_bps
+  feeForm.min_fee_usd = tenant.value.fee_schedule.min_fee_usd
+  feeForm.max_fee_usd = tenant.value.fee_schedule.max_fee_usd
+  feeModalOpen.value = true
+}
+
+async function saveFees() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantFees(tenantId.value, { ...feeForm })
+    showSuccess('Fee schedule updated')
+    feeModalOpen.value = false
+    await fetchTenant()
+  } catch { showError('Failed to update fees') }
+  finally { actionLoading.value = false }
+}
+
+function openLimitsModal() {
+  if (!tenant.value) return
+  limitsForm.daily_limit_usd = tenant.value.daily_limit_usd
+  limitsForm.per_transfer_limit = tenant.value.per_transfer_limit
+  limitsModalOpen.value = true
+}
+
+async function saveLimits() {
+  actionLoading.value = true
+  try {
+    await api.updateTenantLimits(tenantId.value, { ...limitsForm })
+    showSuccess('Limits updated')
+    limitsModalOpen.value = false
+    await fetchTenant()
+  } catch { showError('Failed to update limits') }
+  finally { actionLoading.value = false }
 }
 
 const limitPercent = computed(() => {

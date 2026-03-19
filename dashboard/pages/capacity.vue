@@ -1,12 +1,20 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 animate-fade-in">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Capacity</h1>
         <p class="text-sm text-surface-500 mt-0.5">Live system capacity monitoring &mdash; 50M txn/day target</p>
       </div>
       <span class="text-xs text-surface-600">Auto-refreshing every 3s</span>
     </div>
+
+    <!-- Fetch error -->
+    <AlertBanner
+      v-if="fetchError"
+      type="error"
+      :title="fetchError"
+      description="Check that Prometheus and the gateway are connected and accessible."
+    />
 
     <!-- Alerts -->
     <div v-if="alerts.length > 0" class="space-y-2 mb-6">
@@ -19,8 +27,11 @@
       />
     </div>
 
-    <!-- TPS Section -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+    <!-- TPS Section (skeleton while loading) -->
+    <div v-if="metricsLoading && !metrics" class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      <SkeletonLoader v-for="i in 3" :key="i" variant="card" height="160px" />
+    </div>
+    <div v-else class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6 animate-fade-in">
       <div class="card p-5">
         <p class="text-xs text-surface-500 uppercase tracking-wider mb-1">Current TPS</p>
         <p class="text-4xl font-bold font-mono tabular-nums" :class="tpsColor">
@@ -60,8 +71,11 @@
       </div>
     </div>
 
-    <!-- Component Metrics -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+    <!-- Component Metrics (skeleton while loading) -->
+    <div v-if="metricsLoading && !metrics" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      <SkeletonLoader v-for="i in 2" :key="i" variant="card" height="200px" />
+    </div>
+    <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 animate-fade-in">
       <!-- Ledger Throughput -->
       <div class="card p-5">
         <h3 class="text-sm font-semibold text-surface-200 mb-4">Ledger Throughput</h3>
@@ -134,7 +148,7 @@
     </div>
 
     <!-- NATS & PgBouncer -->
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 animate-fade-in">
       <!-- NATS Partitions -->
       <div class="card p-5">
         <h3 class="text-sm font-semibold text-surface-200 mb-4">NATS Partition Queue Depth</h3>
@@ -182,11 +196,13 @@
     </div>
 
     <!-- Per-Tenant Volume -->
-    <div class="card overflow-hidden">
+    <div class="card overflow-hidden animate-fade-in">
       <div class="px-4 py-3 border-b border-surface-800">
         <h3 class="text-sm font-semibold text-surface-200">Tenant Volume Breakdown</h3>
       </div>
-      <LoadingSpinner v-if="tenantsLoading && !tenantVolumes.length" />
+      <div v-if="tenantsLoading && !tenantVolumes.length" class="p-4">
+        <SkeletonLoader variant="table" :lines="3" />
+      </div>
       <table v-else class="w-full text-sm">
         <thead>
           <tr class="border-b border-surface-800">
@@ -239,17 +255,24 @@ import Decimal from 'decimal.js'
 
 const config = useRuntimeConfig()
 const prom = usePrometheus()
+const fetchError = ref<string | null>(null)
 
 const { data: metricsData, loading: metricsLoading } = usePolling(
   async () => {
-    // Try Prometheus first, fall back to gateway API, then sample data
+    // Try Prometheus first, fall back to gateway API
     const promMetrics = await prom.getCapacityMetrics()
-    if (promMetrics) return promMetrics
+    if (promMetrics) {
+      fetchError.value = null
+      return promMetrics
+    }
     try {
       const api = useApi()
-      return await api.getCapacityMetrics()
-    } catch {
-      return generateSampleMetrics()
+      const result = await api.getCapacityMetrics()
+      fetchError.value = null
+      return result
+    } catch (err: any) {
+      fetchError.value = `Failed to load capacity metrics: ${err?.message || 'unknown error'}`
+      return null
     }
   },
   config.public.pollIntervalCapacity as number,
@@ -257,14 +280,14 @@ const { data: metricsData, loading: metricsLoading } = usePolling(
 
 const { data: tenantData, loading: tenantsLoading } = usePolling(
   async () => {
-    // Try Prometheus first, fall back to sample data
+    // Try Prometheus first, fall back to gateway API
     const promTenants = await prom.getTenantVolumes()
     if (promTenants.length > 0) return { tenants: promTenants }
     try {
       const api = useApi()
       return await api.getTenantVolumes()
     } catch {
-      return { tenants: generateSampleTenantVolumes() }
+      return { tenants: [] }
     }
   },
   10000,
@@ -363,26 +386,4 @@ function volumePercent(tv: TenantVolume) {
   return vol.div(limit).mul(100).toNumber()
 }
 
-function generateSampleMetrics(): CapacityMetrics {
-  return {
-    current_tps: 580 + Math.floor(Math.random() * 100 - 50),
-    peak_tps: 2847,
-    capacity_tps: 5000,
-    ledger_writes_per_sec: 12400 + Math.floor(Math.random() * 2000),
-    pg_sync_lag_ms: 15 + Math.floor(Math.random() * 30),
-    treasury_reserves_per_sec: 580 + Math.floor(Math.random() * 100),
-    treasury_flush_lag_ms: 8 + Math.floor(Math.random() * 15),
-    nats_partition_depths: Array.from({ length: 8 }, () => Math.floor(Math.random() * 200)),
-    pgbouncer_active: 35 + Math.floor(Math.random() * 20),
-    pgbouncer_pool_size: 100,
-  }
-}
-
-function generateSampleTenantVolumes(): TenantVolume[] {
-  return [
-    { tenant_id: 'a0000000-0000-0000-0000-000000000001', tenant_name: 'Lemfi', daily_volume_usd: '12500000.00', daily_limit_usd: '25000000.00', transfer_count: 24500, success_rate: 98.7 },
-    { tenant_id: 'b0000000-0000-0000-0000-000000000002', tenant_name: 'Fincra', daily_volume_usd: '8200000.00', daily_limit_usd: '15000000.00', transfer_count: 16800, success_rate: 97.2 },
-    { tenant_id: 'c0000000-0000-0000-0000-000000000003', tenant_name: 'Paystack', daily_volume_usd: '4100000.00', daily_limit_usd: '10000000.00', transfer_count: 8200, success_rate: 99.1 },
-  ]
-}
 </script>
