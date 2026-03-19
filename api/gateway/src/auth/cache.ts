@@ -22,6 +22,10 @@ export interface TenantAuth {
   };
   dailyLimitUsd: string;
   perTransferLimit: string;
+  /** Set when authenticated via JWT (portal user). */
+  userId?: string;
+  /** Portal user role (OWNER, ADMIN, MEMBER). Only set for JWT auth. */
+  userRole?: string;
 }
 
 interface CacheEntry {
@@ -34,16 +38,18 @@ export class TenantAuthCache {
   private redis: Redis | null;
   private localTtlMs: number;
   private redisTtlSeconds: number;
-  private maxLocalSize = 10_000; // Cap to prevent unbounded memory growth
+  private maxLocalSize = 500_000;
 
   constructor(
     redis: Redis | null,
     localTtlMs: number,
     redisTtlSeconds: number,
+    maxLocalSize?: number,
   ) {
     this.redis = redis;
     this.localTtlMs = localTtlMs;
     this.redisTtlSeconds = redisTtlSeconds;
+    if (maxLocalSize !== undefined) this.maxLocalSize = maxLocalSize;
   }
 
   /** Get from L1 (local). Returns undefined on miss or expiry. */
