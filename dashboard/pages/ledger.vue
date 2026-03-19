@@ -1,14 +1,22 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 animate-fade-in">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Ledger</h1>
         <p class="text-sm text-surface-500 mt-0.5">Account hierarchy & journal entries</p>
       </div>
     </div>
 
+    <!-- Sample data notice -->
+    <AlertBanner
+      v-if="usingSampleData"
+      type="info"
+      title="Showing sample data"
+      description="Live ledger data will appear when the gateway is connected."
+    />
+
     <!-- Journal Entry Search -->
-    <div class="card p-4 mb-6">
+    <div class="card p-4 mb-6 animate-fade-in">
       <div class="flex gap-3">
         <input
           v-model="searchRef"
@@ -17,7 +25,7 @@
           class="input text-sm flex-1"
           @keydown.enter="searchEntries"
         />
-        <button class="btn-primary text-sm" @click="searchEntries">Search</button>
+        <AppButton size="sm" @click="searchEntries">Search</AppButton>
       </div>
 
       <!-- Search Results -->
@@ -60,9 +68,9 @@
     </div>
 
     <!-- Account Tree -->
-    <div class="card p-4">
+    <div class="card p-4 animate-fade-in">
       <h3 class="text-sm font-semibold text-surface-200 mb-4">Account Hierarchy</h3>
-      <LoadingSpinner v-if="loading && !accounts.length" />
+      <SkeletonLoader v-if="loading && !accounts.length" variant="table" :lines="6" />
       <div v-else-if="accounts.length" class="space-y-0.5">
         <LedgerTreeNode
           v-for="account in accounts"
@@ -73,11 +81,11 @@
           @select="onSelectAccount"
         />
       </div>
-      <EmptyState v-else title="No accounts" description="Ledger accounts will appear here once created." />
+      <EmptyState v-else icon="receipt" title="No accounts" description="Ledger accounts will appear here once created." />
     </div>
 
     <!-- Selected Account Entries -->
-    <div v-if="selectedCode && selectedEntries.length > 0" class="card p-4 mt-4">
+    <div v-if="selectedCode && selectedEntries.length > 0" class="card p-4 mt-4 animate-fade-in">
       <h3 class="text-sm font-semibold text-surface-200 mb-3">
         Recent entries for <span class="font-mono text-violet-400">{{ selectedCode }}</span>
       </h3>
@@ -110,6 +118,7 @@ const { format } = useMoney()
 
 const accounts = ref<LedgerAccount[]>([])
 const loading = ref(true)
+const usingSampleData = ref(false)
 const searchRef = ref('')
 const lastSearchRef = ref('')
 const searchResults = ref<JournalEntry[]>([])
@@ -124,6 +133,7 @@ async function fetchAccounts() {
     accounts.value = result.accounts
   } catch {
     // Generate sample tree structure for demo
+    usingSampleData.value = true
     accounts.value = generateSampleAccounts()
   } finally {
     loading.value = false

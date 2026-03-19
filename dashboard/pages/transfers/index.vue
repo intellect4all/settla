@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="animate-fade-in">
     <div class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Transfers</h1>
@@ -7,7 +7,7 @@
           {{ transfersData?.total_count ?? 0 }} total transfers
         </p>
       </div>
-      <button class="btn-secondary text-sm" @click="refresh">Refresh</button>
+      <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="refresh">Refresh</AppButton>
     </div>
 
     <!-- Filters -->
@@ -44,7 +44,7 @@
         <MoneyDisplay :amount="row.source_amount" :currency="row.source_currency" size="sm" />
       </template>
       <template #cell-corridor="{ row }">
-        <span class="text-xs font-mono">{{ row.source_currency }} &rarr; {{ row.dest_currency }}</span>
+        <span class="text-xs font-mono">{{ row.source_currency }} <Icon name="chevron-right" :size="12" class="inline-block mx-0.5" /> {{ row.dest_currency }}</span>
       </template>
       <template #cell-chain="{ value }">
         <span class="text-xs px-2 py-0.5 bg-surface-800 rounded text-surface-400">{{ value || '\u2014' }}</span>
@@ -87,6 +87,15 @@ const api = useApi()
 
 const statusFilter = ref('')
 const searchQuery = ref('')
+const debouncedSearch = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(searchQuery, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    debouncedSearch.value = val
+  }, 300)
+})
 
 const statuses: TransferStatus[] = [
   'CREATED',
@@ -102,27 +111,21 @@ const statuses: TransferStatus[] = [
 ]
 
 const { data: transfersData, loading, refresh } = usePolling(
-  () => api.listTransfers({ page_size: 100 }),
+  () => api.listTransfers({
+    page_size: 100,
+    status: statusFilter.value || undefined,
+    search: debouncedSearch.value || undefined,
+  }),
   config.public.pollIntervalTransfers as number,
   { immediate: true },
 )
 
-const filteredTransfers = computed(() => {
-  let txns = transfersData.value?.transfers ?? []
-  if (statusFilter.value) {
-    txns = txns.filter((t: Transfer) => t.status === statusFilter.value)
-  }
-  if (searchQuery.value) {
-    const q = searchQuery.value.toLowerCase()
-    txns = txns.filter(
-      (t: Transfer) =>
-        t.id.toLowerCase().includes(q) ||
-        (t.external_ref && t.external_ref.toLowerCase().includes(q)) ||
-        (t.idempotency_key && t.idempotency_key.toLowerCase().includes(q)),
-    )
-  }
-  return txns
+// Server-side filtering: re-fetch when filters change
+watch([statusFilter, debouncedSearch], () => {
+  refresh()
 })
+
+const filteredTransfers = computed(() => transfersData.value?.transfers ?? [])
 
 const columns: Column[] = [
   { key: 'status', label: 'Status', width: '140px' },

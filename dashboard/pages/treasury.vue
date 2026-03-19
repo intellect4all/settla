@@ -1,17 +1,17 @@
 <template>
   <div>
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 animate-fade-in">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Treasury</h1>
         <p class="text-sm text-surface-500 mt-0.5">
           Position management &amp; liquidity monitoring
         </p>
       </div>
-      <button class="btn-secondary text-sm" @click="refresh">Refresh</button>
+      <AppButton variant="secondary" size="sm" @click="refresh">Refresh</AppButton>
     </div>
 
     <!-- Total Available by Currency -->
-    <div v-if="totalAvailable && Object.keys(totalAvailable).length" class="flex flex-wrap gap-4 mb-6">
+    <div v-if="totalAvailable && Object.keys(totalAvailable).length" class="flex flex-wrap gap-4 mb-6 animate-fade-in">
       <div
         v-for="(amount, currency) in totalAvailable"
         :key="currency"
@@ -39,7 +39,7 @@
     </div>
 
     <!-- Available vs Locked Overview -->
-    <div v-if="positions.length" class="card p-5 mb-6">
+    <div v-if="positions.length" class="card p-5 mb-6 animate-fade-in">
       <h3 class="text-sm font-semibold text-surface-200 mb-4">Available vs Locked</h3>
       <div class="space-y-3">
         <div v-for="pos in positions" :key="pos.id" class="flex items-center gap-3">
@@ -74,12 +74,17 @@
       </div>
     </div>
 
-    <LoadingSpinner v-if="loading && !positions.length" full-page size="lg" />
+    <!-- Skeleton loading state -->
+    <div v-if="loading && !positions.length" class="space-y-6">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <SkeletonLoader v-for="i in 6" :key="i" variant="card" height="140px" />
+      </div>
+    </div>
 
     <!-- Position Cards Grid -->
     <template v-if="positions.length">
       <h3 class="text-sm font-semibold text-surface-200 mb-3">All Positions</h3>
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 animate-fade-in">
         <PositionCard
           v-for="pos in positions"
           :key="pos.id"
@@ -90,6 +95,7 @@
 
     <EmptyState
       v-if="!loading && !positions.length"
+      icon="inbox"
       title="No positions"
       description="Treasury positions will appear here once configured."
     />

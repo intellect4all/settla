@@ -1,14 +1,25 @@
 <template>
-  <div>
+  <div class="animate-fade-in">
     <!-- Back -->
     <button
-      class="flex items-center gap-1.5 text-sm text-surface-400 hover:text-surface-200 mb-4 transition-colors"
+      class="flex items-center gap-1.5 text-sm text-surface-400 hover:text-surface-200 mb-4 transition-colors focus-ring"
       @click="router.back()"
     >
-      &larr; Back to transfers
+      <Icon name="chevron-right" :size="14" class="rotate-180" /> Back to transfers
     </button>
 
-    <LoadingSpinner v-if="loading && !transfer" full-page size="lg" />
+    <template v-if="loading && !transfer">
+      <div class="space-y-4">
+        <SkeletonLoader variant="card" height="80px" />
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2 space-y-4">
+            <SkeletonLoader variant="card" height="200px" />
+            <SkeletonLoader variant="card" height="160px" />
+          </div>
+          <SkeletonLoader variant="card" height="380px" />
+        </div>
+      </div>
+    </template>
 
     <template v-else-if="transfer">
       <!-- Header -->
@@ -25,7 +36,7 @@
             </span>
           </div>
         </div>
-        <button class="btn-secondary text-sm" @click="refresh">Refresh</button>
+        <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="refresh">Refresh</AppButton>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -46,7 +57,7 @@
                 />
                 <p class="text-xs text-surface-500 mt-0.5">{{ transfer.source_currency }}</p>
               </div>
-              <span class="text-2xl text-surface-600">&rarr;</span>
+              <Icon name="chevron-right" :size="24" class="text-surface-600" />
               <div v-if="transfer.stable_amount">
                 <p class="text-xs text-surface-500 mb-1">Stablecoin</p>
                 <MoneyDisplay
@@ -58,7 +69,7 @@
                   {{ transfer.stable_coin }} on {{ transfer.chain }}
                 </p>
               </div>
-              <span v-if="transfer.stable_amount" class="text-2xl text-surface-600">&rarr;</span>
+              <Icon v-if="transfer.stable_amount" name="chevron-right" :size="24" class="text-surface-600" />
               <div>
                 <p class="text-xs text-surface-500 mb-1">Destination</p>
                 <MoneyDisplay
@@ -133,17 +144,23 @@
           <!-- Parties -->
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div class="card p-5">
-              <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider mb-3">
-                Sender
-              </h3>
+              <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-medium text-surface-400">Sender</h3>
+                <button
+                  class="text-xs px-2 py-1 rounded bg-surface-700 text-surface-300 hover:bg-surface-600 transition-colors"
+                  @click="showPII = !showPII"
+                >
+                  {{ showPII ? 'Hide PII' : 'Reveal PII' }}
+                </button>
+              </div>
               <dl class="space-y-2 text-sm">
                 <div v-if="transfer.sender?.name">
                   <dt class="text-surface-500">Name</dt>
-                  <dd class="text-surface-200">{{ transfer.sender.name }}</dd>
+                  <dd class="text-surface-200">{{ showPII ? transfer.sender.name : maskPII(transfer.sender.name, 'name') }}</dd>
                 </div>
                 <div v-if="transfer.sender?.email">
                   <dt class="text-surface-500">Email</dt>
-                  <dd class="text-surface-200">{{ transfer.sender.email }}</dd>
+                  <dd class="text-surface-200">{{ showPII ? transfer.sender.email : maskPII(transfer.sender.email, 'email') }}</dd>
                 </div>
                 <div v-if="transfer.sender?.country">
                   <dt class="text-surface-500">Country</dt>
@@ -164,16 +181,16 @@
               <dl class="space-y-2 text-sm">
                 <div v-if="transfer.recipient?.name">
                   <dt class="text-surface-500">Name</dt>
-                  <dd class="text-surface-200">{{ transfer.recipient.name }}</dd>
+                  <dd class="text-surface-200">{{ showPII ? transfer.recipient.name : maskPII(transfer.recipient.name, 'name') }}</dd>
                 </div>
                 <div v-if="transfer.recipient?.bank_name">
                   <dt class="text-surface-500">Bank</dt>
-                  <dd class="text-surface-200">{{ transfer.recipient.bank_name }}</dd>
+                  <dd class="text-surface-200">{{ showPII ? transfer.recipient.bank_name : maskPII(transfer.recipient.bank_name, 'name') }}</dd>
                 </div>
                 <div v-if="transfer.recipient?.account_number">
                   <dt class="text-surface-500">Account</dt>
                   <dd class="text-surface-200 font-mono">
-                    {{ transfer.recipient.account_number }}
+                    {{ showPII ? transfer.recipient.account_number : maskPII(transfer.recipient.account_number, 'account') }}
                   </dd>
                 </div>
                 <div v-if="transfer.recipient?.country">
@@ -206,7 +223,7 @@
             <h3 class="text-xs font-medium text-surface-500 uppercase tracking-wider mb-4">
               Timeline
             </h3>
-            <LoadingSpinner v-if="eventsLoading && !events.length" />
+            <SkeletonLoader v-if="eventsLoading && !events.length" variant="text" :lines="5" />
             <TimelineView v-else-if="events.length" :events="events" />
             <p v-else class="text-sm text-surface-500">No events recorded</p>
           </div>
@@ -267,6 +284,20 @@ const transfer = ref<Transfer | null>(null)
 const loading = ref(true)
 const events = ref<TransferEvent[]>([])
 const eventsLoading = ref(true)
+const showPII = ref(false)
+
+function maskPII(value: string, type: 'name' | 'email' | 'account' | 'default' = 'default'): string {
+  if (!value) return ''
+  switch (type) {
+    case 'name': return value[0] + '***'
+    case 'email': {
+      const [u, d] = value.split('@')
+      return u[0] + '***@' + (d || '***')
+    }
+    case 'account': return '****' + value.slice(-4)
+    default: return value[0] + '***'
+  }
+}
 
 async function fetchTransfer() {
   loading.value = true

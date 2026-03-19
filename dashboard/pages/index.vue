@@ -1,7 +1,7 @@
 <template>
   <div>
     <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 animate-fade-in">
       <div>
         <h1 class="text-2xl font-semibold text-surface-100">Dashboard</h1>
         <p class="text-sm text-surface-500 mt-0.5">Settlement engine overview</p>
@@ -10,38 +10,34 @@
         <span class="text-xs text-surface-600">
           Updated {{ lastUpdated }}
         </span>
-        <button class="btn-secondary text-xs" @click="refreshAll">
+        <AppButton variant="secondary" size="sm" @click="refreshAll">
           Refresh
-        </button>
+        </AppButton>
       </div>
     </div>
 
-    <!-- Summary Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <!-- Summary Cards (skeleton while loading) -->
+    <div v-if="transfersLoading && !transfers.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <SkeletonLoader v-for="i in 4" :key="i" variant="card" height="96px" :style="{ animationDelay: `${(i - 1) * 50}ms` }" />
+    </div>
+    <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <SummaryCard
-        label="Transfers Today"
-        :value="String(summary.totalTransfers)"
-        :subtitle="`${summary.inProgress} in progress`"
-      />
-      <SummaryCard
-        label="Success Rate"
-        :value="summary.successRate + '%'"
-        subtitle="Completed / Total"
-      />
-      <SummaryCard label="Volume Processed">
-        <template #default>
+        v-for="(card, idx) in summaryCards"
+        :key="card.label"
+        :label="card.label"
+        :value="card.value"
+        :subtitle="card.subtitle"
+        :class="[`animate-fade-in`]"
+        :style="{ animationDelay: `${idx * 50}ms` }"
+      >
+        <template v-if="card.label === 'Volume Processed'" #default>
           <MoneyDisplay :amount="summary.volumeUSD" currency="USD" size="xl" :compact="true" />
         </template>
       </SummaryCard>
-      <SummaryCard
-        label="Active Positions"
-        :value="String(positionsData?.positions?.length ?? 0)"
-        :subtitle="alertCount > 0 ? `${alertCount} alerts` : 'All healthy'"
-      />
     </div>
 
     <!-- Alerts -->
-    <div v-if="alertPositions.length > 0" class="space-y-2 mb-6">
+    <div v-if="alertPositions.length > 0" class="space-y-2 mb-6 animate-fade-in">
       <AlertBanner
         v-for="pos in alertPositions"
         :key="pos.id"
@@ -52,7 +48,7 @@
     </div>
 
     <!-- Content Grid -->
-    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 animate-fade-in">
       <!-- Recent Transfers (2/3 width) -->
       <div class="xl:col-span-2">
         <DataTable
@@ -72,7 +68,7 @@
           </template>
           <template #cell-corridor="{ row }">
             <span class="text-xs font-mono">
-              {{ row.source_currency }} &rarr; {{ row.dest_currency }}
+              {{ row.source_currency }} <Icon name="chevron-right" :size="12" class="inline-block mx-0.5" /> {{ row.dest_currency }}
             </span>
           </template>
           <template #cell-created_at="{ value }">
@@ -87,8 +83,8 @@
       <!-- Liquidity Health (1/3 width) -->
       <div>
         <h3 class="text-sm font-semibold text-surface-200 mb-3">Liquidity Health</h3>
-        <div v-if="positionsLoading" class="py-8">
-          <LoadingSpinner />
+        <div v-if="positionsLoading && !topPositions.length" class="space-y-3">
+          <SkeletonLoader v-for="i in 4" :key="i" variant="card" height="80px" />
         </div>
         <div v-else class="space-y-3">
           <PositionCard
@@ -168,6 +164,13 @@ const summary = computed(() => {
     volumeUSD: volume.toFixed(2),
   }
 })
+
+const summaryCards = computed(() => [
+  { label: 'Transfers Today', value: String(summary.value.totalTransfers), subtitle: `${summary.value.inProgress} in progress` },
+  { label: 'Success Rate', value: summary.value.successRate + '%', subtitle: 'Completed / Total' },
+  { label: 'Volume Processed', value: '', subtitle: '' },
+  { label: 'Active Positions', value: String(positionsData.value?.positions?.length ?? 0), subtitle: alertCount.value > 0 ? `${alertCount.value} alerts` : 'All healthy' },
+])
 
 const alertPositions = computed(() => liquidityData.value?.alert_positions ?? [])
 const alertCount = computed(() => alertPositions.value.length)

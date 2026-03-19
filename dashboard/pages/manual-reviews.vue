@@ -1,43 +1,26 @@
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between animate-fade-in">
       <div>
         <h1 class="text-xl font-semibold text-surface-100">Manual Reviews</h1>
         <p class="text-sm text-surface-400 mt-0.5">Stuck transfers escalated for human review</p>
       </div>
-      <button class="btn-secondary text-sm flex items-center gap-2" @click="refresh">
-        <span>&#8635;</span> Refresh
-      </button>
+      <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="refresh">
+        Refresh
+      </AppButton>
     </div>
-
-    <!-- API key missing -->
-    <AlertBanner
-      v-if="api.apiKeyMissing"
-      type="warning"
-      title="API key not configured"
-      description="Set NUXT_PUBLIC_DASHBOARD_API_KEY to connect to the live backend. Showing sample data."
-      :dismissible="false"
-    />
 
     <!-- Auth / fetch error -->
     <AlertBanner
-      v-else-if="fetchError"
+      v-if="fetchError"
       type="error"
       :title="fetchError"
       description="Check your API key and gateway connectivity."
     />
 
-    <!-- Sample data notice -->
-    <AlertBanner
-      v-else-if="usingSampleData"
-      type="info"
-      title="Showing sample data"
-      description="The /v1/ops/manual-reviews endpoint is not yet available on the gateway. Live data will appear automatically once the endpoint is deployed."
-    />
-
     <!-- Summary cards -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in">
       <div class="card p-4">
         <p class="text-xs text-surface-500 uppercase tracking-wider">Pending</p>
         <p class="text-2xl font-semibold text-amber-400 mt-1">{{ counts.PENDING }}</p>
@@ -73,20 +56,22 @@
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="flex items-center justify-center py-16">
-      <LoadingSpinner />
-    </div>
+    <template v-if="loading">
+      <div class="space-y-3">
+        <SkeletonLoader v-for="i in 3" :key="i" variant="card" height="140px" />
+      </div>
+    </template>
 
     <!-- Empty state -->
     <EmptyState
       v-else-if="filtered.length === 0"
-      icon="&#9749;"
+      icon="inbox"
       title="No reviews found"
       description="No transfers match the current filters."
     />
 
     <!-- Review list -->
-    <div v-else class="space-y-3">
+    <div v-else class="space-y-3 animate-fade-in">
       <div
         v-for="review in filtered"
         :key="review.id"
@@ -109,7 +94,7 @@
                 <span class="text-surface-500">Amount: </span>
                 <span class="font-mono text-surface-200">
                   {{ format(review.source_amount, review.source_currency) }}
-                  <span class="text-surface-500">→ {{ review.dest_currency }}</span>
+                  <Icon name="chevron-right" :size="12" class="inline-block text-surface-500 mx-0.5" /><span class="text-surface-500">{{ review.dest_currency }}</span>
                 </span>
               </div>
               <div>
@@ -131,25 +116,28 @@
 
           <!-- Right: actions (only for pending/escalated) -->
           <div v-if="review.status === 'PENDING' || review.status === 'ESCALATED'" class="flex flex-col gap-2 shrink-0">
-            <button
-              class="btn-primary text-xs px-3 py-1.5"
+            <AppButton
+              size="sm"
+              icon="check"
               :disabled="actionLoading === review.id"
               @click="openAction(review, 'approve')"
             >
-              &#10003; Approve
-            </button>
-            <button
-              class="btn-secondary text-xs px-3 py-1.5 text-red-400 hover:text-red-300"
+              Approve
+            </AppButton>
+            <AppButton
+              variant="danger"
+              size="sm"
+              icon="x"
               :disabled="actionLoading === review.id"
               @click="openAction(review, 'reject')"
             >
-              &#10005; Reject
-            </button>
+              Reject
+            </AppButton>
             <NuxtLink
               :to="`/transfers/${review.transfer_id}`"
-              class="btn-secondary text-xs px-3 py-1.5 text-center"
+              class="btn-secondary text-xs px-3 py-1.5 text-center focus-ring"
             >
-              &#8599; View
+              <Icon name="external-link" :size="12" class="inline-block mr-1" /> View
             </NuxtLink>
           </div>
 
@@ -163,41 +151,36 @@
     </div>
 
     <!-- Action modal -->
-    <div
-      v-if="actionModal.open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      @click.self="closeModal"
+    <Modal
+      :open="actionModal.open"
+      :title="actionModal.type === 'approve' ? 'Approve review' : 'Reject review'"
+      size="sm"
+      @close="closeModal"
     >
-      <div class="card w-full max-w-md p-6 space-y-4">
-        <h2 class="text-base font-semibold text-surface-100">
-          {{ actionModal.type === 'approve' ? '&#10003; Approve' : '&#10005; Reject' }} review
-        </h2>
-        <p class="text-sm text-surface-400">
-          Transfer <span class="font-mono text-surface-300">{{ actionModal.review?.transfer_id }}</span>
-        </p>
-        <div>
-          <label class="block text-xs text-surface-500 mb-1">Notes (optional)</label>
-          <textarea
-            v-model="actionModal.notes"
-            class="input w-full text-sm resize-none"
-            rows="3"
-            placeholder="Add context for the audit trail…"
-          />
-        </div>
-        <div class="flex gap-3 justify-end">
-          <button class="btn-secondary text-sm" @click="closeModal">Cancel</button>
-          <button
-            class="btn-primary text-sm"
-            :class="actionModal.type === 'reject' ? 'bg-red-600 hover:bg-red-500' : ''"
-            :disabled="actionLoading !== null"
-            @click="submitAction"
-          >
-            <span v-if="actionLoading">Processing…</span>
-            <span v-else>{{ actionModal.type === 'approve' ? 'Approve' : 'Reject' }}</span>
-          </button>
-        </div>
+      <p class="text-sm text-surface-400">
+        Transfer <span class="font-mono text-surface-300">{{ actionModal.review?.transfer_id }}</span>
+      </p>
+      <div class="mt-4">
+        <label class="block text-xs text-surface-500 mb-1">Notes (optional)</label>
+        <textarea
+          v-model="actionModal.notes"
+          class="input w-full text-sm resize-none"
+          rows="3"
+          placeholder="Add context for the audit trail..."
+        />
       </div>
-    </div>
+      <template #footer>
+        <AppButton variant="secondary" size="sm" @click="closeModal">Cancel</AppButton>
+        <AppButton
+          :variant="actionModal.type === 'reject' ? 'danger' : 'primary'"
+          size="sm"
+          :loading="actionLoading !== null"
+          @click="submitAction"
+        >
+          {{ actionModal.type === 'approve' ? 'Approve' : 'Reject' }}
+        </AppButton>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -211,7 +194,6 @@ const toast = useToast()
 const reviews = ref<ManualReview[]>([])
 const loading = ref(true)
 const fetchError = ref<string | null>(null)
-const usingSampleData = ref(false)
 const statusFilter = ref('')
 const searchQuery = ref('')
 const actionLoading = ref<string | null>(null)
@@ -228,28 +210,17 @@ const actionModal = ref<{
 async function loadData() {
   loading.value = true
   fetchError.value = null
-  usingSampleData.value = false
   try {
     const result = await api.listManualReviews(statusFilter.value || undefined)
     reviews.value = result.reviews
   } catch (err: any) {
     const status = err?.response?.status ?? err?.statusCode
-    if (status === 404) {
-      // Endpoint not yet implemented in gateway — use sample data silently
-      reviews.value = generateSampleReviews()
-      usingSampleData.value = true
-    } else if (status === 401 || status === 403) {
+    if (status === 401 || status === 403) {
       fetchError.value = 'Authentication failed — check your API key.'
-      reviews.value = []
-    } else if (err?.message?.includes('API key not configured')) {
-      // Already shown via apiKeyMissing banner — fall back to sample data
-      reviews.value = generateSampleReviews()
-      usingSampleData.value = true
     } else {
-      // Network error or 5xx — show sample data with a warning
-      reviews.value = generateSampleReviews()
-      usingSampleData.value = true
+      fetchError.value = `Failed to load manual reviews: ${err?.message || 'unknown error'}`
     }
+    reviews.value = []
   } finally {
     loading.value = false
   }
@@ -348,84 +319,6 @@ function relativeTime(iso: string) {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
-}
-
-// ── Sample data ────────────────────────────────────────────────────────────
-
-function generateSampleReviews(): ManualReview[] {
-  return [
-    {
-      id: 'rev_001',
-      transfer_id: 'a1b2c3d4-0001-0000-0000-000000000001',
-      tenant_id: 'a0000000-0000-0000-0000-000000000001',
-      tenant_name: 'Lemfi',
-      status: 'ESCALATED',
-      reason: 'Transfer stuck in ON_RAMPING for 47 minutes. Provider returned HTTP 504 on all 5 retry attempts. Stuck detector escalated after 30-minute threshold.',
-      failure_code: 'PROVIDER_TIMEOUT',
-      source_amount: '5000.00',
-      source_currency: 'GBP',
-      dest_currency: 'NGN',
-      escalated_at: new Date(Date.now() - 47 * 60_000).toISOString(),
-    },
-    {
-      id: 'rev_002',
-      transfer_id: 'b1b2c3d4-0002-0000-0000-000000000002',
-      tenant_id: 'b0000000-0000-0000-0000-000000000002',
-      tenant_name: 'Fincra',
-      status: 'PENDING',
-      reason: 'Transfer reached FAILED state but compensation flow aborted: treasury release succeeded but ledger reversal returned conflict error. Requires manual verification of ledger balance.',
-      failure_code: 'COMPENSATION_PARTIAL',
-      source_amount: '800000.00',
-      source_currency: 'NGN',
-      dest_currency: 'GBP',
-      escalated_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-    },
-    {
-      id: 'rev_003',
-      transfer_id: 'c1b2c3d4-0003-0000-0000-000000000003',
-      tenant_id: 'a0000000-0000-0000-0000-000000000001',
-      tenant_name: 'Lemfi',
-      status: 'PENDING',
-      reason: 'Blockchain worker received ambiguous status from Tron RPC: transaction hash found but confirmations count oscillating between 0 and 18. Possible chain re-org.',
-      failure_code: 'CHAIN_REORG_SUSPECTED',
-      source_amount: '12500.00',
-      source_currency: 'GBP',
-      dest_currency: 'NGN',
-      escalated_at: new Date(Date.now() - 25 * 60_000).toISOString(),
-    },
-    {
-      id: 'rev_004',
-      transfer_id: 'd1b2c3d4-0004-0000-0000-000000000004',
-      tenant_id: 'b0000000-0000-0000-0000-000000000002',
-      tenant_name: 'Fincra',
-      status: 'APPROVED',
-      reason: 'Provider webhook received with mismatched amount (sent 415.00 USDT, confirmed 414.85 USDT). Delta within 0.05% tolerance — approved as rounding from provider.',
-      failure_code: 'AMOUNT_MISMATCH_MINOR',
-      source_amount: '640000.00',
-      source_currency: 'NGN',
-      dest_currency: 'GBP',
-      escalated_at: new Date(Date.now() - 5 * 3600_000).toISOString(),
-      reviewed_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
-      reviewed_by: 'ops@settla.io',
-      notes: 'Delta is 0.036% — within acceptable rounding tolerance. Approved.',
-    },
-    {
-      id: 'rev_005',
-      transfer_id: 'e1b2c3d4-0005-0000-0000-000000000005',
-      tenant_id: 'a0000000-0000-0000-0000-000000000001',
-      tenant_name: 'Lemfi',
-      status: 'REJECTED',
-      reason: 'Transfer flagged by compliance: recipient bank account appears on AML watchlist (OFAC match confidence 78%). Manual review required per policy.',
-      failure_code: 'AML_WATCHLIST_HIT',
-      source_amount: '95000.00',
-      source_currency: 'GBP',
-      dest_currency: 'NGN',
-      escalated_at: new Date(Date.now() - 8 * 3600_000).toISOString(),
-      reviewed_at: new Date(Date.now() - 7 * 3600_000).toISOString(),
-      reviewed_by: 'compliance@settla.io',
-      notes: 'OFAC match confirmed. Transfer rejected and flagged for SAR filing.',
-    },
-  ]
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <div class="flex items-center justify-between flex-wrap gap-3">
+    <div class="flex items-center justify-between flex-wrap gap-3 animate-fade-in">
       <div>
         <h1 class="text-xl font-semibold text-surface-100">Net Settlement</h1>
         <p class="text-sm text-surface-400 mt-0.5">Per-corridor netting and inter-fintech payment tracking</p>
@@ -12,43 +12,33 @@
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
         </select>
-        <button class="btn-secondary text-sm" @click="loadData">&#8635; Refresh</button>
+        <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="loadData">
+          Refresh
+        </AppButton>
       </div>
     </div>
 
-    <!-- API key missing -->
-    <AlertBanner
-      v-if="api.apiKeyMissing"
-      type="warning"
-      title="API key not configured"
-      description="Set NUXT_PUBLIC_DASHBOARD_API_KEY to connect to the live backend. Showing sample data."
-      :dismissible="false"
-    />
-
     <!-- Auth / fetch error -->
     <AlertBanner
-      v-else-if="fetchError"
+      v-if="fetchError"
       type="error"
       :title="fetchError"
       description="Check your API key and gateway connectivity."
     />
 
-    <!-- Sample data notice -->
-    <AlertBanner
-      v-else-if="usingSampleData"
-      type="info"
-      title="Showing sample data"
-      description="The /v1/ops/settlements endpoint is not yet available on the gateway. Live data will appear automatically once the endpoint is deployed."
-    />
-
-    <!-- Loading -->
-    <div v-if="loading" class="flex items-center justify-center py-16">
-      <LoadingSpinner />
-    </div>
+    <!-- Loading skeleton -->
+    <template v-if="loading">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <SkeletonLoader v-for="i in 4" :key="i" variant="card" height="80px" />
+      </div>
+      <div class="space-y-4">
+        <SkeletonLoader v-for="i in 2" :key="'t' + i" variant="card" height="240px" />
+      </div>
+    </template>
 
     <template v-else-if="report">
       <!-- Totals banner -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 animate-fade-in">
         <div class="card p-4">
           <p class="text-xs text-surface-500 uppercase tracking-wider">Period</p>
           <p class="text-sm font-semibold text-surface-200 mt-1">{{ formatPeriod(report.period_start, report.period_end) }}</p>
@@ -68,7 +58,7 @@
       </div>
 
       <!-- Per-tenant settlement cards -->
-      <div class="space-y-4">
+      <div class="space-y-4 animate-fade-in">
         <div
           v-for="tenant in report.tenants"
           :key="tenant.tenant_id"
@@ -128,11 +118,11 @@
           <!-- Corridor breakdown -->
           <div class="border-t border-surface-800">
             <button
-              class="w-full flex items-center justify-between px-5 py-3 text-xs text-surface-400 hover:bg-surface-800/40 transition-colors"
+              class="w-full flex items-center justify-between px-5 py-3 text-xs text-surface-400 hover:bg-surface-800/40 transition-colors focus-ring"
               @click="toggleTenant(tenant.tenant_id)"
             >
               <span>{{ tenant.legs.length }} corridor{{ tenant.legs.length !== 1 ? 's' : '' }}</span>
-              <span>{{ expandedTenants.includes(tenant.tenant_id) ? '&#9650; Hide' : '&#9660; Show breakdown' }}</span>
+              <span class="inline-flex items-center gap-1"><Icon :name="expandedTenants.includes(tenant.tenant_id) ? 'chevron-up' : 'chevron-down'" :size="12" /> {{ expandedTenants.includes(tenant.tenant_id) ? 'Hide' : 'Show breakdown' }}</span>
             </button>
 
             <div v-if="expandedTenants.includes(tenant.tenant_id)" class="overflow-x-auto border-t border-surface-800">
@@ -177,22 +167,24 @@
             <input
               v-model="paymentRefs[tenant.tenant_id]"
               class="input text-xs flex-1"
-              :placeholder="`Payment ref for ${tenant.tenant_name}…`"
+              :placeholder="`Payment ref for ${tenant.tenant_name}...`"
             />
-            <button
-              class="btn-primary text-xs px-3 py-1.5"
-              :disabled="payingTenant === tenant.tenant_id || !paymentRefs[tenant.tenant_id]"
+            <AppButton
+              variant="primary"
+              size="sm"
+              icon="check"
+              :loading="payingTenant === tenant.tenant_id"
+              :disabled="!paymentRefs[tenant.tenant_id]"
               @click="markPaid(tenant.tenant_id)"
             >
-              <span v-if="payingTenant === tenant.tenant_id">Processing…</span>
-              <span v-else>&#10003; Mark paid</span>
-            </button>
+              {{ payingTenant === tenant.tenant_id ? 'Processing...' : 'Mark paid' }}
+            </AppButton>
           </div>
 
           <!-- Paid indicator -->
           <div v-else-if="tenant.payment_status === 'PAID'" class="border-t border-surface-800 px-5 py-3">
             <p class="text-xs text-emerald-400">
-              &#10003; Paid — ref: <span class="font-mono">{{ tenant.payment_ref ?? 'n/a' }}</span>
+              <Icon name="check" :size="14" class="inline-block mr-1" /> Paid — ref: <span class="font-mono">{{ tenant.payment_ref ?? 'n/a' }}</span>
             </p>
           </div>
         </div>
@@ -201,7 +193,7 @@
 
     <EmptyState
       v-else
-      icon="&#9884;"
+      icon="layers"
       title="No settlement data"
       description="Select a period or refresh to load settlement data."
     />
@@ -219,7 +211,6 @@ const toast = useToast()
 const report = ref<SettlementReport | null>(null)
 const loading = ref(true)
 const fetchError = ref<string | null>(null)
-const usingSampleData = ref(false)
 const period = ref('current')
 // Vue 3 reactivity does not track Set mutations; use a plain ref<string[]> instead.
 const expandedTenants = ref<string[]>([])
@@ -231,7 +222,6 @@ const payingTenant = ref<string | null>(null)
 async function loadData() {
   loading.value = true
   fetchError.value = null
-  usingSampleData.value = false
   try {
     report.value = await api.getSettlementReport(period.value)
   } catch (err: any) {
@@ -239,8 +229,8 @@ async function loadData() {
     if (status === 401 || status === 403) {
       fetchError.value = 'Authentication failed — check your API key.'
     } else {
-      report.value = generateSampleReport()
-      usingSampleData.value = true
+      fetchError.value = `Failed to load settlement data: ${err?.message || 'unknown error'}`
+      report.value = null
     }
   } finally {
     loading.value = false
@@ -260,13 +250,7 @@ async function markPaid(tenantId: string) {
     if (status === 401 || status === 403) {
       toast.error('Authentication failed — check your API key.')
     } else {
-      // Optimistically update local state since the ops endpoint may not be live yet
-      const tenant = report.value?.tenants.find(t => t.tenant_id === tenantId)
-      if (tenant) {
-        tenant.payment_status = 'PAID'
-        tenant.payment_ref = ref
-      }
-      toast.success('Settlement marked as paid')
+      toast.error(`Failed to mark settlement as paid: ${err?.data?.message || err?.message || 'Server error. Please retry.'}`)
     }
   } finally {
     payingTenant.value = null
@@ -316,86 +300,6 @@ function formatPeriod(start: string, end: string) {
   const s = new Date(start).toLocaleDateString()
   const e = new Date(end).toLocaleDateString()
   return `${s} – ${e}`
-}
-
-// ── Sample data ────────────────────────────────────────────────────────────
-
-function generateSampleReport(): SettlementReport {
-  const now = new Date()
-  const weekAgo = new Date(now.getTime() - 7 * 86_400_000)
-  const tomorrow = new Date(now.getTime() + 86_400_000)
-
-  return {
-    period_start: weekAgo.toISOString(),
-    period_end: now.toISOString(),
-    generated_at: now.toISOString(),
-    total_volume_usd: '4823910.50',
-    total_fee_revenue_usd: '18293.84',
-    tenants: [
-      {
-        tenant_id: 'a0000000-0000-0000-0000-000000000001',
-        tenant_name: 'Lemfi',
-        legs: [
-          {
-            corridor: 'GBP-NGN',
-            source_currency: 'GBP',
-            dest_currency: 'NGN',
-            total_sent: '3,241,800.00 GBP',
-            total_received: '4,987,548,000.00 NGN',
-            net_usd: '8124.50',
-            transfer_count: 12847,
-            fee_revenue_usd: '11284.92',
-          },
-          {
-            corridor: 'EUR-NGN',
-            source_currency: 'EUR',
-            dest_currency: 'NGN',
-            total_sent: '218,400.00 EUR',
-            total_received: '394,904,400.00 NGN',
-            net_usd: '-2340.00',
-            transfer_count: 1923,
-            fee_revenue_usd: '1432.10',
-          },
-        ],
-        total_receivable_usd: '9557.00',
-        total_payable_usd: '1432.50',
-        net_position_usd: '8124.50',
-        due_date: tomorrow.toISOString(),
-        payment_status: 'PENDING',
-      },
-      {
-        tenant_id: 'b0000000-0000-0000-0000-000000000002',
-        tenant_name: 'Fincra',
-        legs: [
-          {
-            corridor: 'NGN-GBP',
-            source_currency: 'NGN',
-            dest_currency: 'GBP',
-            total_sent: '2,847,600,000.00 NGN',
-            total_received: '1,780,875.00 GBP',
-            net_usd: '-1840.00',
-            transfer_count: 9214,
-            fee_revenue_usd: '4820.44',
-          },
-          {
-            corridor: 'NGN-USD',
-            source_currency: 'NGN',
-            dest_currency: 'USD',
-            total_sent: '622,400,000.00 NGN',
-            total_received: '405,562.00 USD',
-            net_usd: '752.84',
-            transfer_count: 2104,
-            fee_revenue_usd: '756.38',
-          },
-        ],
-        total_receivable_usd: '5576.82',
-        total_payable_usd: '4823.98',
-        net_position_usd: '-1087.16',
-        due_date: new Date(now.getTime() - 86_400_000).toISOString(),
-        payment_status: 'OVERDUE',
-      },
-    ],
-  }
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
