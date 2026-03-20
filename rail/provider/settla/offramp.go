@@ -59,9 +59,12 @@ type OffRampProvider struct {
 	registry  *blockchain.Registry
 	walletMgr *wallet.Manager
 	logger    *slog.Logger
+	ctx       context.Context    // parent context for background goroutines
+	cancel    context.CancelFunc // cancels ctx on shutdown
 
-	mu  sync.RWMutex
-	txs map[string]*offRampRecord
+	mu      sync.RWMutex
+	txs     map[string]*offRampRecord
+	txByRef map[string]string // reference → txID for idempotent Execute
 }
 
 // Compile-time interface check.
@@ -78,13 +81,60 @@ func NewOffRampProvider(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &OffRampProvider{
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &OffRampProvider{
 		fxOracle:  fxOracle,
 		fiatSim:   fiatSim,
 		registry:  registry,
 		walletMgr: walletMgr,
 		logger:    logger,
+		ctx:       ctx,
+		cancel:    cancel,
 		txs:       make(map[string]*offRampRecord),
+		txByRef:   make(map[string]string),
+	}
+	go p.cleanupLoop()
+	return p
+}
+
+// Close cancels the provider's background context and stops cleanup.
+// It should be called when the provider is no longer needed.
+func (p *OffRampProvider) Close() {
+	p.cancel()
+}
+
+// cleanupLoop periodically removes completed/failed transactions older than 1 hour.
+func (p *OffRampProvider) cleanupLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.cleanupOldTransactions()
+		}
+	}
+}
+
+// cleanupOldTransactions removes transactions in terminal states (COMPLETED or
+// FAILED) that are older than 1 hour.
+func (p *OffRampProvider) cleanupOldTransactions() {
+	cutoff := time.Now().UTC().Add(-1 * time.Hour)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, rec := range p.txs {
+		if (rec.Status == offRampStatusCompleted || rec.Status == offRampStatusFailed) && rec.UpdatedAt.Before(cutoff) {
+			delete(p.txs, id)
+			// Clean up reverse reference mapping.
+			for ref, txID := range p.txByRef {
+				if txID == id {
+					delete(p.txByRef, ref)
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -153,6 +203,19 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 	}
 	if req.Amount.IsZero() || req.Amount.IsNegative() {
 		return nil, fmt.Errorf("settla-offramp: amount must be positive")
+	}
+
+	// Idempotency: if we've already processed this reference, return the existing tx.
+	if req.Reference != "" {
+		p.mu.RLock()
+		if existingTxID, ok := p.txByRef[req.Reference]; ok {
+			if existingRec, found := p.txs[existingTxID]; found {
+				snap := p.snapshot(existingRec)
+				p.mu.RUnlock()
+				return p.toProviderTx(snap), nil
+			}
+		}
+		p.mu.RUnlock()
 	}
 
 	// PROV-8: Fetch a fresh rate and reject if it has moved more than the allowed slippage.
@@ -233,7 +296,7 @@ func (p *OffRampProvider) runOffRamp(txID string, req domain.OffRampRequest) {
 
 	// Step 2: Simulate crypto receipt. In testnet mode we verify the system
 	// wallet has non-zero balance; if not accessible we simulate receipt directly.
-	txHash, explorerURL := p.verifyCryptoReceipt(req.FromCurrency, chain, req.Amount)
+	txHash, explorerURL := p.verifyCryptoReceipt(p.ctx, req.FromCurrency, chain, req.Amount)
 
 	p.mu.Lock()
 	if rec, ok := p.txs[txID]; ok {
@@ -255,7 +318,7 @@ func (p *OffRampProvider) runOffRamp(txID string, req domain.OffRampRequest) {
 	p.updateStatus(txID, offRampStatusPaying)
 
 	payoutRef := p.buildPayoutRef(req)
-	fiatTx, err := p.fiatSim.SimulatePayout(context.Background(), req.Amount, string(req.ToCurrency), payoutRef)
+	fiatTx, err := p.fiatSim.SimulatePayout(p.ctx, req.Amount, string(req.ToCurrency), payoutRef)
 	if err != nil {
 		p.logger.Error("settla-offramp: fiat payout failed",
 			"tx_id", txID,
@@ -290,9 +353,14 @@ func (p *OffRampProvider) runOffRamp(txID string, req domain.OffRampRequest) {
 // verifyCryptoReceipt checks the system wallet balance on-chain. If the check
 // fails (testnet RPC unavailable, insufficient balance, etc.), we simulate
 // receipt with a fixed hash so the flow can still complete end-to-end.
-func (p *OffRampProvider) verifyCryptoReceipt(token domain.Currency, chain string, amount decimal.Decimal) (txHash, explorerURL string) {
+func (p *OffRampProvider) verifyCryptoReceipt(ctx context.Context, token domain.Currency, chain string, amount decimal.Decimal) (txHash, explorerURL string) {
 	// Simulate receipt delay (1–3s to model on-chain confirmation wait).
-	time.Sleep(1500 * time.Millisecond)
+	// Use select so we can bail out early if the context is cancelled.
+	select {
+	case <-time.After(1500 * time.Millisecond):
+	case <-ctx.Done():
+		return "", ""
+	}
 
 	var client domain.BlockchainClient
 	var err error
@@ -305,7 +373,9 @@ func (p *OffRampProvider) verifyCryptoReceipt(token domain.Currency, chain strin
 		depositAddr, addrErr := p.systemWalletAddress(chain)
 		if addrErr == nil {
 			tokenContract := tokenContractForChain(string(token), chain)
-			balance, balErr := client.GetBalance(context.Background(), depositAddr, tokenContract)
+			balCtx, balCancel := context.WithTimeout(p.ctx, 30*time.Second)
+			defer balCancel()
+			balance, balErr := client.GetBalance(balCtx, depositAddr, tokenContract)
 			if balErr == nil && balance.GreaterThanOrEqual(amount) {
 				// Real on-chain receipt confirmed — return a synthetic hash to
 				// represent the receipt event (no on-chain tx initiated by us here).
@@ -324,7 +394,7 @@ func (p *OffRampProvider) verifyCryptoReceipt(token domain.Currency, chain strin
 // terminal state (COMPLETED or FAILED). Returns nil on COMPLETED.
 // Uses exponential backoff via waitWithBackoff with a 5-minute max wait.
 func (p *OffRampProvider) waitForFiatPayout(fiatTxID string) error {
-	return waitWithBackoff(context.Background(), func() (bool, error) {
+	return waitWithBackoff(p.ctx, func() (bool, error) {
 		fiatTx, err := p.fiatSim.GetStatus(fiatTxID)
 		if err != nil {
 			return false, fmt.Errorf("settla-offramp: polling fiat status: %w", err)
@@ -344,6 +414,9 @@ func (p *OffRampProvider) waitForFiatPayout(fiatTxID string) error {
 func (p *OffRampProvider) store(rec *offRampRecord) {
 	p.mu.Lock()
 	p.txs[rec.ID] = rec
+	if rec.PayoutRef != "" {
+		p.txByRef[rec.PayoutRef] = rec.ID
+	}
 	p.mu.Unlock()
 }
 
@@ -398,9 +471,11 @@ func (p *OffRampProvider) toProviderTx(rec *offRampRecord) *domain.ProviderTx {
 		status = "COMPLETED"
 	}
 
+	sysAddr, _ := p.systemWalletAddress(rec.Chain)
 	metadata := map[string]string{
 		"chain":           rec.Chain,
 		"deposit_address": rec.DepositAddress,
+		"from_address":    sysAddr, // system wallet that receives the crypto
 		"from_currency":   rec.FromCurrency,
 		"to_currency":     rec.ToCurrency,
 	}

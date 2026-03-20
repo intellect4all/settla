@@ -251,6 +251,11 @@ func (c *Client) SendTransaction(ctx context.Context, req domain.TxRequest) (*do
 		return nil, err
 	}
 
+	if c.signer == nil {
+		c.nonces.Reset(fromAddr)
+		return nil, fmt.Errorf("settla-ethereum: cannot sign tx on %s: no signer configured (call NewClient with a non-nil Signer)", c.config.ChainName)
+	}
+
 	signedTx, err := c.signer.SignTx(ctx, fromAddr, tx, c.chainID)
 	if err != nil {
 		c.nonces.Reset(fromAddr)
@@ -273,11 +278,14 @@ func (c *Client) SendTransaction(ctx context.Context, req domain.TxRequest) (*do
 		"amount", req.Amount.String(),
 	)
 
-	feeWei := new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(signedTx.Gas()))
+	// Fee estimate: use gas limit × gas price as upper bound. The actual fee
+	// (gas used × effective gas price) is only known after mining; GetTransaction
+	// returns the precise fee from the receipt.
+	estimatedFeeWei := new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(signedTx.Gas()))
 	return &domain.ChainTx{
 		Hash:   txHash,
 		Status: TxStatusPending,
-		Fee:    fromOnChainAmount(feeWei, 18),
+		Fee:    fromOnChainAmount(estimatedFeeWei, 18),
 	}, nil
 }
 

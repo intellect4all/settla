@@ -188,7 +188,7 @@ func BenchmarkScoreRoute(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = router.scoreRoute(context.Background(), route, amount)
+		_, _ = router.scoreRoute(context.Background(), route, amount)
 	}
 }
 
@@ -231,7 +231,7 @@ func BenchmarkScoreRouteConcurrent(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = router.scoreRoute(context.Background(), route, amount)
+			_, _ = router.scoreRoute(context.Background(), route, amount)
 		}
 	})
 }
@@ -377,7 +377,7 @@ func BenchmarkScoreRouteVariations(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = router.scoreRoute(context.Background(), route, tc.amount)
+				_, _ = router.scoreRoute(context.Background(), route, tc.amount)
 			}
 		})
 	}
