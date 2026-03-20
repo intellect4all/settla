@@ -107,9 +107,12 @@ type OnRampProvider struct {
 	walletMgr  walletManagerIface
 	spreadBPS  decimal.Decimal // spread in basis points (e.g. 50 = 0.50%)
 	logger     *slog.Logger
+	ctx        context.Context    // parent context for background goroutines
+	cancel     context.CancelFunc // cancels ctx on shutdown
 
-	mu  sync.RWMutex
-	txs map[string]*onRampTx
+	mu      sync.RWMutex
+	txs     map[string]*onRampTx
+	txByRef map[string]string // reference → txID for idempotent Execute
 }
 
 // Compile-time interface check.
@@ -149,14 +152,61 @@ func NewOnRampProvider(
 	if cfg.SpreadBPS <= 0 {
 		cfg.SpreadBPS = 50
 	}
-	return &OnRampProvider{
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &OnRampProvider{
 		fxOracle:  fxOracle,
 		fiatSim:   fiatSim,
 		chainReg:  chainReg,
 		walletMgr: walletMgr,
 		spreadBPS: decimal.NewFromInt(int64(cfg.SpreadBPS)),
 		logger:    cfg.Logger,
+		ctx:       ctx,
+		cancel:    cancel,
 		txs:       make(map[string]*onRampTx),
+		txByRef:   make(map[string]string),
+	}
+	go p.cleanupLoop()
+	return p
+}
+
+// Close cancels the provider's background context and stops cleanup.
+// It should be called when the provider is no longer needed.
+func (p *OnRampProvider) Close() {
+	p.cancel()
+}
+
+// cleanupLoop periodically removes completed/failed transactions older than 1 hour.
+func (p *OnRampProvider) cleanupLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.cleanupOldTransactions()
+		}
+	}
+}
+
+// cleanupOldTransactions removes transactions in terminal states (COMPLETED or
+// FAILED) that are older than 1 hour.
+func (p *OnRampProvider) cleanupOldTransactions() {
+	cutoff := time.Now().UTC().Add(-1 * time.Hour)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, tx := range p.txs {
+		if (tx.status == onRampStatusCompleted || tx.status == onRampStatusFailed) && tx.updatedAt.Before(cutoff) {
+			delete(p.txs, id)
+			// Clean up reverse reference mapping.
+			for ref, txID := range p.txByRef {
+				if txID == id {
+					delete(p.txByRef, ref)
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -226,6 +276,17 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 		return nil, fmt.Errorf("settla-onramp: unsupported stablecoin %s", req.ToCurrency)
 	}
 
+	// Idempotency: if we've already processed this reference, return the existing tx.
+	p.mu.RLock()
+	if existingTxID, ok := p.txByRef[req.Reference]; ok {
+		if existingTx, found := p.txs[existingTxID]; found {
+			snap := *existingTx
+			p.mu.RUnlock()
+			return p.toProviderTx(&snap), nil
+		}
+	}
+	p.mu.RUnlock()
+
 	// Compute crypto amount using FX rate with spread applied.
 	rate, err := p.fxOracle.GetRate(string(req.FromCurrency), "USD")
 	if err != nil {
@@ -275,6 +336,7 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 
 	p.mu.Lock()
 	p.txs[txID] = tx
+	p.txByRef[req.Reference] = txID
 	snap := *tx // snapshot under lock, before background goroutine can modify
 	p.mu.Unlock()
 
@@ -339,7 +401,9 @@ func (p *OnRampProvider) runOnRamp(txID string) {
 		return
 	}
 
-	chainTx, err := client.SendTransaction(context.Background(), domain.TxRequest{
+	ctx, cancel := context.WithTimeout(p.ctx, 2*time.Minute)
+	defer cancel()
+	chainTx, err := client.SendTransaction(ctx, domain.TxRequest{
 		From:   tx.fromAddr,
 		To:     tx.toAddr,
 		Token:  tx.token,
@@ -377,7 +441,7 @@ func (p *OnRampProvider) runOnRamp(txID string) {
 // a terminal status (COLLECTED or FAILED). Uses exponential backoff via waitWithBackoff.
 func (p *OnRampProvider) waitForFiatCollection(fiatTxID string) (*FiatTransaction, error) {
 	var result *FiatTransaction
-	err := waitWithBackoff(context.Background(), func() (bool, error) {
+	err := waitWithBackoff(p.ctx, func() (bool, error) {
 		fiatTx, err := p.fiatSim.GetStatus(fiatTxID)
 		if err != nil {
 			return false, fmt.Errorf("settla-onramp: polling fiat status: %w", err)
@@ -453,8 +517,8 @@ func (p *OnRampProvider) toProviderTx(tx *onRampTx) *domain.ProviderTx {
 		"fiat_tx_id":   tx.fiatTxID,
 		"fiat_ref":     tx.fiatRef,
 		"chain":        tx.chain,
-		"from_address": tx.toAddr, // system wallet address
-		"to_address":   tx.toAddr,
+		"from_address": tx.fromAddr, // system wallet address (sender)
+		"to_address":   tx.toAddr,   // recipient address
 		"token":        tx.token,
 	}
 	if tx.explorerURL != "" {

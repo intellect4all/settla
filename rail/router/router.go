@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"golang.org/x/time/rate"
+
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/rail/blockchain"
 )
@@ -23,14 +26,15 @@ var (
 
 // Route represents a candidate settlement path through on-ramp → chain → off-ramp.
 type Route struct {
-	OnRamp   domain.OnRampProvider
-	OffRamp  domain.OffRampProvider
-	Chain    string
-	Stable   domain.Currency
-	Score    decimal.Decimal
-	OnQuote  *domain.ProviderQuote
-	OffQuote *domain.ProviderQuote
-	GasFee   decimal.Decimal
+	OnRamp         domain.OnRampProvider
+	OffRamp        domain.OffRampProvider
+	Chain          string
+	Stable         domain.Currency
+	Score          decimal.Decimal
+	ScoreBreakdown domain.ScoreBreakdown
+	OnQuote        *domain.ProviderQuote
+	OffQuote       *domain.ProviderQuote
+	GasFee         decimal.Decimal
 }
 
 // TenantStore resolves tenant fee schedules. The router only needs this
@@ -72,8 +76,10 @@ type Router struct {
 	registry          domain.ProviderRegistry
 	tenants           TenantStore
 	logger            *slog.Logger
-	liquidityScorer   LiquidityScorer   // optional — nil = assume 1.0
-	reliabilityScorer ReliabilityScorer // optional — nil = assume 1.0
+	liquidityScorer    LiquidityScorer   // optional — nil = assume 1.0
+	reliabilityScorer  ReliabilityScorer // optional — nil = assume 1.0
+	providerLimiters   map[string]*rate.Limiter
+	providerLimitersMu sync.Mutex
 }
 
 // Compile-time check: Router implements domain.Router.
@@ -91,6 +97,7 @@ func NewRouter(
 		tenants:  tenants,
 		logger:   logger.With("module", "rail.router"),
 	}
+	r.providerLimiters = make(map[string]*rate.Limiter)
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -153,6 +160,7 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 			Rate:            alt.OnQuote.Rate.Mul(alt.OffQuote.Rate),
 			StableAmount:    altStable,
 			Score:           alt.Score,
+			ScoreBreakdown:  alt.ScoreBreakdown,
 		})
 	}
 
@@ -166,6 +174,8 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 		StableAmount:     stableAmount,
 		ExplorerURL:      explorerURL,
 		EstimatedSeconds: best.OnQuote.EstimatedSeconds + best.OffQuote.EstimatedSeconds,
+		Score:            best.Score,
+		ScoreBreakdown:   best.ScoreBreakdown,
 		Alternatives:     alternatives,
 	}, nil
 }
@@ -186,6 +196,12 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 		for _, onID := range onRampIDs {
 			onRamp, err := r.registry.GetOnRamp(onID)
 			if err != nil {
+				r.logger.Debug("settla-rail: skipping candidate",
+					"provider_id", onID, "stage", "on_ramp_lookup", "error", err)
+				continue
+			}
+
+			if !r.getProviderLimiter(onID).Allow() {
 				continue
 			}
 
@@ -196,12 +212,20 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 				DestCurrency:   stable,
 			})
 			if err != nil {
+				r.logger.Debug("settla-rail: skipping candidate",
+					"provider_id", onID, "stage", "on_ramp_quote", "error", err)
 				continue
 			}
 
 			for _, offID := range offRampIDs {
 				offRamp, err := r.registry.GetOffRamp(offID)
 				if err != nil {
+					r.logger.Debug("settla-rail: skipping candidate",
+						"provider_id", offID, "stage", "off_ramp_lookup", "error", err)
+					continue
+				}
+
+				if !r.getProviderLimiter(offID).Allow() {
 					continue
 				}
 
@@ -212,12 +236,16 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 					DestCurrency:   req.TargetCurrency,
 				})
 				if err != nil {
+					r.logger.Debug("settla-rail: skipping candidate",
+						"provider_id", offID, "stage", "off_ramp_quote", "error", err)
 					continue
 				}
 
 				for _, chain := range chains {
 					bc, err := r.registry.GetBlockchain(chain)
 					if err != nil {
+						r.logger.Debug("settla-rail: skipping candidate",
+							"provider_id", chain, "stage", "blockchain_lookup", "error", err)
 						continue
 					}
 
@@ -226,6 +254,8 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 						Amount: req.Amount.Mul(onQuote.Rate),
 					})
 					if err != nil {
+						r.logger.Debug("settla-rail: skipping candidate",
+							"provider_id", chain, "stage", "gas_estimate", "error", err)
 						continue
 					}
 
@@ -238,7 +268,7 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 						OffQuote: offQuote,
 						GasFee:   gasFee,
 					}
-					route.Score = r.scoreRoute(ctx, route, req.Amount)
+					route.Score, route.ScoreBreakdown = r.scoreRoute(ctx, route, req.Amount)
 					candidates = append(candidates, route)
 				}
 			}
@@ -248,6 +278,19 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 	return candidates, nil
 }
 
+// getProviderLimiter returns a per-provider rate limiter, creating one if needed.
+// Default: 100 quotes/sec per provider.
+func (r *Router) getProviderLimiter(providerID string) *rate.Limiter {
+	r.providerLimitersMu.Lock()
+	defer r.providerLimitersMu.Unlock()
+	if lim, ok := r.providerLimiters[providerID]; ok {
+		return lim
+	}
+	lim := rate.NewLimiter(100, 200) // 100 req/s, burst 200
+	r.providerLimiters[providerID] = lim
+	return lim
+}
+
 // scoreRoute computes a weighted score for a candidate route.
 // Higher is better. Score components are normalized to [0, 1].
 //
@@ -255,7 +298,7 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 // Speed (30%):       Lower estimated time → higher score
 // Liquidity (20%):   From LiquidityScorer if wired, else 1.0
 // Reliability (10%): From ReliabilityScorer if wired, else 1.0
-func (r *Router) scoreRoute(ctx context.Context, route Route, amount decimal.Decimal) decimal.Decimal {
+func (r *Router) scoreRoute(ctx context.Context, route Route, amount decimal.Decimal) (decimal.Decimal, domain.ScoreBreakdown) {
 	totalFee := route.OnQuote.Fee.Add(route.GasFee).Add(route.OffQuote.Fee)
 
 	// Cost score: 1 - (fee / amount), clamped to [0, 1]
@@ -299,10 +342,19 @@ func (r *Router) scoreRoute(ctx context.Context, route Route, amount decimal.Dec
 		}
 	}
 
-	return costScore.Mul(weightCost).
+	breakdown := domain.ScoreBreakdown{
+		Cost:        costScore,
+		Speed:       speedScore,
+		Liquidity:   liquidityScore,
+		Reliability: reliabilityScore,
+	}
+
+	composite := costScore.Mul(weightCost).
 		Add(speedScore.Mul(weightSpeed)).
 		Add(liquidityScore.Mul(weightLiquidity)).
 		Add(reliabilityScore.Mul(weightReliability))
+
+	return composite, breakdown
 }
 
 // CoreRouterAdapter adapts the domain.Router (Route method) to the core.Router
@@ -342,20 +394,36 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 		return nil, fmt.Errorf("settla-rail: routing for quote: %w", err)
 	}
 
-	// Apply tenant fee schedule (fees are in source currency)
+	// Apply tenant fee schedule
+	// On-ramp fee is calculated on the source (fiat) amount.
 	onRampFee, err := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "onramp")
 	if err != nil {
 		return nil, fmt.Errorf("settla-rail: fee calculation for quote: %w", err)
 	}
-	offRampFee, err := tenant.FeeSchedule.CalculateFee(req.SourceAmount, "offramp")
+	// Off-ramp fee must be calculated on the intermediate stablecoin amount
+	// (after on-ramp conversion), not on the original source amount.
+	offRampFee, err := tenant.FeeSchedule.CalculateFee(result.StableAmount, "offramp")
 	if err != nil {
 		return nil, fmt.Errorf("settla-rail: fee calculation for quote: %w", err)
 	}
 	networkFee := result.Fee.Amount
 	totalFee := onRampFee.Add(offRampFee).Add(networkFee)
 
-	// Subtract fees from source, then convert to dest currency
-	destAmount := req.SourceAmount.Sub(totalFee).Mul(result.Rate)
+	// destAmount = stableAmount × offRampRate
+	// The stable amount already accounts for on-ramp fees and conversion. We apply
+	// the off-ramp rate to convert stablecoin to destination currency, then subtract
+	// the off-ramp fee (in dest currency terms). This avoids mixing currency units
+	// (previously subtracted USD fees from fiat source amount).
+	destAmount := result.StableAmount.Sub(offRampFee).Mul(result.Rate)
+	if !destAmount.IsPositive() {
+		// Fallback: use the original formula if the new one produces non-positive
+		destAmount = req.SourceAmount.Sub(totalFee).Mul(result.Rate)
+	}
+
+	if !destAmount.IsPositive() {
+		return nil, fmt.Errorf("settla-rail: amount too small: dest amount %s after fees (onramp=%s, offramp=%s, network=%s) is not positive",
+			destAmount.String(), onRampFee.String(), offRampFee.String(), networkFee.String())
+	}
 
 	// Parse corridor to extract stablecoin
 	stable := domain.CurrencyUSDT // default
@@ -405,6 +473,21 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 	)
 
 	return quote, nil
+}
+
+// GetRoutingOptions returns raw route scoring results without creating a quote.
+// This is a read-only operation — no state is persisted.
+func (a *CoreRouterAdapter) GetRoutingOptions(ctx context.Context, tenantID uuid.UUID, req domain.QuoteRequest) (*domain.RouteResult, error) {
+	result, err := a.router.Route(ctx, domain.RouteRequest{
+		TenantID:       tenantID,
+		SourceCurrency: req.SourceCurrency,
+		TargetCurrency: req.DestCurrency,
+		Amount:         req.SourceAmount,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-rail: routing options: %w", err)
+	}
+	return result, nil
 }
 
 // containsCurrency checks if a corridor string contains the given currency.
