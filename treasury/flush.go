@@ -103,6 +103,7 @@ func (m *Manager) flushOnce() {
 
 	flushed := 0
 	hadError := false
+	var failedPositionIDs []string
 	for _, ps := range dirty {
 		balance := fromMicro(ps.balanceMicro.Load())
 		// Flush only committed locked — NOT reserved. Reserved amounts are
@@ -113,9 +114,12 @@ func (m *Manager) flushOnce() {
 
 		if err := m.store.UpdatePosition(ctx, ps.ID, balance, locked); err != nil {
 			hadError = true
+			failedPositionIDs = append(failedPositionIDs, ps.ID.String())
 			m.logger.Error("settla-treasury: flush position update failed",
 				"position_id", ps.ID,
 				"tenant_id", ps.TenantID,
+				"currency", ps.Currency,
+				"location", ps.Location,
 				"error", err,
 			)
 			// Don't clear dirty flag — retry next interval.
@@ -144,17 +148,32 @@ func (m *Manager) flushOnce() {
 	}
 
 	// Track consecutive flush failures for persistent DB outage detection.
+	// Store failing position IDs so Reserve can include them in rejection errors.
 	if hadError {
+		m.failedPositionsMu.Lock()
+		m.failedPositionIDs = failedPositionIDs
+		m.failedPositionsMu.Unlock()
+
 		failures := m.consecutiveFlushFailures.Add(1)
 		if failures >= 5 {
 			m.logger.Error("settla-treasury: persistent flush failures — DB may be unavailable",
 				"consecutive_failures", failures,
 				"dirty_positions", len(dirty),
 				"flushed", flushed,
+				"failed_positions", failedPositionIDs,
 			)
+			if m.metrics != nil {
+				m.metrics.TreasuryConsecutiveFlushFailures.Set(float64(failures))
+			}
 		}
 	} else {
+		m.failedPositionsMu.Lock()
+		m.failedPositionIDs = nil
+		m.failedPositionsMu.Unlock()
 		m.consecutiveFlushFailures.Store(0)
+		if m.metrics != nil {
+			m.metrics.TreasuryConsecutiveFlushFailures.Set(0)
+		}
 	}
 
 	if m.metrics != nil {

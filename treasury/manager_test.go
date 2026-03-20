@@ -694,7 +694,7 @@ func TestMicroConversion(t *testing.T) {
 		{"0.000001", 1},
 		{"1234.567890", 1_234_567_890},
 		{"0", 0},
-		{"9200000000000", 9_200_000_000_000_000_000}, // ~$9.2T, within int64 range
+		{"9000000000000", 9_000_000_000_000_000_000}, // ~$9T, within safe range
 	}
 
 	for _, tt := range tests {
@@ -710,6 +710,29 @@ func TestMicroConversion(t *testing.T) {
 			t.Errorf("fromMicro(toMicro(%s)) = %s, want %s", tt.input, back, d.Truncate(6))
 		}
 	}
+
+	// Test overflow validation
+	t.Run("overflow panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("toMicro with overflow amount did not panic")
+			}
+		}()
+		d, _ := decimal.NewFromString("9300000000000") // ~$9.3T, exceeds max
+		toMicro(d)
+	})
+
+	// Test validateMicroRange
+	t.Run("validateMicroRange", func(t *testing.T) {
+		d, _ := decimal.NewFromString("9300000000000")
+		if err := validateMicroRange(d); err == nil {
+			t.Errorf("validateMicroRange should return error for overflow amount")
+		}
+		d2, _ := decimal.NewFromString("1000000")
+		if err := validateMicroRange(d2); err != nil {
+			t.Errorf("validateMicroRange should not return error for normal amount: %v", err)
+		}
+	})
 }
 
 func TestCommitReservationDoubleCommitReturnsError(t *testing.T) {
@@ -1225,6 +1248,59 @@ func TestCrashRecoveryAfterRelease(t *testing.T) {
 	expected := decimal.NewFromInt(8000)
 	if !pos.Available().Equal(expected) {
 		t.Errorf("after crash recovery expected available %s, got %s", expected, pos.Available())
+	}
+}
+
+// TestUpdateBalanceRejectsNegativeAvailable verifies that UpdateBalance rejects
+// a new balance that would cause Available() to go negative (below locked+reserved).
+func TestUpdateBalanceRejectsNegativeAvailable(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			{
+				ID:         uuid.New(),
+				TenantID:   tenantID,
+				Currency:   domain.CurrencyGBP,
+				Location:   "bank:gbp",
+				Balance:    decimal.NewFromInt(10_000),
+				Locked:     decimal.Zero,
+				MinBalance: decimal.Zero,
+			},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(store, nil, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+	m.Start()
+	defer m.Stop()
+
+	// Reserve 5000 GBP
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(5000), uuid.New())
+	if err != nil {
+		t.Fatalf("Reserve failed: %v", err)
+	}
+
+	// Commit 3000 of the reserved amount
+	commitRef := uuid.New()
+	err = m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(3000), commitRef)
+	if err != nil {
+		// If reserve fails, skip this part — we still have 5000 reserved
+	}
+
+	// Try to set balance below committed amount — should fail
+	err = m.UpdateBalance(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100))
+	if err == nil {
+		t.Fatal("expected UpdateBalance to reject balance below committed amount, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "below committed amount") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// Set balance above committed amount — should succeed
+	err = m.UpdateBalance(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(50_000))
+	if err != nil {
+		t.Fatalf("expected UpdateBalance to succeed with balance above committed amount, got: %v", err)
 	}
 }
 

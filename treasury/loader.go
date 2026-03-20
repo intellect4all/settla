@@ -13,23 +13,30 @@ import (
 // operations are replayed against the in-memory state. The idempotency map
 // prevents double-application if NATS also redelivers the same operations.
 func (m *Manager) LoadPositions(ctx context.Context) error {
-	start := time.Now()
+	totalStart := time.Now()
 
+	// Phase 1: Load positions from DB.
+	loadStart := time.Now()
 	positions, err := m.store.LoadAllPositions(ctx)
 	if err != nil {
 		return fmt.Errorf("settla-treasury: loading positions from store: %w", err)
 	}
+	loadDuration := time.Since(loadStart)
 
-	// Clear idempotency map on reload (fresh start).
-	m.idempotencyMu.Lock()
-	m.idempotencyMap = make(map[string]time.Time)
-	m.idempotencyMu.Unlock()
+	// Clear idempotency shards on reload (fresh start).
+	for i := range m.idempotencyShards {
+		shard := &m.idempotencyShards[i]
+		shard.mu.Lock()
+		shard.items = make(map[string]time.Time)
+		shard.mu.Unlock()
+	}
 
 	for _, pos := range positions {
 		m.addPosition(pos)
 	}
 
-	// Replay uncommitted reserve ops from DB (crash recovery).
+	// Phase 2: Replay uncommitted reserve ops from DB (crash recovery).
+	replayStart := time.Now()
 	replayed := 0
 	if opStore, ok := m.store.(ReserveOpStore); ok {
 		ops, err := opStore.GetUncommittedOps(ctx)
@@ -51,11 +58,22 @@ func (m *Manager) LoadPositions(ctx context.Context) error {
 			}
 		}
 	}
+	replayDuration := time.Since(replayStart)
+
+	// Record recovery metrics.
+	if m.metrics != nil {
+		m.metrics.TreasuryRecoveryDuration.WithLabelValues("load_positions").Observe(loadDuration.Seconds())
+		m.metrics.TreasuryRecoveryDuration.WithLabelValues("replay_ops").Observe(replayDuration.Seconds())
+		m.metrics.TreasuryRecoveryDuration.WithLabelValues("total").Observe(time.Since(totalStart).Seconds())
+		m.metrics.TreasuryPositionsRecoveredTotal.Add(float64(len(positions)))
+	}
 
 	m.logger.Info("settla-treasury: loaded positions into memory",
 		"count", len(positions),
 		"replayed_ops", replayed,
-		"duration", time.Since(start),
+		"load_duration", loadDuration,
+		"replay_duration", replayDuration,
+		"total_duration", time.Since(totalStart),
 	)
 
 	return nil
