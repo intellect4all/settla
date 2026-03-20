@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import type {
   StatusCount, CorridorMetric, LatencyPercentiles,
   VolumeComparison, ActivityItem, TransferStatsBucket,
+  FeeBreakdownAnalytics, ProviderPerformance,
+  DepositAnalytics, ReconciliationSummary, ExportJob,
 } from '~/types'
 
 export const useAnalyticsStore = defineStore('analytics', {
@@ -28,6 +30,14 @@ export const useAnalyticsStore = defineStore('analytics', {
     // Activity feed
     activity: [] as ActivityItem[],
     activityLoading: false,
+
+    // Extended analytics
+    feeBreakdown: [] as FeeBreakdownAnalytics[],
+    totalFeesUsd: '0',
+    providerPerformance: [] as ProviderPerformance[],
+    depositAnalytics: { crypto: {} as DepositAnalytics, bank: {} as DepositAnalytics },
+    reconciliation: null as ReconciliationSummary | null,
+    exportJobs: [] as ExportJob[],
   }),
 
   getters: {
@@ -50,6 +60,16 @@ export const useAnalyticsStore = defineStore('analytics', {
     },
 
     topCorridors: (state) => state.corridors.slice(0, 5),
+
+    totalFees: (state) => state.totalFeesUsd,
+
+    topProviders: (state) =>
+      [...state.providerPerformance].sort((a, b) =>
+        parseFloat(b.total_volume) - parseFloat(a.total_volume),
+      ).slice(0, 5),
+
+    depositConversionRate: (state) =>
+      state.depositAnalytics?.crypto?.conversion_rate || '0',
   },
 
   actions: {
@@ -134,6 +154,66 @@ export const useAnalyticsStore = defineStore('analytics', {
       } finally {
         this.activityLoading = false
       }
+    },
+
+    async fetchFeeBreakdown() {
+      try {
+        const api = usePortalApi()
+        const result = await api.getFeeBreakdown(this.period)
+        this.feeBreakdown = result.entries
+        this.totalFeesUsd = result.total_fees_usd
+      } catch {
+        // Non-critical
+      }
+    },
+
+    async fetchProviderPerformance() {
+      try {
+        const api = usePortalApi()
+        const result = await api.getProviderPerformance(this.period)
+        this.providerPerformance = result.providers
+      } catch {
+        // Non-critical
+      }
+    },
+
+    async fetchDepositAnalytics() {
+      try {
+        const api = usePortalApi()
+        this.depositAnalytics = await api.getDepositAnalytics(this.period)
+      } catch {
+        // Non-critical
+      }
+    },
+
+    async fetchReconciliationSummary() {
+      try {
+        const api = usePortalApi()
+        this.reconciliation = await api.getReconciliationSummary()
+      } catch {
+        // Non-critical
+      }
+    },
+
+    async triggerExport(exportType: string, format = 'csv') {
+      const api = usePortalApi()
+      const result = await api.createExportJob({
+        export_type: exportType,
+        period: this.period,
+        format,
+      })
+      this.exportJobs.unshift(result.job)
+      return result.job
+    },
+
+    async pollExportJob(jobId: string) {
+      const api = usePortalApi()
+      const result = await api.getExportJob(jobId)
+      const idx = this.exportJobs.findIndex(j => j.id === jobId)
+      if (idx >= 0) {
+        this.exportJobs[idx] = result.job
+      }
+      return result.job
     },
   },
 })
