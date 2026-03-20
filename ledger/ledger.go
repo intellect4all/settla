@@ -7,28 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/observability"
 	"github.com/intellect4all/settla/resilience"
 )
 
-var (
-	syncQueueDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Namespace: "settla",
-		Subsystem: "ledger",
-		Name:      "sync_queue_dropped_total",
-		Help:      "Total entries dropped because the TB→PG sync queue was full.",
-	})
-	syncQueuePending = promauto.NewGauge(prometheus.GaugeOpts{
-		Namespace: "settla",
-		Subsystem: "ledger",
-		Name:      "sync_queue_pending",
-		Help:      "Number of entries waiting in the TB→PG sync queue.",
-	})
-)
 
 // Compile-time check: Service implements domain.Ledger.
 var _ domain.Ledger = (*Service)(nil)
@@ -211,9 +195,9 @@ func (s *Service) PostEntries(ctx context.Context, entry domain.JournalEntry) (*
 		beforeDropped := s.sync.Dropped()
 		s.sync.Enqueue(entry)
 		if s.sync.Dropped() > beforeDropped {
-			syncQueueDroppedTotal.Inc()
+			s.metrics.LedgerSyncQueueDropped.Inc()
 		}
-		syncQueuePending.Set(float64(s.sync.Pending()))
+		s.metrics.LedgerSyncQueueDepth.Set(float64(s.sync.Pending()))
 	}
 
 	s.logger.Info("settla-ledger: entry posted",
@@ -224,13 +208,18 @@ func (s *Service) PostEntries(ctx context.Context, entry domain.JournalEntry) (*
 
 	// Publish domain event.
 	if s.publisher != nil {
-		_ = s.publisher.Publish(ctx, domain.Event{
+		if err := s.publisher.Publish(ctx, domain.Event{
 			ID:        uuid.New(),
 			TenantID:  tenantIDOrNil(entry.TenantID),
 			Type:      "ledger.entry.posted",
 			Timestamp: time.Now().UTC(),
 			Data:      entry.ID,
-		})
+		}); err != nil {
+			s.logger.Warn("settla-ledger: failed to publish entry posted event",
+				"journal_entry_id", entry.ID,
+				"error", err,
+			)
+		}
 	}
 
 	return &entry, nil
@@ -347,7 +336,7 @@ func defaultConfig() config {
 		batchMaxSize:  500,
 		syncBatchSize: 1000,
 		syncInterval:  100 * time.Millisecond,
-		syncQueueSize: 10000,
+		syncQueueSize: 50000,
 		bulkheadMax:   100,
 	}
 }
