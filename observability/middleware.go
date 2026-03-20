@@ -26,8 +26,14 @@ func UnaryServerInterceptor(m *Metrics) grpc.UnaryServerInterceptor {
 
 		duration := time.Since(start).Seconds()
 		code := status.Code(err).String()
+		reason := ""
+		if err != nil {
+			if st, ok := status.FromError(err); ok {
+				reason = st.Message()
+			}
+		}
 
-		m.GRPCRequestsTotal.WithLabelValues(service, method, code).Inc()
+		m.GRPCRequestsTotal.WithLabelValues(service, method, code, reason).Inc()
 		m.GRPCRequestLatency.WithLabelValues(service, method).Observe(duration)
 
 		return resp, err
