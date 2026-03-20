@@ -8,6 +8,7 @@ import { PieChart } from 'echarts/charts'
 import { TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { CorridorMetric } from '~/types'
+import { getChartTheme } from '~/utils/chartTheme'
 
 echarts.use([PieChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -17,12 +18,13 @@ const props = withDefaults(defineProps<{
   metric?: 'volume' | 'count' | 'fees'
 }>(), { height: 240, metric: 'volume' })
 
+const colorMode = useColorMode()
 const chartRef = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
 
-const colors = ['#8b5cf6', '#10b981', '#f59e0b', '#3b82f6', '#ef4444', '#ec4899', '#14b8a6', '#f97316']
-
 function buildOption() {
+  const isDark = colorMode.value === 'dark'
+  const theme = getChartTheme(isDark)
   const data = props.corridors.map((c, i) => {
     const label = `${c.source_currency} → ${c.dest_currency}`
     let value = 0
@@ -31,15 +33,14 @@ function buildOption() {
       case 'fees': value = parseFloat(c.fees_usd || '0'); break
       default: value = parseFloat(c.volume_usd || '0'); break
     }
-    return { name: label, value, itemStyle: { color: colors[i % colors.length] } }
+    return { name: label, value, itemStyle: { color: theme.color[i % theme.color.length] } }
   })
 
   return {
+    textStyle: theme.textStyle,
     tooltip: {
       trigger: 'item',
-      backgroundColor: '#111827',
-      borderColor: '#374151',
-      textStyle: { color: '#e5e7eb', fontSize: 12 },
+      ...theme.tooltip,
       formatter: (p: any) => {
         const val = props.metric === 'count' ? p.value : `$${p.value.toLocaleString()}`
         return `${p.name}<br/>${val} (${p.percent}%)`
@@ -49,7 +50,7 @@ function buildOption() {
       orient: 'vertical',
       right: 10,
       top: 'center',
-      textStyle: { color: '#9ca3af', fontSize: 11 },
+      textStyle: { color: theme.textStyle.color, fontSize: 11 },
     },
     series: [{
       type: 'pie',
@@ -59,6 +60,8 @@ function buildOption() {
       label: { show: false },
       data,
     }],
+    animationDuration: 800,
+    animationEasing: 'cubicOut' as const,
   }
 }
 
@@ -68,9 +71,15 @@ watch(() => [props.corridors, props.metric], () => {
   }
 }, { deep: true })
 
+watch(() => colorMode.value, () => {
+  if (chart) {
+    chart.setOption(buildOption(), true)
+  }
+})
+
 onMounted(() => {
   if (chartRef.value) {
-    chart = echarts.init(chartRef.value, 'dark')
+    chart = echarts.init(chartRef.value)
     if (props.corridors.length) {
       chart.setOption(buildOption())
     }

@@ -10,6 +10,7 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { TransferStatsBucket } from '~/types'
+import { getChartTheme } from '~/utils/chartTheme'
 
 echarts.use([LineChart, BarChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer])
 
@@ -19,10 +20,13 @@ const props = withDefaults(defineProps<{
   showVolume?: boolean
 }>(), { height: 240, showVolume: true })
 
+const colorMode = useColorMode()
 const chartRef = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
 
 function buildOption() {
+  const isDark = colorMode.value === 'dark'
+  const theme = getChartTheme(isDark)
   const timestamps = props.buckets.map(b =>
     new Date(b.timestamp).toLocaleString('en-GB', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
   )
@@ -63,9 +67,9 @@ function buildOption() {
     {
       type: 'value',
       name: 'Transfers',
-      axisLabel: { color: '#6b7280', fontSize: 10 },
+      axisLabel: { ...theme.yAxis.axisLabel, fontSize: 10 },
       axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#1f2937' } },
+      splitLine: { lineStyle: theme.yAxis.splitLine.lineStyle },
     },
   ]
 
@@ -74,7 +78,7 @@ function buildOption() {
       type: 'value',
       name: 'Volume (USD)',
       axisLabel: {
-        color: '#6b7280',
+        ...theme.yAxis.axisLabel,
         fontSize: 10,
         formatter: (v: number) => {
           if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`
@@ -88,26 +92,27 @@ function buildOption() {
   }
 
   return {
+    textStyle: theme.textStyle,
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#111827',
-      borderColor: '#374151',
-      textStyle: { color: '#e5e7eb', fontSize: 12 },
+      ...theme.tooltip,
     },
     legend: {
       data: series.map(s => s.name),
-      textStyle: { color: '#9ca3af', fontSize: 11 },
+      textStyle: { color: theme.textStyle.color, fontSize: 11 },
       top: 0,
     },
-    grid: { left: 50, right: props.showVolume ? 70 : 20, top: 30, bottom: 30 },
+    grid: { left: 50, right: props.showVolume ? 70 : 20, top: 30, bottom: 30, borderColor: theme.grid.borderColor },
     xAxis: {
       type: 'category',
       data: timestamps,
-      axisLabel: { color: '#6b7280', fontSize: 10, rotate: 30 },
-      axisLine: { lineStyle: { color: '#374151' } },
+      axisLabel: { ...theme.xAxis.axisLabel, fontSize: 10, rotate: 30 },
+      axisLine: theme.xAxis.axisLine,
     },
     yAxis,
     series,
+    animationDuration: 800,
+    animationEasing: 'cubicOut' as const,
   }
 }
 
@@ -117,9 +122,15 @@ watch(() => props.buckets, () => {
   }
 }, { deep: true })
 
+watch(() => colorMode.value, () => {
+  if (chart) {
+    chart.setOption(buildOption(), true)
+  }
+})
+
 onMounted(() => {
   if (chartRef.value) {
-    chart = echarts.init(chartRef.value, 'dark')
+    chart = echarts.init(chartRef.value)
     if (props.buckets.length) {
       chart.setOption(buildOption())
     }

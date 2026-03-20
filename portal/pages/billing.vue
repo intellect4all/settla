@@ -9,28 +9,35 @@
         <input v-model="fromDate" type="date" class="input-field text-sm" />
         <span class="text-surface-500 text-sm">to</span>
         <input v-model="toDate" type="date" class="input-field text-sm" />
-        <button class="btn-primary text-sm" @click="loadReport">Apply</button>
+        <AppButton size="sm" @click="loadReport">Apply</AppButton>
       </div>
     </div>
 
-    <LoadingSpinner v-if="store.loading" size="lg" full-page />
+    <!-- Skeleton loading -->
+    <template v-if="store.loading">
+      <SkeletonLoader variant="card" height="64px" />
+      <div class="card p-4">
+        <SkeletonLoader variant="table" :lines="6" />
+      </div>
+    </template>
 
     <template v-else>
       <!-- Total -->
-      <div v-if="store.entries.length" class="bg-surface-900 rounded-lg border border-surface-800 p-5 flex items-center justify-between">
+      <div v-if="store.entries.length" class="bg-surface-900 rounded-lg border border-surface-800 p-5 flex items-center justify-between animate-fade-in">
         <span class="text-sm text-surface-400">Total fees in period</span>
         <span class="text-xl font-semibold text-surface-100">
           <MoneyDisplay :amount="store.totalFeesUsd" currency="USD" />
         </span>
       </div>
 
-      <DataTable
-        v-if="store.entries.length"
-        :columns="columns"
-        :data="store.entries"
-      />
+      <div v-if="store.entries.length" class="animate-fade-in">
+        <DataTable
+          :columns="columns"
+          :data="store.entries"
+        />
+      </div>
 
-      <EmptyState v-else title="No fee data" description="Fee data will appear once transfers are processed" icon="&#x2637;" />
+      <EmptyState v-else title="No fee data" description="Fee data will appear once transfers are processed" icon="receipt" />
     </template>
   </div>
 </template>

@@ -8,6 +8,7 @@ import { BarChart } from 'echarts/charts'
 import { TooltipComponent, GridComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { LatencyPercentiles } from '~/types'
+import { getChartTheme } from '~/utils/chartTheme'
 
 echarts.use([BarChart, TooltipComponent, GridComponent, CanvasRenderer])
 
@@ -16,11 +17,15 @@ const props = withDefaults(defineProps<{
   height?: number
 }>(), { height: 180 })
 
+const colorMode = useColorMode()
 const chartRef = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
 
 function buildOption() {
   if (!props.latency) return {}
+
+  const isDark = colorMode.value === 'dark'
+  const theme = getChartTheme(isDark)
 
   const labels = ['P50', 'P90', 'P95', 'P99']
   const values = [
@@ -31,26 +36,25 @@ function buildOption() {
   ]
 
   return {
+    textStyle: theme.textStyle,
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#111827',
-      borderColor: '#374151',
-      textStyle: { color: '#e5e7eb', fontSize: 12 },
+      ...theme.tooltip,
       formatter: (params: any) => `${params[0].name}: ${params[0].value}ms`,
     },
-    grid: { left: 50, right: 20, top: 10, bottom: 30 },
+    grid: { left: 50, right: 20, top: 10, bottom: 30, borderColor: theme.grid.borderColor },
     xAxis: {
       type: 'category',
       data: labels,
-      axisLabel: { color: '#9ca3af', fontSize: 11 },
-      axisLine: { lineStyle: { color: '#374151' } },
+      axisLabel: { ...theme.xAxis.axisLabel, fontSize: 11 },
+      axisLine: theme.xAxis.axisLine,
     },
     yAxis: {
       type: 'value',
       name: 'ms',
-      axisLabel: { color: '#6b7280', fontSize: 10 },
+      axisLabel: { ...theme.yAxis.axisLabel, fontSize: 10 },
       axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#1f2937' } },
+      splitLine: { lineStyle: theme.yAxis.splitLine.lineStyle },
     },
     series: [{
       type: 'bar',
@@ -64,11 +68,13 @@ function buildOption() {
       label: {
         show: true,
         position: 'top',
-        color: '#9ca3af',
+        color: theme.textStyle.color,
         fontSize: 10,
         formatter: (p: any) => `${p.value}ms`,
       },
     }],
+    animationDuration: 800,
+    animationEasing: 'cubicOut' as const,
   }
 }
 
@@ -78,9 +84,15 @@ watch(() => props.latency, () => {
   }
 }, { deep: true })
 
+watch(() => colorMode.value, () => {
+  if (chart) {
+    chart.setOption(buildOption(), true)
+  }
+})
+
 onMounted(() => {
   if (chartRef.value) {
-    chart = echarts.init(chartRef.value, 'dark')
+    chart = echarts.init(chartRef.value)
     if (props.latency) {
       chart.setOption(buildOption())
     }

@@ -5,25 +5,29 @@
       <p class="text-sm text-surface-500 mt-1">View and track your settlement transfers</p>
     </div>
 
-    <LoadingSpinner v-if="store.loading" size="lg" full-page />
+    <template v-if="store.loading && !store.transfers.length">
+      <div class="card p-4">
+        <SkeletonLoader variant="table" :lines="8" />
+      </div>
+    </template>
 
     <template v-else>
       <DataTable
         v-if="store.transfers.length"
         :columns="columns"
-        :data="store.transfers"
-        :row-click="(row: Transfer) => navigateTo(`/transfers/${row.id}`)"
+        :rows="store.transfers"
+        :loading="store.loading"
         searchable
         :search-keys="['id', 'external_ref', 'status', 'source_currency', 'dest_currency']"
+        @row-click="(row: Transfer) => navigateTo(`/transfers/${row.id}`)"
       />
 
-      <EmptyState v-else title="No transfers" description="Your settlement transfers will appear here" icon="&#x21C4;" />
+      <EmptyState v-else title="No transfers" description="Your settlement transfers will appear here" icon="arrows-right-left" />
 
-      <!-- Pagination -->
       <div v-if="store.nextPageToken" class="flex justify-center">
-        <button class="btn-primary text-sm" @click="store.fetchTransfers(store.nextPageToken)">
+        <AppButton :loading="store.loading" @click="store.fetchTransfers(store.nextPageToken)">
           Load more
-        </button>
+        </AppButton>
       </div>
     </template>
   </div>

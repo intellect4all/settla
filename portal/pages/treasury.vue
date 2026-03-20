@@ -5,11 +5,16 @@
       <p class="text-sm text-surface-500 mt-1">Your prefunded liquidity positions</p>
     </div>
 
-    <LoadingSpinner v-if="store.loading" size="lg" full-page />
+    <!-- Skeleton loading state -->
+    <template v-if="store.loading">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <SkeletonLoader v-for="i in 6" :key="i" variant="card" height="180px" />
+      </div>
+    </template>
 
     <template v-else>
       <!-- Alerts -->
-      <div v-if="store.alertPositions.length" class="bg-amber-900/20 border border-amber-700 rounded-lg p-4">
+      <div v-if="store.alertPositions.length" class="bg-amber-900/20 border border-amber-700 rounded-lg p-4 animate-fade-in">
         <p class="text-sm font-medium text-amber-300 mb-2">Low balance alerts</p>
         <ul class="space-y-1">
           <li v-for="pos in store.alertPositions" :key="pos.id" class="text-sm text-amber-400">
@@ -21,9 +26,10 @@
 
       <div v-if="store.positions.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div
-          v-for="pos in store.positions" :key="pos.id"
-          class="bg-surface-900 rounded-lg border p-5"
+          v-for="(pos, i) in store.positions" :key="pos.id"
+          class="bg-surface-900 rounded-lg border p-5 animate-fade-in"
           :class="isLow(pos) ? 'border-amber-700' : 'border-surface-800'"
+          :style="{ animationDelay: `${i * 40}ms`, animationFillMode: 'backwards' }"
         >
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-base font-semibold text-surface-100">{{ pos.currency }}</h3>
@@ -64,7 +70,7 @@
         </div>
       </div>
 
-      <EmptyState v-else title="No positions" description="Treasury positions will appear once configured" icon="&#x2B21;" />
+      <EmptyState v-else title="No positions" description="Treasury positions will appear once configured" icon="wallet" />
     </template>
   </div>
 </template>

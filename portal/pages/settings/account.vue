@@ -5,11 +5,16 @@
       <p class="text-sm text-surface-500 mt-1">Your tenant profile and limits</p>
     </div>
 
-    <LoadingSpinner v-if="authStore.loading" size="lg" full-page />
+    <div v-if="authStore.loading" class="space-y-4">
+      <SkeletonLoader variant="card" height="160px" />
+      <SkeletonLoader variant="card" height="100px" />
+      <SkeletonLoader variant="card" height="100px" />
+      <SkeletonLoader variant="card" height="120px" />
+    </div>
 
     <template v-else-if="tenant">
       <!-- Profile -->
-      <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+      <div class="card p-5 animate-slide-up">
         <h2 class="text-sm font-medium text-surface-400 mb-4">Tenant Profile</h2>
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -40,7 +45,7 @@
       </div>
 
       <!-- KYB Status -->
-      <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+      <div class="card p-5 animate-slide-up">
         <h2 class="text-sm font-medium text-surface-400 mb-4">KYB Verification</h2>
         <div class="flex items-center gap-3">
           <StatusBadge :status="tenant.kyb_status" size="sm" />
@@ -60,7 +65,7 @@
       </div>
 
       <!-- Limits -->
-      <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+      <div class="card p-5 animate-slide-up">
         <h2 class="text-sm font-medium text-surface-400 mb-4">Limits</h2>
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -79,7 +84,7 @@
       </div>
 
       <!-- Fee Schedule -->
-      <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+      <div class="card p-5 animate-slide-up">
         <h2 class="text-sm font-medium text-surface-400 mb-4">Fee Schedule</h2>
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -106,7 +111,7 @@
       </div>
     </template>
 
-    <EmptyState v-else title="Profile not loaded" icon="&#x2699;" />
+    <EmptyState v-else title="Profile not loaded" icon="settings" />
   </div>
 </template>
 

@@ -6,23 +6,25 @@
         <p class="text-sm text-surface-500 mt-1">Configure webhook delivery for transfer events</p>
       </div>
       <div class="flex gap-2">
-        <button
-          class="btn-secondary text-sm"
-          :disabled="store.testing || !store.webhookUrl"
+        <AppButton
+          variant="secondary"
+          size="sm"
+          :disabled="!store.webhookUrl"
+          :loading="store.testing"
           @click="handleTest"
         >
-          {{ store.testing ? 'Testing...' : 'Test Webhook' }}
-        </button>
+          Test Webhook
+        </AppButton>
       </div>
     </div>
 
     <!-- Test result -->
-    <div v-if="store.testResult" class="rounded-lg border p-4" :class="store.testResult.success ? 'bg-emerald-900/20 border-emerald-700' : 'bg-red-900/20 border-red-700'">
+    <div v-if="store.testResult" class="rounded-lg border p-4 animate-fade-in" :class="store.testResult.success ? 'bg-emerald-900/20 border-emerald-700' : 'bg-red-900/20 border-red-700'">
       <div class="flex items-center justify-between">
         <p class="text-sm font-medium" :class="store.testResult.success ? 'text-emerald-300' : 'text-red-300'">
           {{ store.testResult.success ? 'Test succeeded' : 'Test failed' }}
         </p>
-        <button class="text-xs text-surface-500" @click="store.clearTestResult()">Dismiss</button>
+        <button class="text-xs text-surface-500 hover:text-surface-300 focus-ring rounded" @click="store.clearTestResult()">Dismiss</button>
       </div>
       <div class="flex gap-4 mt-1 text-xs" :class="store.testResult.success ? 'text-emerald-400' : 'text-red-400'">
         <span v-if="store.testResult.status_code">HTTP {{ store.testResult.status_code }}</span>
@@ -32,7 +34,7 @@
     </div>
 
     <!-- Endpoint config -->
-    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5 animate-fade-in">
       <h2 class="text-sm font-medium text-surface-300 mb-4">Webhook Endpoint</h2>
       <div class="space-y-4">
         <div>
@@ -45,45 +47,46 @@
           />
         </div>
         <div class="flex items-center gap-3">
-          <button
-            class="btn-primary text-sm"
-            :disabled="store.loading || !webhookUrl.trim()"
+          <AppButton
+            size="sm"
+            :disabled="!webhookUrl.trim()"
+            :loading="store.loading"
             @click="handleSave"
           >
-            {{ store.loading ? 'Saving...' : 'Save' }}
-          </button>
-          <span v-if="saved" class="text-xs text-emerald-400">Saved</span>
+            Save
+          </AppButton>
+          <span v-if="saved" class="text-xs text-emerald-400 animate-fade-in">Saved</span>
         </div>
       </div>
     </div>
 
     <!-- Secret display (shown after save) -->
-    <div v-if="store.webhookSecret" class="bg-emerald-900/20 border border-emerald-700 rounded-lg p-4">
+    <div v-if="store.webhookSecret" class="bg-emerald-900/20 border border-emerald-700 rounded-lg p-4 animate-fade-in">
       <p class="text-sm font-medium text-emerald-300 mb-2">Webhook Secret</p>
       <p class="text-xs text-emerald-400 mb-2">Use this secret to verify webhook signatures (HMAC-SHA256). It will not be shown again.</p>
       <div class="flex items-center gap-2">
         <code class="flex-1 text-xs font-mono bg-surface-950 text-surface-200 px-3 py-2 rounded border border-surface-700 break-all">
           {{ store.webhookSecret }}
         </code>
-        <button class="btn-primary text-xs shrink-0" @click="copySecret">Copy</button>
+        <AppButton size="sm" @click="copySecret">Copy</AppButton>
       </div>
-      <button class="text-xs text-surface-500 hover:text-surface-300 mt-2" @click="store.clearSecret()">Dismiss</button>
+      <button class="text-xs text-surface-500 hover:text-surface-300 mt-2 focus-ring rounded" @click="store.clearSecret()">Dismiss</button>
     </div>
 
     <!-- Event type subscriptions -->
-    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5 animate-fade-in">
       <div class="flex items-center justify-between mb-4">
         <div>
           <h2 class="text-sm font-medium text-surface-300">Event Subscriptions</h2>
           <p class="text-xs text-surface-500 mt-0.5">Select which events trigger webhook deliveries. Empty = all events.</p>
         </div>
-        <button
-          class="btn-primary text-xs"
-          :disabled="store.subscriptionsLoading"
+        <AppButton
+          size="sm"
+          :loading="store.subscriptionsLoading"
           @click="handleSaveSubscriptions"
         >
-          {{ store.subscriptionsLoading ? 'Saving...' : 'Save' }}
-        </button>
+          Save
+        </AppButton>
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -103,13 +106,13 @@
     </div>
 
     <!-- Delivery stats -->
-    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5 animate-fade-in">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-sm font-medium text-surface-300">Delivery Statistics</h2>
         <div class="flex gap-1">
           <button
             v-for="p in statsPeriods" :key="p"
-            class="px-2 py-1 text-xs rounded"
+            class="px-2 py-1 text-xs rounded transition-colors focus-ring"
             :class="store.statsPeriod === p ? 'bg-violet-600 text-white' : 'text-surface-400 hover:bg-surface-800'"
             @click="store.fetchStats(p)"
           >
@@ -118,7 +121,9 @@
         </div>
       </div>
 
-      <LoadingSpinner v-if="store.statsLoading" size="sm" />
+      <template v-if="store.statsLoading">
+        <SkeletonLoader variant="card" height="80px" />
+      </template>
       <div v-else-if="store.stats" class="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div>
           <p class="text-xs text-surface-500">Total</p>
@@ -145,7 +150,7 @@
     </div>
 
     <!-- Recent deliveries -->
-    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5">
+    <div class="bg-surface-900 rounded-lg border border-surface-800 p-5 animate-fade-in">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-sm font-medium text-surface-300">Recent Deliveries</h2>
         <div class="flex gap-2">
@@ -159,7 +164,9 @@
         </div>
       </div>
 
-      <LoadingSpinner v-if="store.deliveriesLoading" size="sm" />
+      <template v-if="store.deliveriesLoading">
+        <SkeletonLoader variant="table" :lines="5" />
+      </template>
       <template v-else>
         <div v-if="store.deliveries.length" class="space-y-2">
           <div
@@ -187,11 +194,11 @@
             </div>
           </div>
         </div>
-        <EmptyState v-else title="No deliveries" description="Webhook deliveries will appear here once transfers are processed" icon="&#x26A1;" />
+        <EmptyState v-else title="No deliveries" description="Webhook deliveries will appear here once transfers are processed" icon="zap" />
 
         <!-- Pagination -->
         <div v-if="store.deliveryTotalCount > 50" class="flex justify-center mt-4">
-          <button class="btn-secondary text-xs" @click="loadMore">Load more</button>
+          <AppButton variant="secondary" size="sm" @click="loadMore">Load more</AppButton>
         </div>
       </template>
     </div>
