@@ -18,9 +18,8 @@ export default defineNuxtConfig({
   },
 
   runtimeConfig: {
+    apiBase: process.env.NUXT_API_BASE || 'http://localhost:3000',
     public: {
-      apiBase: 'http://localhost:3000',
-      portalApiKey: '', // Set via NUXT_PUBLIC_PORTAL_API_KEY env var
       pollIntervalTransfers: 5000,
       pollIntervalDashboard: 10000,
     },
@@ -34,6 +33,14 @@ export default defineNuxtConfig({
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap' },
       ],
+    },
+  },
+
+  routeRules: {
+    '/**': {
+      headers: {
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      },
     },
   },
 

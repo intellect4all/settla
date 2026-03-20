@@ -288,3 +288,200 @@ export interface ActivityItem {
   updated_at: string
   failure_reason?: string
 }
+
+// Extended analytics types
+
+export interface FeeBreakdownAnalytics {
+  source_currency: string
+  dest_currency: string
+  transfer_count: number
+  volume_usd: string
+  on_ramp_fees_usd: string
+  off_ramp_fees_usd: string
+  network_fees_usd: string
+  total_fees_usd: string
+}
+
+export interface ProviderPerformance {
+  provider: string
+  source_currency: string
+  dest_currency: string
+  transaction_count: number
+  completed: number
+  failed: number
+  success_rate: string
+  avg_settlement_ms: number
+  total_volume: string
+}
+
+export interface DepositAnalytics {
+  total_sessions: number
+  completed_sessions: number
+  expired_sessions: number
+  failed_sessions: number
+  conversion_rate: string
+  total_received: string
+  total_fees: string
+  total_net: string
+}
+
+export interface DepositAnalyticsResponse {
+  crypto: DepositAnalytics
+  bank: DepositAnalytics
+}
+
+export interface ReconciliationSummary {
+  total_runs: number
+  checks_passed: number
+  checks_failed: number
+  pass_rate: string
+  last_run_at?: string
+  needs_review_count: number
+}
+
+export interface ExportJob {
+  id: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  export_type: string
+  row_count: number
+  download_url?: string
+  download_expires_at?: string
+  error_message?: string
+  created_at: string
+  completed_at?: string
+}
+
+export interface ExportParams {
+  export_type: string
+  period?: string
+  format?: string
+}
+
+// Deposit types
+
+export type DepositSessionStatus =
+  | 'PENDING_PAYMENT'
+  | 'DETECTED'
+  | 'CONFIRMED'
+  | 'CREDITED'
+  | 'SETTLING'
+  | 'SETTLED'
+  | 'HELD'
+  | 'EXPIRED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export interface DepositSession {
+  id: string
+  tenantId: string
+  status: DepositSessionStatus
+  chain: string
+  token: string
+  depositAddress: string
+  expectedAmount: string
+  receivedAmount: string
+  currency: string
+  collectionFeeBps: number
+  feeAmount: string
+  netAmount: string
+  settlementPref: string
+  idempotencyKey: string
+  expiresAt: string
+  createdAt: string
+  updatedAt: string
+  detectedAt?: string
+  confirmedAt?: string
+  creditedAt?: string
+  settledAt?: string
+  expiredAt?: string
+  failedAt?: string
+  failureReason?: string
+  failureCode?: string
+}
+
+export interface DepositSessionListResponse {
+  sessions: DepositSession[]
+  total: number
+}
+
+// Crypto settings & balance types
+
+export interface CryptoSettings {
+  crypto_enabled: boolean
+  supported_chains: string[]
+  default_settlement_pref: 'AUTO_CONVERT' | 'HOLD' | 'THRESHOLD'
+  payment_tolerance_bps: number
+  default_session_ttl_secs: number
+  min_confirmations_tron: number
+  min_confirmations_eth: number
+  min_confirmations_base: number
+}
+
+export interface CryptoBalance {
+  chain: string
+  token: string
+  amount: string
+  value_usd: string
+  status: 'held' | 'converting'
+}
+
+// Auth types
+
+export interface PortalUser {
+  id: string
+  email: string
+  display_name: string
+  role: 'OWNER' | 'ADMIN' | 'MEMBER'
+  tenant_id: string
+  tenant_name: string
+  tenant_slug: string
+  tenant_status: 'ACTIVE' | 'SUSPENDED' | 'ONBOARDING'
+  kyb_status: 'PENDING' | 'IN_REVIEW' | 'VERIFIED' | 'REJECTED'
+}
+
+export interface LoginResponse {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+  user: PortalUser
+}
+
+export interface RegisterResponse {
+  tenant_id: string
+  user_id: string
+  email: string
+  message: string
+}
+
+// Payment Link types
+
+export interface PaymentLinkSessionConfig {
+  amount: string
+  currency: string
+  chain: string
+  token: string
+  settlement_pref?: string
+  ttl_seconds?: number
+}
+
+export interface PaymentLink {
+  id: string
+  tenantId: string
+  shortCode: string
+  description: string
+  redirectUrl: string
+  status: 'ACTIVE' | 'EXPIRED' | 'DISABLED'
+  sessionConfig: PaymentLinkSessionConfig
+  useLimit?: number
+  hasUseLimit: boolean
+  useCount: number
+  expiresAt?: string
+  url: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PaymentLinkListResponse {
+  links: PaymentLink[]
+  total: number
+}
