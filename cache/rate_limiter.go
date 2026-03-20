@@ -1,3 +1,9 @@
+// Design note: Rate limiting uses local counters synced to Redis every 5 seconds.
+// This means limits are approximate within the sync window -- intentional for
+// throughput at 580 TPS sustained. Exact per-request limiting would require a
+// Redis round-trip on the hot path, adding ~0.5ms latency. At 5,000 TPS peak,
+// that would add 5,000 Redis calls/sec just for rate limiting. The local
+// pre-check reduces this to one Redis call per tenant per 5-second window.
 package cache
 
 import (

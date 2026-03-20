@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -238,4 +239,144 @@ func TestRateLimiter_ExactLimit(t *testing.T) {
 	if remaining != 0 {
 		t.Errorf("expected 0 remaining, got %d", remaining)
 	}
+}
+
+func TestRateLimiter_WindowRotation(t *testing.T) {
+	rc := newTestRedis(t)
+	ctx := context.Background()
+
+	// Create a rate limiter with a very short window (1 second) so we can
+	// observe window rotation without long waits.
+	rl := &RateLimiter{
+		redis:    rc,
+		window:   1 * time.Second,
+		syncInt:  100 * time.Millisecond,
+		counters: make(map[string]*localCounter),
+		stopCh:   make(chan struct{}),
+		stopped:  make(chan struct{}),
+	}
+
+	tenantID := uuid.MustParse("d0000000-0000-0000-0000-000000000010")
+	rl.Reset(ctx, tenantID)
+
+	limit := int64(3)
+
+	// Fill to limit using cold path (force each call to go to Redis).
+	for i := int64(0); i < limit; i++ {
+		rl.mu.Lock()
+		delete(rl.counters, localCounterKey(tenantID))
+		rl.mu.Unlock()
+
+		allowed, _, err := rl.Allow(ctx, tenantID, limit)
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		if !allowed {
+			t.Fatalf("request %d should be allowed within limit", i)
+		}
+	}
+
+	// Verify that the next request is denied.
+	rl.mu.Lock()
+	delete(rl.counters, localCounterKey(tenantID))
+	rl.mu.Unlock()
+
+	allowed, _, err := rl.Allow(ctx, tenantID, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed {
+		t.Fatal("request should be denied at limit")
+	}
+
+	// Wait for the window to rotate (entries expire after 1 second).
+	time.Sleep(1200 * time.Millisecond)
+
+	// Clear local counter so we go through Redis cold path.
+	rl.mu.Lock()
+	delete(rl.counters, localCounterKey(tenantID))
+	rl.mu.Unlock()
+
+	// New requests should be allowed after window rotation.
+	allowed, _, err = rl.Allow(ctx, tenantID, limit)
+	if err != nil {
+		t.Fatalf("post-rotation request: %v", err)
+	}
+	if !allowed {
+		t.Fatal("request should be allowed after window rotation")
+	}
+
+	t.Logf("window rotation verified: limit=%d, window=1s", limit)
+}
+
+func TestRateLimiter_MultiTenantHighConcurrency(t *testing.T) {
+	rc := newTestRedis(t)
+	ctx := context.Background()
+	rl := NewRateLimiter(rc)
+
+	const (
+		numTenants     = 10
+		goroutinesPer  = 100
+		requestsPerG   = 5
+		limit          = int64(500)
+		// Allow up to 150% of limit per tenant. The local counter hot path
+		// and Redis pipeline non-atomicity across goroutines mean exact
+		// enforcement is approximate within the sync window.
+		maxPerTenant = int64(float64(limit) * 1.5)
+	)
+
+	// Generate tenant IDs.
+	tenantIDs := make([]uuid.UUID, numTenants)
+	for i := range tenantIDs {
+		tenantIDs[i] = uuid.New()
+		rl.Reset(ctx, tenantIDs[i])
+	}
+
+	// Track allowed counts per tenant.
+	allowedCounts := make([]atomic.Int64, numTenants)
+
+	var wg sync.WaitGroup
+	wg.Add(numTenants * goroutinesPer)
+
+	for ti := 0; ti < numTenants; ti++ {
+		for g := 0; g < goroutinesPer; g++ {
+			go func(tenantIdx int) {
+				defer wg.Done()
+				for r := 0; r < requestsPerG; r++ {
+					// Force cold path to get accurate Redis counting.
+					rl.mu.Lock()
+					delete(rl.counters, localCounterKey(tenantIDs[tenantIdx]))
+					rl.mu.Unlock()
+
+					ok, _, err := rl.Allow(ctx, tenantIDs[tenantIdx], limit)
+					if err != nil {
+						continue
+					}
+					if ok {
+						allowedCounts[tenantIdx].Add(1)
+					}
+				}
+			}(ti)
+		}
+	}
+
+	wg.Wait()
+
+	// Verify no tenant exceeds the tolerance threshold.
+	for i, tid := range tenantIDs {
+		got := allowedCounts[i].Load()
+		if got > maxPerTenant {
+			t.Errorf("tenant %s: allowed %d requests, exceeds max %d (limit %d + 50%% tolerance)",
+				tid, got, maxPerTenant, limit)
+		}
+	}
+
+	// Log summary.
+	var totalAllowed int64
+	for i := range tenantIDs {
+		totalAllowed += allowedCounts[i].Load()
+	}
+	totalRequests := int64(numTenants * goroutinesPer * requestsPerG)
+	t.Logf("multi-tenant concurrency: %d tenants x %d goroutines x %d requests = %d total, %d allowed",
+		numTenants, goroutinesPer, requestsPerG, totalRequests, totalAllowed)
 }

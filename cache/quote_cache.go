@@ -1,7 +1,9 @@
 package cache
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
 	"time"
 
@@ -18,6 +20,10 @@ const (
 
 // QuoteCache caches quotes in Redis, keyed by tenant and quote ID.
 // Key format: settla:quote:{tenant_id}:{quote_id}
+//
+// Uses gob encoding instead of JSON to preserve exact decimal.Decimal precision.
+// JSON marshals decimals as bare numbers which can lose precision beyond ~15 digits
+// if any intermediary (proxy, logger) parses them as float64.
 type QuoteCache struct {
 	redis *RedisCache
 }
@@ -35,13 +41,16 @@ func quoteKey(tenantID, quoteID uuid.UUID) string {
 // Get retrieves a quote from the cache. Returns (nil, nil) on cache miss.
 func (qc *QuoteCache) Get(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error) {
 	key := quoteKey(tenantID, quoteID)
-	var quote domain.Quote
-	err := qc.redis.GetJSON(ctx, key, &quote)
+	data, err := qc.redis.Get(ctx, key)
 	if err == redis.Nil {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("settla-cache: get quote %s: %w", quoteID, err)
+	}
+	var quote domain.Quote
+	if err := gob.NewDecoder(bytes.NewReader([]byte(data))).Decode(&quote); err != nil {
+		return nil, fmt.Errorf("settla-cache: decode quote %s: %w", quoteID, err)
 	}
 	return &quote, nil
 }
@@ -60,7 +69,11 @@ func (qc *QuoteCache) Set(ctx context.Context, quote *domain.Quote) error {
 		ttl = DefaultQuoteTTL
 	}
 
-	return qc.redis.SetJSON(ctx, key, quote, ttl)
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(quote); err != nil {
+		return fmt.Errorf("settla-cache: encode quote %s: %w", quote.ID, err)
+	}
+	return qc.redis.Set(ctx, key, buf.String(), ttl)
 }
 
 // Delete removes a quote from the cache.
