@@ -16,19 +16,19 @@ data:
   POOL_MODE: "transaction"
 
   # Maximum client connections PgBouncer will accept.
-  MAX_CLIENT_CONN: "1000"
+  MAX_CLIENT_CONN: "2000"
 
   # Number of server connections to keep open per user/database pair.
-  DEFAULT_POOL_SIZE: "100"
+  DEFAULT_POOL_SIZE: "600"
 
   # Minimum server connections to keep (even when idle).
-  MIN_POOL_SIZE: "10"
+  MIN_POOL_SIZE: "50"
 
   # Extra connections allowed when DEFAULT_POOL_SIZE is exhausted.
-  RESERVE_POOL_SIZE: "25"
+  RESERVE_POOL_SIZE: "20"
 
   # Seconds to wait before using reserve pool connections.
-  RESERVE_POOL_TIMEOUT: "3"
+  RESERVE_POOL_TIMEOUT: "5"
 
   # Query to run when returning connection to pool (transaction mode).
   SERVER_RESET_QUERY: "DISCARD ALL"

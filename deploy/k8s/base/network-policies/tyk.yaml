@@ -11,10 +11,10 @@
 #   - :8080 — health checks from the cloud load-balancer (same port).
 #
 # Egress:
-#   - gateway :3000  — REST API requests (quotes, transfers, treasury)
-#   - webhook :3001  — inbound provider webhook forwarding
-#   - Redis :6379    — Tyk uses Redis for rate limiting, OAuth tokens,
-#                      API key storage, and analytics queuing
+#   - gateway-router :3000 — REST API requests via consistent-hash LB
+#   - webhook :3001        — inbound provider webhook forwarding
+#   - Redis :6379          — Tyk uses Redis for rate limiting, OAuth tokens,
+#                            API key storage, and analytics queuing
 #
 # The Tyk Dashboard and Tyk Pump are not modelled here; add separate
 # policies if they are deployed into the settla namespace.
@@ -61,11 +61,11 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # REST API requests proxied to the internal gateway
+    # REST API requests proxied to the gateway router (consistent-hash LB)
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: gateway
+              app.kubernetes.io/name: gateway-router
       ports:
         - port: 3000
           protocol: TCP

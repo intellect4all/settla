@@ -27,9 +27,9 @@ spec:
           args:
             - "redis-server"
             - "--maxmemory"
-            - "512mb"
+            - "2gb"
             - "--maxmemory-policy"
-            - "allkeys-lru"
+            - "volatile-lru"
             - "--appendonly"
             - "yes"
             - "--appendfsync"
@@ -40,10 +40,10 @@ spec:
           resources:
             requests:
               cpu: "250m"
-              memory: "512Mi"
+              memory: "2Gi"
             limits:
               cpu: "500m"
-              memory: "768Mi"
+              memory: "2560Mi"
           volumeMounts:
             - name: data
               mountPath: /data

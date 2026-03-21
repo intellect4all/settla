@@ -1,11 +1,11 @@
 # NetworkPolicy for the gateway (Fastify REST API, TypeScript).
 #
 # The gateway is the public-facing REST API.  External traffic reaches it
-# exclusively via Tyk API Gateway — no pod other than tyk should be able
-# to open a connection directly to :3000.
+# via Tyk → gateway-router (consistent-hash LB) → gateway pods.
+# Only gateway-router should be able to open a connection to :3000.
 #
 # Ingress:
-#   - :3000 HTTP — from Tyk API Gateway pods only
+#   - :3000 HTTP — from gateway-router pods only (consistent-hash routing)
 #
 # Egress:
 #   - settla-server :9090 gRPC — all business logic calls
@@ -31,11 +31,11 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # HTTP traffic routed by Tyk API Gateway
+    # HTTP traffic routed by the consistent-hash gateway router
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: tyk
+              app.kubernetes.io/name: gateway-router
       ports:
         - port: 3000
           protocol: TCP
