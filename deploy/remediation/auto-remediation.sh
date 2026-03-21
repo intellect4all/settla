@@ -363,15 +363,15 @@ handle_pgbouncer_pool_saturated() {
         -o jsonpath='{.data.DEFAULT_POOL_SIZE}' 2>/dev/null || echo "50")"
     local new_pool_size=$(( current_pool_size + 20 ))
 
-    # Cap at reasonable limit (Postgres max_connections is typically 200-400)
-    if (( new_pool_size > 150 )); then
-        log_warn "Pool size would exceed 150 (current: ${current_pool_size}). Capping at 150."
-        new_pool_size=150
+    # Cap at reasonable limit (Postgres max_connections should be tuned to match)
+    if (( new_pool_size > 300 )); then
+        log_warn "Pool size would exceed 300 (current: ${current_pool_size}). Capping at 300."
+        new_pool_size=300
     fi
 
     if (( new_pool_size == current_pool_size )); then
         log_info "Already at maximum pool size. No action taken."
-        notify_slack "danger" "SettlaPgBouncerPoolCritical — Pool limit reached" "Already at maximum pool size (150). Manual investigation required: check for connection leaks and long-running transactions."
+        notify_slack "danger" "SettlaPgBouncerPoolCritical — Pool limit reached" "Already at maximum pool size (300). Manual investigation required: check for connection leaks and long-running transactions."
         return 0
     fi
 

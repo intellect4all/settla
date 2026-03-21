@@ -27,7 +27,7 @@
   },
   "proxy": {
     "listen_path": "/v1/treasury",
-    "target_url": "http://gateway:3000",
+    "target_url": "http://gateway-router:3000",
     "strip_listen_path": false,
     "preserve_host_header": false
   },
