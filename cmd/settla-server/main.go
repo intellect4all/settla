@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,6 +26,12 @@ import (
 
 	settlagrpc "github.com/intellect4all/settla/api/grpc"
 	"github.com/intellect4all/settla/core"
+	settladb "github.com/intellect4all/settla/db"
+	"github.com/intellect4all/settla/db/automigrate"
+	bankdepositcore "github.com/intellect4all/settla/core/bankdeposit"
+	depositcore "github.com/intellect4all/settla/core/deposit"
+	paymentlinkcore "github.com/intellect4all/settla/core/paymentlink"
+	"github.com/intellect4all/settla/core/analytics"
 	"github.com/intellect4all/settla/core/maintenance"
 	"github.com/intellect4all/settla/core/reconciliation"
 	"github.com/intellect4all/settla/core/settlement"
@@ -95,6 +102,37 @@ func main() {
 	} else {
 		defer treasuryPool.Close()
 		logger.Info("settla-server: connected to treasury DB")
+	}
+
+	// ── Auto-migrate ────────────────────────────────────────────────
+	// Uses SETTLA_*_DB_MIGRATE_URL (raw Postgres) if set, otherwise
+	// falls back to SETTLA_*_DB_URL. PgBouncer URLs work when pool_mode
+	// is session, but raw Postgres is preferred for advisory locks.
+	{
+		transferMigrateURL := envOrDefault("SETTLA_TRANSFER_DB_MIGRATE_URL", transferDBURL)
+		sub, _ := fs.Sub(settladb.TransferMigrations, "migrations/transfer")
+		if err := automigrate.Run(automigrate.Transfer, transferMigrateURL, sub, logger); err != nil {
+			logger.Error("settla-server: transfer DB migration failed", "error", err)
+			os.Exit(1)
+		}
+
+		ledgerMigrateURL := envOrDefault("SETTLA_LEDGER_DB_MIGRATE_URL", ledgerDBURL)
+		if ledgerPool != nil {
+			sub, _ = fs.Sub(settladb.LedgerMigrations, "migrations/ledger")
+			if err := automigrate.Run(automigrate.Ledger, ledgerMigrateURL, sub, logger); err != nil {
+				logger.Error("settla-server: ledger DB migration failed", "error", err)
+				os.Exit(1)
+			}
+		}
+
+		treasuryMigrateURL := envOrDefault("SETTLA_TREASURY_DB_MIGRATE_URL", treasuryDBURL)
+		if treasuryPool != nil {
+			sub, _ = fs.Sub(settladb.TreasuryMigrations, "migrations/treasury")
+			if err := automigrate.Run(automigrate.Treasury, treasuryMigrateURL, sub, logger); err != nil {
+				logger.Error("settla-server: treasury DB migration failed", "error", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// NATS JetStream
@@ -185,6 +223,10 @@ func main() {
 		defer tbClient.Close()
 		logger.Info("settla-server: connected to TigerBeetle", "addresses", addresses)
 	} else {
+		if os.Getenv("SETTLA_ENV") == "production" {
+			logger.Error("settla-server: FATAL — production requires TigerBeetle (SETTLA_TIGERBEETLE_ADDRESSES must be set)")
+			os.Exit(1)
+		}
 		logger.Warn("settla-server: SETTLA_TIGERBEETLE_ADDRESSES not set, ledger running in stub mode")
 	}
 
@@ -326,16 +368,18 @@ func main() {
 	// Checks cover: transfer state, outbox health, provider tx staleness,
 	// daily volume, settlement fee reconciliation (ENG-8), and — when the
 	// ledger DB is available — treasury-ledger balance alignment.
-	reconAdapter := transferdb.NewReconciliationAdapter(transferPool, transferQueries)
+	reconAdapter := transferdb.NewReconciliationAdapter(transferQueries)
 	reconChecks := []reconciliation.Check{
 		reconciliation.NewTransferStateCheck(reconAdapter, logger, nil),
 		reconciliation.NewOutboxCheck(reconAdapter, logger, 0),
 		reconciliation.NewProviderTxCheck(reconAdapter, logger, 0),
 		reconciliation.NewDailyVolumeCheck(reconAdapter, logger),
 		reconciliation.NewSettlementFeeCheck(reconAdapter, logger, decimal.Zero),
+		reconciliation.NewDepositCheck(reconAdapter, logger, 0, 0, 0),
+		reconciliation.NewBankDepositCheck(reconAdapter, logger, 0, 0),
 	}
 	if ledgerPool != nil {
-		ledgerReconAdapter := ledgerdb.NewLedgerReconciliationAdapter(ledgerPool)
+		ledgerReconAdapter := ledgerdb.NewLedgerReconciliationAdapter(ledgerdb.New(ledgerPool))
 		reconChecks = append(reconChecks, reconciliation.NewTreasuryLedgerCheck(
 			treasurySvc,
 			ledgerReconAdapter,
@@ -380,7 +424,7 @@ func main() {
 	// Settlement scheduler: calculates daily net settlements for NET_SETTLEMENT tenants.
 	// Runs once per day (00:30 UTC default). Gate behind SETTLA_SETTLEMENT_ENABLED.
 	if envOrDefault("SETTLA_SETTLEMENT_ENABLED", "true") == "true" {
-		settlementStore := transferdb.NewSettlementAdapter(transferPool, transferQueries)
+		settlementStore := transferdb.NewSettlementAdapter(transferQueries)
 		calculator := settlement.NewCalculator(settlementStore, settlementStore, settlementStore, logger)
 		scheduler := settlement.NewScheduler(calculator, settlementStore, logger)
 		settlementCtx, settlementCancel := context.WithCancel(ctx)
@@ -452,12 +496,29 @@ func main() {
 		transferStore,
 		tenantStore,
 		coreRouterAdapter,
+		providerReg,
 		logger,
 		metrics,
 	)
 
+	// Deposit engine (pure state machine for crypto deposit sessions)
+	depositStoreAdapter := transferdb.NewDepositStoreAdapter(transferQueries, transferPool)
+	depositEngine := depositcore.NewEngine(depositStoreAdapter, tenantStore, logger)
+	logger.Info("settla-server: deposit engine initialized")
+
+	// Bank deposit engine (pure state machine for bank deposit sessions)
+	bankDepositStoreAdapter := transferdb.NewBankDepositStoreAdapter(transferQueries, transferPool)
+	bankDepositEngine := bankdepositcore.NewEngine(bankDepositStoreAdapter, tenantStore, logger)
+	logger.Info("settla-server: bank deposit engine initialized")
+
+	// Payment link service (CRUD + redemption via deposit engine)
+	paymentLinkStore := transferdb.NewPaymentLinkStoreAdapter(transferQueries, transferPool)
+	paymentLinkBaseURL := envOrDefault("SETTLA_PAYMENT_LINK_BASE_URL", "http://localhost:3003/p")
+	paymentLinkSvc := paymentlinkcore.NewService(paymentLinkStore, depositEngine, tenantStore, logger, paymentLinkBaseURL)
+	logger.Info("settla-server: payment link service initialized")
+
 	// ── Graceful drain ──────────────────────────────────────────────
-	drainTimeout := time.Duration(envIntOrDefault("SETTLA_DRAIN_TIMEOUT_MS", 15000)) * time.Millisecond
+	drainTimeout := time.Duration(envIntOrDefault("SETTLA_DRAIN_TIMEOUT_MS", 45000)) * time.Millisecond
 	drainer := drain.NewDrainer(drainTimeout, logger)
 
 	// ── Deep health checks ──────────────────────────────────────────
@@ -501,12 +562,14 @@ func main() {
 	// ── HTTP health/readiness server ────────────────────────────────
 	httpPort := envOrDefault("SETTLA_SERVER_HTTP_PORT", "8080")
 
-	opsStore := transferdb.NewOpsAdapter(transferPool, transferQueries)
+	opsStore := transferdb.NewOpsAdapter(transferQueries)
+	auditAdapter := transferdb.NewAuditAdapter(transferPool)
+	logger.Info("settla-server: audit logger initialized")
 
 	mux := http.NewServeMux()
 	healthHandler.Register(mux)
 	mux.Handle("/metrics", promhttp.Handler())
-	settlagrpc.RegisterOpsHandlers(mux, opsStore, logger)
+	settlagrpc.RegisterOpsHandlers(mux, opsStore, logger, auditAdapter)
 
 	httpServer := &http.Server{
 		Addr:    net.JoinHostPort("0.0.0.0", httpPort),
@@ -520,6 +583,13 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// ── Config: JWT secret (must be validated before gRPC server creation) ──
+	jwtSecret := os.Getenv("SETTLA_JWT_SECRET")
+	if jwtSecret == "" {
+		logger.Error("SETTLA_JWT_SECRET must be set — refusing to start without a JWT signing secret")
+		os.Exit(1)
+	}
 
 	// ── gRPC server ────────────────────────────────────────────────
 	grpcPort := envOrDefault("SETTLA_SERVER_GRPC_PORT", "9090")
@@ -545,23 +615,75 @@ func main() {
 	portalStore := transferdb.NewPortalStoreAdapter(transferQueries)
 	webhookMgmtStore := transferdb.NewWebhookAdapter(transferQueries)
 	analyticsStore := transferdb.NewAnalyticsAdapter(transferQueries)
+	extAnalyticsStore := transferdb.NewExtendedAnalyticsAdapter(transferQueries, transferPool)
+	exportStore := transferdb.NewExportAdapter(transferQueries, transferPool)
+	snapshotStore := transferdb.NewSnapshotAdapter(transferQueries, transferPool)
 	// Wrap ledger with circuit breaker for gRPC callers.
 	ledgerCB := resilience.NewCircuitBreaker("ledger",
 		resilience.WithFailureThreshold(5),
 		resilience.WithResetTimeout(30*time.Second),
 	)
 	ledgerWithCB := resilience.NewCircuitBreakerLedger(ledgerSvc, ledgerCB)
+	portalAuthStore := transferdb.NewPortalAuthStoreAdapter(transferQueries, transferPool)
 	grpcSvc := settlagrpc.NewServer(engine, treasurySvc, ledgerWithCB, logger,
 		settlagrpc.WithAuthStore(authStore),
 		settlagrpc.WithTenantPortalStore(portalStore),
 		settlagrpc.WithWebhookManagementStore(webhookMgmtStore),
 		settlagrpc.WithAnalyticsStore(analyticsStore),
+		settlagrpc.WithExtendedAnalyticsStore(extAnalyticsStore),
+		settlagrpc.WithExportStore(exportStore),
+		settlagrpc.WithPortalAuthStore(portalAuthStore),
+		settlagrpc.WithJWTSecret(jwtSecret),
+		settlagrpc.WithDepositEngine(depositEngine),
+		settlagrpc.WithBankDepositEngine(bankDepositEngine),
+		settlagrpc.WithPaymentLinkService(paymentLinkSvc),
+		settlagrpc.WithPaymentLinkBaseURL(paymentLinkBaseURL),
+		settlagrpc.WithAuditLogger(auditAdapter),
 	)
 	pb.RegisterSettlementServiceServer(grpcServer, grpcSvc)
 	pb.RegisterTreasuryServiceServer(grpcServer, grpcSvc)
 	pb.RegisterLedgerServiceServer(grpcServer, grpcSvc)
 	pb.RegisterAuthServiceServer(grpcServer, grpcSvc)
 	pb.RegisterTenantPortalServiceServer(grpcServer, grpcSvc)
+	pb.RegisterPortalAuthServiceServer(grpcServer, grpcSvc)
+	pb.RegisterDepositServiceServer(grpcServer, grpcSvc)
+	pb.RegisterBankDepositServiceServer(grpcServer, grpcSvc)
+	pb.RegisterPaymentLinkServiceServer(grpcServer, grpcSvc)
+	pb.RegisterAnalyticsServiceServer(grpcServer, grpcSvc)
+
+	// Analytics snapshot scheduler
+	if envOrDefault("SETTLA_ANALYTICS_SNAPSHOT_ENABLED", "true") == "true" {
+		snapshotScheduler := analytics.NewSnapshotScheduler(
+			&compositeAnalyticsQuerier{analytics: analyticsStore, ext: extAnalyticsStore},
+			snapshotStore,
+			logger,
+		)
+		snapshotCtx, snapshotCancel := context.WithCancel(ctx)
+		defer snapshotCancel()
+		go func() {
+			if err := snapshotScheduler.Start(snapshotCtx); err != nil && err != context.Canceled {
+				logger.Error("settla-server: analytics snapshot scheduler stopped with error", "error", err)
+			}
+		}()
+		logger.Info("settla-server: analytics snapshot scheduler started")
+	}
+
+	// Analytics export pipeline
+	exportStoragePath := envOrDefault("SETTLA_EXPORT_STORAGE_PATH", "/tmp/settla-exports")
+	analyticsExporter := analytics.NewExporter(
+		&compositeExportSource{analytics: analyticsStore, ext: extAnalyticsStore},
+		exportStore,
+		exportStoragePath,
+		logger,
+	)
+	exportCtx, exportCancel := context.WithCancel(ctx)
+	defer exportCancel()
+	go func() {
+		if err := analyticsExporter.Start(exportCtx); err != nil && err != context.Canceled {
+			logger.Error("settla-server: analytics exporter stopped with error", "error", err)
+		}
+	}()
+	logger.Info("settla-server: analytics exporter started", "storage_path", exportStoragePath)
 
 	// Health check service
 	healthSvc := health.NewServer()
@@ -570,6 +692,9 @@ func main() {
 	healthSvc.SetServingStatus("settla.v1.TreasuryService", healthpb.HealthCheckResponse_SERVING)
 	healthSvc.SetServingStatus("settla.v1.LedgerService", healthpb.HealthCheckResponse_SERVING)
 	healthSvc.SetServingStatus("settla.v1.TenantPortalService", healthpb.HealthCheckResponse_SERVING)
+	healthSvc.SetServingStatus("settla.v1.DepositService", healthpb.HealthCheckResponse_SERVING)
+	healthSvc.SetServingStatus("settla.v1.BankDepositService", healthpb.HealthCheckResponse_SERVING)
+	healthSvc.SetServingStatus("settla.v1.PaymentLinkService", healthpb.HealthCheckResponse_SERVING)
 
 	if os.Getenv("SETTLA_ENV") != "production" {
 		reflection.Register(grpcServer)
@@ -882,4 +1007,50 @@ func (a *apiKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, keyHash str
 		DailyLimitUSD:    decimalFromNumeric(row.DailyLimitUsd).String(),
 		PerTransferLimit: decimalFromNumeric(row.PerTransferLimit).String(),
 	}, nil
+}
+
+// ── Composite Analytics Adapters ─────────────────────────────────────────────
+// Bridge the AnalyticsAdapter and ExtendedAnalyticsAdapter into the unified
+// interfaces required by the snapshot scheduler and exporter.
+
+type compositeAnalyticsQuerier struct {
+	analytics *transferdb.AnalyticsAdapter
+	ext       *transferdb.ExtendedAnalyticsAdapter
+}
+
+func (c *compositeAnalyticsQuerier) GetCorridorMetrics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.CorridorMetrics, error) {
+	return c.analytics.GetCorridorMetrics(ctx, tenantID, from, to)
+}
+
+func (c *compositeAnalyticsQuerier) GetFeeBreakdown(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.FeeBreakdownEntry, error) {
+	return c.ext.GetFeeBreakdown(ctx, tenantID, from, to)
+}
+
+func (c *compositeAnalyticsQuerier) GetTransferLatencyPercentiles(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (*domain.LatencyPercentiles, error) {
+	return c.analytics.GetTransferLatencyPercentiles(ctx, tenantID, from, to)
+}
+
+func (c *compositeAnalyticsQuerier) GetCryptoDepositAnalytics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (*domain.DepositAnalytics, error) {
+	return c.ext.GetCryptoDepositAnalytics(ctx, tenantID, from, to)
+}
+
+func (c *compositeAnalyticsQuerier) GetBankDepositAnalytics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (*domain.DepositAnalytics, error) {
+	return c.ext.GetBankDepositAnalytics(ctx, tenantID, from, to)
+}
+
+type compositeExportSource struct {
+	analytics *transferdb.AnalyticsAdapter
+	ext       *transferdb.ExtendedAnalyticsAdapter
+}
+
+func (c *compositeExportSource) GetFeeBreakdown(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.FeeBreakdownEntry, error) {
+	return c.ext.GetFeeBreakdown(ctx, tenantID, from, to)
+}
+
+func (c *compositeExportSource) GetProviderPerformance(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.ProviderPerformance, error) {
+	return c.ext.GetProviderPerformance(ctx, tenantID, from, to)
+}
+
+func (c *compositeExportSource) GetCorridorMetrics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.CorridorMetrics, error) {
+	return c.analytics.GetCorridorMetrics(ctx, tenantID, from, to)
 }
