@@ -1,0 +1,78 @@
+---
+title: "Webhooks Reference"
+description: "Event types, payload format, and HMAC verification"
+---
+
+# Webhooks Reference
+
+## Payload Format
+
+```json
+{
+  "event_id": "evt_550e8400-e29b-41d4-a716-446655440000",
+  "event_type": "transfer.completed",
+  "timestamp": "2025-01-15T10:00:00Z",
+  "data": {
+    "transfer_id": "tx_abc123",
+    "status": "COMPLETED",
+    "source_currency": "GBP",
+    "source_amount": "1000",
+    "dest_currency": "NGN",
+    "dest_amount": "520000"
+  }
+}
+```
+
+## HMAC-SHA256 Verification
+
+Every webhook includes a signature header:
+
+```
+X-Settla-Signature: sha256=abc123...
+```
+
+Compute the HMAC-SHA256 of the raw request body using your webhook secret, and compare using a timing-safe function.
+
+## Event Types
+
+### Transfer Events
+| Event | Trigger |
+|-------|---------|
+| `transfer.created` | Transfer created |
+| `transfer.treasury_reserved` | Funds reserved |
+| `transfer.onramp_completed` | Fiat converted to stablecoin |
+| `transfer.blockchain_confirmed` | On-chain transfer confirmed |
+| `transfer.completed` | Transfer delivered |
+| `transfer.failed` | Transfer failed |
+
+### Deposit Events
+| Event | Trigger |
+|-------|---------|
+| `deposit.created` | Deposit session created |
+| `deposit.confirming` | On-chain deposit detected |
+| `deposit.confirmed` | Deposit confirmed |
+| `deposit.expired` | Session expired without payment |
+
+### Bank Deposit Events
+| Event | Trigger |
+|-------|---------|
+| `bank_deposit.created` | Bank deposit session created |
+| `bank_deposit.received` | Bank deposit received |
+| `bank_deposit.settled` | Deposit settled |
+
+### Settlement Events
+| Event | Trigger |
+|-------|---------|
+| `settlement.completed` | Daily net settlement completed |
+
+## Retry Schedule
+
+| Attempt | Delay |
+|---------|-------|
+| 1 | Immediate |
+| 2 | 1 minute |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
+
+After 5 failures, the delivery is sent to the dead letter queue.

@@ -1,0 +1,65 @@
+---
+title: "Bank Deposits"
+description: "Accept fiat deposits via virtual bank accounts"
+---
+
+# Bank Deposits
+
+Accept fiat deposits from your users via virtual bank accounts. Settla provisions a unique account number for each deposit session.
+
+## Create a Bank Deposit Session
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/bank-deposits \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currency": "NGN",
+    "expected_amount": "500000",
+    "account_type": "TEMPORARY",
+    "mismatch_policy": "ACCEPT",
+    "settlement_pref": "HOLD_FIAT"
+  }'
+```
+
+```javascript Node.js
+const session = await fetch("https://sandbox.settla.io/v1/bank-deposits", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    currency: "NGN",
+    expected_amount: "500000",
+    account_type: "TEMPORARY",
+    mismatch_policy: "ACCEPT",
+    settlement_pref: "HOLD_FIAT",
+  }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+## Account Types
+
+| Type | Description |
+|------|-------------|
+| `PERMANENT` | Long-lived virtual account for recurring deposits |
+| `TEMPORARY` | Single-use account that expires after the deposit |
+
+## Mismatch Policies
+
+| Policy | Description |
+|--------|-------------|
+| `ACCEPT` | Accept deposits that don't match the expected amount |
+| `REJECT` | Reject mismatched deposits and refund |
+
+## List Virtual Accounts
+
+```bash
+curl https://sandbox.settla.io/v1/bank-deposits/accounts \
+  -H "Authorization: Bearer $API_KEY"
+```

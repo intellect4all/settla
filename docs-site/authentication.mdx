@@ -1,0 +1,61 @@
+---
+title: "Authentication"
+description: "API keys, JWT tokens, and authentication flows"
+---
+
+# Authentication
+
+Settla supports two authentication methods: **API keys** for server-to-server integration and **JWT tokens** for portal access.
+
+## API Keys
+
+API keys are the primary authentication method for the Settla API. Every API request must include a valid key in the `Authorization` header.
+
+```bash
+Authorization: Bearer sk_live_your_api_key_here
+```
+
+### Key Prefixes
+
+| Prefix | Environment | Description |
+|--------|-------------|-------------|
+| `sk_live_` | Production | Real money, real transfers |
+| `sk_test_` | Sandbox | Test environment, no real funds |
+
+### Key Security
+
+- Keys are stored as SHA-256 hashes — we never store raw keys
+- Keys are scoped to a single tenant
+- Revoked keys are invalidated across all gateway instances within milliseconds
+- Rotate keys regularly using the [key rotation endpoint](/api-reference/auth/rotate-api-key)
+
+<Warning>
+Never expose API keys in client-side code, public repositories, or logs. Use environment variables and server-side code only.
+</Warning>
+
+## JWT Tokens (Portal)
+
+JWT tokens are used by the tenant portal for user-level authentication. They are obtained via the [login endpoint](/api-reference/auth/login).
+
+### Token Types
+
+| Type | Lifetime | Usage |
+|------|----------|-------|
+| Access token | 15 minutes | API requests from portal |
+| Refresh token | 7 days | Obtain new access tokens |
+
+### Token Flow
+
+1. Call `POST /v1/auth/login` with email and password
+2. Receive `access_token` and `refresh_token`
+3. Use `access_token` in the `Authorization: Bearer` header
+4. When the access token expires, call `POST /v1/auth/refresh` with the refresh token
+
+## Rate Limits
+
+Authentication lookups are cached for performance:
+- **L1 cache** (in-process): ~100ns lookup, 30-second TTL
+- **L2 cache** (Redis): ~0.5ms lookup, 5-minute TTL
+- **L3** (database): Source of truth, used on cache miss
+
+See [Rate Limits](/reference/rate-limits) for per-tenant request limits.

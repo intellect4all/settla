@@ -1,0 +1,49 @@
+---
+title: "Idempotency"
+description: "How idempotency works and best practices"
+---
+
+# Idempotency
+
+Every mutation in the Settla API is idempotent. This means you can safely retry failed requests without creating duplicate resources.
+
+## How It Works
+
+1. Include an `idempotency_key` in your request body (for transfer creation) or header
+2. Settla stores the key scoped to your tenant: `UNIQUE(tenant_id, idempotency_key)`
+3. If the same key is sent again, Settla returns the original response
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use UUIDs for idempotency keys">
+    Generate a UUID v4 for each unique business operation. This guarantees uniqueness without coordination.
+    ```javascript
+    const idempotencyKey = crypto.randomUUID();
+    ```
+  </Accordion>
+
+  <Accordion title="Retry on network errors">
+    If a request times out or returns a 5xx error, retry with the **same** idempotency key. Settla will return the original result if the first request succeeded.
+  </Accordion>
+
+  <Accordion title="Don't reuse keys for different operations">
+    Each unique business operation should have its own idempotency key. Reusing a key from a GBP→NGN transfer for a USD→KES transfer will return the original GBP→NGN transfer.
+  </Accordion>
+
+  <Accordion title="Keys are tenant-scoped">
+    Idempotency keys are unique per tenant. Two different tenants can use the same key without conflict.
+  </Accordion>
+</AccordionGroup>
+
+## Conflict Handling
+
+If you send the same idempotency key with **different** request parameters, Settla returns a `409 IDEMPOTENCY_CONFLICT` error:
+
+```json
+{
+  "error": "IDEMPOTENCY_CONFLICT",
+  "code": "IDEMPOTENCY_CONFLICT",
+  "message": "Idempotency key already used with different parameters"
+}
+```

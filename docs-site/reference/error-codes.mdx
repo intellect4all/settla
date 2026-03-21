@@ -1,0 +1,97 @@
+---
+title: "Error Codes"
+description: "Complete list of Settla API error codes"
+---
+
+# Error Codes
+
+All error responses include a machine-readable `error` code. Use these codes for programmatic error handling.
+
+## 400 -- Bad Request
+
+| Code | Description |
+|------|-------------|
+| `AMOUNT_TOO_LOW` | Transfer amount below minimum threshold |
+| `AMOUNT_TOO_HIGH` | Transfer amount exceeds maximum limit |
+| `CURRENCY_MISMATCH` | Source and destination currencies don't form a valid corridor |
+| `LEDGER_IMBALANCE` | Internal ledger inconsistency detected |
+| `PAYMENT_MISMATCH` | Payment amount doesn't match expected amount |
+| `CRYPTO_DISABLED` | Crypto deposits are disabled for this tenant |
+| `CHAIN_NOT_SUPPORTED` | Requested blockchain is not supported |
+| `BANK_DEPOSITS_DISABLED` | Bank deposits are disabled for this tenant |
+| `CURRENCY_NOT_SUPPORTED` | Requested currency is not supported |
+
+## 401 -- Unauthorized
+
+| Code | Description |
+|------|-------------|
+| `UNAUTHORIZED` | Missing or invalid authentication |
+| `INVALID_CREDENTIALS` | Wrong email or password |
+
+## 403 -- Forbidden
+
+| Code | Description |
+|------|-------------|
+| `TENANT_SUSPENDED` | Tenant account has been suspended |
+
+## 404 -- Not Found
+
+| Code | Description |
+|------|-------------|
+| `TRANSFER_NOT_FOUND` | Transfer with given ID does not exist |
+| `ACCOUNT_NOT_FOUND` | Ledger account not found |
+| `TENANT_NOT_FOUND` | Tenant does not exist |
+| `DEPOSIT_NOT_FOUND` | Deposit session not found |
+| `BANK_DEPOSIT_NOT_FOUND` | Bank deposit session not found |
+| `PAYMENT_LINK_NOT_FOUND` | Payment link not found |
+
+## 409 -- Conflict
+
+| Code | Description |
+|------|-------------|
+| `IDEMPOTENCY_CONFLICT` | Same idempotency key used with different parameters |
+| `EMAIL_ALREADY_EXISTS` | Email address already registered |
+| `SLUG_CONFLICT` | Tenant slug already taken |
+| `OPTIMISTIC_LOCK` | Concurrent modification detected, retry the request |
+
+## 422 -- Unprocessable Entity
+
+| Code | Description |
+|------|-------------|
+| `QUOTE_EXPIRED` | Quote has expired, request a new one |
+| `INVALID_TRANSITION` | Invalid state transition for this transfer |
+| `POSITION_LOCKED` | Treasury position is locked |
+| `CORRIDOR_DISABLED` | This corridor is currently disabled |
+| `EMAIL_NOT_VERIFIED` | Email must be verified before this action |
+| `TOKEN_EXPIRED` | Verification or reset token has expired |
+| `DEPOSIT_EXPIRED` | Deposit session has expired |
+| `PAYMENT_LINK_EXPIRED` | Payment link has expired |
+| `PAYMENT_LINK_EXHAUSTED` | Payment link has reached its use limit |
+| `PAYMENT_LINK_DISABLED` | Payment link has been disabled |
+
+## 429 -- Rate Limited / Resource Exhausted
+
+| Code | Description |
+|------|-------------|
+| `INSUFFICIENT_FUNDS` | Not enough funds in treasury position |
+| `RESERVATION_FAILED` | Failed to reserve funds (concurrent pressure) |
+| `DAILY_LIMIT_EXCEEDED` | Tenant's daily transfer limit exceeded |
+| `RATE_LIMIT_EXCEEDED` | Too many requests, slow down |
+
+## 500 -- Internal Error
+
+| Code | Description |
+|------|-------------|
+| `BLOCKCHAIN_REORG` | Blockchain reorganization detected |
+| `COMPENSATION_FAILED` | Automatic compensation/refund failed |
+
+## 503 -- Service Unavailable
+
+| Code | Description |
+|------|-------------|
+| `PROVIDER_ERROR` | Payment provider returned an error |
+| `CHAIN_ERROR` | Blockchain RPC error |
+| `PROVIDER_UNAVAILABLE` | Payment provider is temporarily unavailable |
+| `NETWORK_ERROR` | Network connectivity issue |
+| `ADDRESS_POOL_EMPTY` | No available deposit addresses |
+| `VIRTUAL_ACCOUNT_POOL_EMPTY` | No available virtual accounts |

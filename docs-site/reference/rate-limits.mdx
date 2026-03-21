@@ -1,0 +1,51 @@
+---
+title: "Rate Limits"
+description: "Per-tenant rate limiting"
+---
+
+# Rate Limits
+
+Settla enforces per-tenant rate limits to ensure fair usage and system stability.
+
+## Default Limits
+
+| Endpoint | Limit | Window |
+|----------|-------|--------|
+| All API endpoints | 1,000 requests | Per second |
+| `POST /v1/auth/login` | 10 requests | Per minute |
+| `POST /v1/auth/register` | 5 requests | Per minute |
+
+## Rate Limit Headers
+
+Every response includes rate limit headers:
+
+```
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 997
+X-RateLimit-Reset: 1705312800
+```
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests per window |
+| `X-RateLimit-Remaining` | Requests remaining in current window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+
+## 429 Response
+
+When rate limited, the API returns:
+
+```json
+{
+  "error": "rate_limit_exceeded",
+  "message": "Rate limit exceeded. Try again later.",
+  "retry_after": 1
+}
+```
+
+## Best Practices
+
+- Implement exponential backoff on 429 responses
+- Cache responses where possible (quotes are valid for 5 minutes)
+- Use webhooks instead of polling for status updates
+- Contact support if you need higher limits for your use case

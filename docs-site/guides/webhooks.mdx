@@ -1,0 +1,96 @@
+---
+title: "Webhooks"
+description: "Configure webhooks for real-time event notifications"
+---
+
+# Webhooks
+
+Receive real-time notifications when transfer statuses change, deposits are confirmed, or other events occur.
+
+## Configure Your Webhook URL
+
+```bash
+curl -X PUT https://sandbox.settla.io/v1/me/webhooks \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"webhook_url": "https://your-app.com/webhooks/settla"}'
+```
+
+## Verify Webhook Signatures
+
+Every webhook includes an HMAC-SHA256 signature in the `X-Settla-Signature` header. Always verify this signature.
+
+<CodeGroup>
+
+```javascript Node.js
+import crypto from "node:crypto";
+
+function verifyWebhook(payload, signature, secret) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(payload)
+    .digest("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  );
+}
+
+// In your webhook handler:
+app.post("/webhooks/settla", (req, res) => {
+  const isValid = verifyWebhook(
+    JSON.stringify(req.body),
+    req.headers["x-settla-signature"],
+    process.env.SETTLA_WEBHOOK_SECRET
+  );
+  if (!isValid) return res.status(401).send("Invalid signature");
+
+  // Process the event
+  console.log("Event:", req.body.event_type);
+  res.status(200).send("OK");
+});
+```
+
+```python Python
+import hmac
+import hashlib
+
+def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+```
+
+</CodeGroup>
+
+## Event Types
+
+| Event | Description |
+|-------|-------------|
+| `transfer.created` | New transfer created |
+| `transfer.completed` | Transfer delivered successfully |
+| `transfer.failed` | Transfer failed |
+| `deposit.confirmed` | Crypto deposit confirmed on-chain |
+| `bank_deposit.received` | Bank deposit received |
+| `settlement.completed` | Daily settlement completed |
+
+## Retry Policy
+
+Failed webhook deliveries are retried with exponential backoff:
+- Attempt 1: Immediate
+- Attempt 2: 1 minute
+- Attempt 3: 5 minutes
+- Attempt 4: 30 minutes
+- Attempt 5: 2 hours
+
+After 5 failed attempts, the delivery is moved to the dead letter queue. View failed deliveries via `GET /v1/me/webhooks/deliveries`.
+
+## Test Webhooks
+
+Send a test event to verify your endpoint:
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/me/webhooks/test \
+  -H "Authorization: Bearer $API_KEY"
+```

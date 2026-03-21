@@ -1,0 +1,75 @@
+---
+title: "Crypto Deposits"
+description: "Accept on-chain stablecoin deposits"
+---
+
+# Crypto Deposits
+
+Accept stablecoin deposits from your users by creating deposit sessions with unique on-chain addresses.
+
+## Create a Deposit Session
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/deposits \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chain": "tron",
+    "token": "USDT",
+    "expected_amount": "100",
+    "settlement_pref": "HOLD_CRYPTO"
+  }'
+```
+
+```javascript Node.js
+const session = await fetch("https://sandbox.settla.io/v1/deposits", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    chain: "tron",
+    token: "USDT",
+    expected_amount: "100",
+    settlement_pref: "HOLD_CRYPTO",
+  }),
+}).then(r => r.json());
+
+console.log(`Deposit address: ${session.session.deposit_address}`);
+```
+
+</CodeGroup>
+
+## Settlement Preferences
+
+| Preference | Description |
+|-----------|-------------|
+| `HOLD_CRYPTO` | Keep deposited stablecoins as crypto balance |
+| `AUTO_CONVERT` | Automatically convert to fiat on receipt |
+
+## Monitor Deposits
+
+Settla monitors the blockchain for incoming transactions. When a deposit is detected:
+1. The session status moves to `CONFIRMING`
+2. After sufficient confirmations, it moves to `CONFIRMED`
+3. Based on settlement preference, funds are held or converted
+
+## Public Status Page
+
+Each deposit session has a public status page that doesn't require authentication:
+
+```
+GET /v1/deposits/:id/public-status
+```
+
+Share this with your payer so they can track their deposit.
+
+## Check Crypto Balances
+
+```bash
+curl https://sandbox.settla.io/v1/deposits/balance \
+  -H "Authorization: Bearer $API_KEY"
+```

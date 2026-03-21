@@ -1,0 +1,208 @@
+---
+title: "Quickstart"
+description: "Get your first transfer running in 5 minutes"
+---
+
+# Quickstart
+
+This guide walks you through creating your first cross-border transfer using the Settla API.
+
+## Prerequisites
+
+- A Settla account with an API key (starts with `sk_test_` for sandbox)
+- Your tenant must be in `ACTIVE` status (KYB approved)
+
+## Step 1: Get a Quote
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/quotes \
+  -H "Authorization: Bearer sk_test_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_currency": "GBP",
+    "source_amount": "1000",
+    "dest_currency": "NGN"
+  }'
+```
+
+```javascript Node.js
+const response = await fetch("https://sandbox.settla.io/v1/quotes", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    source_currency: "GBP",
+    source_amount: "1000",
+    dest_currency: "NGN",
+  }),
+});
+
+const quote = await response.json();
+console.log(`Quote ID: ${quote.id}`);
+console.log(`Rate: 1 GBP = ${quote.fx_rate} NGN`);
+console.log(`Recipient gets: ${quote.dest_amount} NGN`);
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "https://sandbox.settla.io/v1/quotes",
+    headers={
+        "Authorization": "Bearer sk_test_your_api_key",
+        "Content-Type": "application/json",
+    },
+    json={
+        "source_currency": "GBP",
+        "source_amount": "1000",
+        "dest_currency": "NGN",
+    },
+)
+
+quote = response.json()
+print(f"Quote ID: {quote['id']}")
+print(f"Rate: 1 GBP = {quote['fx_rate']} NGN")
+```
+
+</CodeGroup>
+
+**Response:**
+```json
+{
+  "id": "q-abc123",
+  "source_currency": "GBP",
+  "source_amount": "1000",
+  "dest_currency": "NGN",
+  "dest_amount": "520000",
+  "fx_rate": "520.00",
+  "fees": {
+    "on_ramp_fee": "2.00",
+    "network_fee": "0.50",
+    "off_ramp_fee": "1.50",
+    "total_fee_usd": "4.00"
+  },
+  "route": {
+    "chain": "tron",
+    "stable_coin": "USDT",
+    "on_ramp_provider": "onramp-gbp",
+    "off_ramp_provider": "offramp-ngn"
+  },
+  "expires_at": "2025-01-15T10:05:00Z"
+}
+```
+
+<Note>Quotes expire after 5 minutes. Create the transfer before the quote expires.</Note>
+
+## Step 2: Create a Transfer
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/transfers \
+  -H "Authorization: Bearer sk_test_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "my-unique-key-001",
+    "source_currency": "GBP",
+    "source_amount": "1000",
+    "dest_currency": "NGN",
+    "recipient": {
+      "name": "Adebayo Ogunlesi",
+      "country": "NG"
+    }
+  }'
+```
+
+```javascript Node.js
+const transfer = await fetch("https://sandbox.settla.io/v1/transfers", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    idempotency_key: "my-unique-key-001",
+    source_currency: "GBP",
+    source_amount: "1000",
+    dest_currency: "NGN",
+    recipient: {
+      name: "Adebayo Ogunlesi",
+      country: "NG",
+    },
+  }),
+}).then(r => r.json());
+
+console.log(`Transfer ID: ${transfer.id}`);
+console.log(`Status: ${transfer.status}`);
+```
+
+```python Python
+transfer = requests.post(
+    "https://sandbox.settla.io/v1/transfers",
+    headers={
+        "Authorization": "Bearer sk_test_your_api_key",
+        "Content-Type": "application/json",
+    },
+    json={
+        "idempotency_key": "my-unique-key-001",
+        "source_currency": "GBP",
+        "source_amount": "1000",
+        "dest_currency": "NGN",
+        "recipient": {
+            "name": "Adebayo Ogunlesi",
+            "country": "NG",
+        },
+    },
+).json()
+
+print(f"Transfer ID: {transfer['id']}")
+```
+
+</CodeGroup>
+
+<Warning>
+Always provide a unique `idempotency_key`. If your request is retried (e.g. due to network timeout), Settla will return the existing transfer instead of creating a duplicate.
+</Warning>
+
+## Step 3: Check Transfer Status
+
+<CodeGroup>
+
+```bash cURL
+curl https://sandbox.settla.io/v1/transfers/TX_ID \
+  -H "Authorization: Bearer sk_test_your_api_key"
+```
+
+```javascript Node.js
+const status = await fetch(`https://sandbox.settla.io/v1/transfers/${transfer.id}`, {
+  headers: { "Authorization": "Bearer sk_test_your_api_key" },
+}).then(r => r.json());
+
+console.log(`Status: ${status.status}`);
+```
+
+</CodeGroup>
+
+## Transfer States
+
+| State | Description |
+|-------|-------------|
+| `CREATED` | Transfer accepted, pending processing |
+| `TREASURY_RESERVED` | Funds reserved in treasury |
+| `ONRAMP_PENDING` | Fiat-to-stablecoin conversion in progress |
+| `ONRAMP_COMPLETED` | Stablecoins acquired |
+| `BLOCKCHAIN_PENDING` | On-chain transfer submitted |
+| `BLOCKCHAIN_CONFIRMED` | On-chain transfer confirmed |
+| `OFFRAMP_PENDING` | Stablecoin-to-fiat conversion in progress |
+| `COMPLETED` | Transfer delivered to recipient |
+| `FAILED` | Transfer failed (check events for details) |
+
+## Next Steps
+
+- [Set up webhooks](/guides/webhooks) for real-time status updates
+- [Accept crypto deposits](/guides/crypto-deposits) from your users
+- [Explore the full API](/api-reference/overview)

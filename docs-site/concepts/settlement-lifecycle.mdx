@@ -1,0 +1,39 @@
+---
+title: "Settlement Lifecycle"
+description: "End-to-end stablecoin settlement flow"
+---
+
+# Settlement Lifecycle
+
+Settla settles cross-border payments through a multi-step process involving fiat on-ramps, stablecoin rails, and fiat off-ramps.
+
+## End-to-End Flow
+
+1. **Quote** — Settla calculates the FX rate, fees, and selects the optimal route
+2. **Treasury Reserve** — Funds are locked atomically in the treasury position
+3. **On-Ramp** — Source fiat (e.g. GBP) is converted to stablecoins (e.g. USDT)
+4. **Blockchain Transfer** — Stablecoins move on-chain to the destination
+5. **Off-Ramp** — Stablecoins are converted to destination fiat (e.g. NGN)
+6. **Delivery** — Funds are delivered to the recipient
+7. **Net Settlement** — At 00:30 UTC daily, Settla calculates net positions and settles
+
+## Smart Routing
+
+Settla's router scores available routes on four dimensions:
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Cost | 40% | Total fees (on-ramp + network + off-ramp) |
+| Speed | 30% | Estimated settlement time |
+| Liquidity | 20% | Available balance on the route |
+| Reliability | 10% | Historical success rate |
+
+The highest-scoring route is selected automatically. You can query available routes via `POST /v1/routes`.
+
+## Daily Net Settlement
+
+At 00:30 UTC each day, Settla runs net settlement:
+- Groups all completed transfers by currency pair
+- Calculates net positions (e.g. if 100 GBP→NGN and 30 NGN→GBP, net is 70 GBP→NGN)
+- Executes a single settlement per currency pair
+- Reduces on-chain transaction costs significantly

@@ -1,0 +1,190 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Settla",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#0D9373",
+    "light": "#07C983",
+    "dark": "#0D9373",
+    "anchors": {
+      "from": "#0D9373",
+      "to": "#07C983"
+    }
+  },
+  "topbarLinks": [
+    {
+      "name": "Support",
+      "url": "mailto:support@settla.io"
+    }
+  ],
+  "topbarCtaButton": {
+    "name": "Dashboard",
+    "url": "https://portal.settla.io"
+  },
+  "tabs": [
+    {
+      "name": "API Reference",
+      "url": "api-reference"
+    }
+  ],
+  "anchors": [
+    {
+      "name": "Status",
+      "icon": "signal",
+      "url": "https://status.settla.io"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": [
+        "introduction",
+        "quickstart",
+        "authentication",
+        "environments"
+      ]
+    },
+    {
+      "group": "Core Concepts",
+      "pages": [
+        "concepts/transfers",
+        "concepts/settlement-lifecycle",
+        "concepts/currencies-corridors",
+        "concepts/idempotency",
+        "concepts/error-handling"
+      ]
+    },
+    {
+      "group": "Guides",
+      "pages": [
+        "guides/create-transfer",
+        "guides/crypto-deposits",
+        "guides/bank-deposits",
+        "guides/payment-links",
+        "guides/treasury-management",
+        "guides/webhooks",
+        "guides/transaction-verification"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "api-reference/overview"
+      ]
+    },
+    {
+      "group": "Quotes",
+      "pages": [
+        "api-reference/quotes/create-quote",
+        "api-reference/quotes/get-quote"
+      ]
+    },
+    {
+      "group": "Transfers",
+      "pages": [
+        "api-reference/transfers/create-transfer",
+        "api-reference/transfers/get-transfer",
+        "api-reference/transfers/list-transfers",
+        "api-reference/transfers/get-transfer-events",
+        "api-reference/transfers/cancel-transfer"
+      ]
+    },
+    {
+      "group": "Treasury",
+      "pages": [
+        "api-reference/treasury/list-positions",
+        "api-reference/treasury/get-position",
+        "api-reference/treasury/get-liquidity-report"
+      ]
+    },
+    {
+      "group": "Ledger",
+      "pages": [
+        "api-reference/ledger/list-accounts",
+        "api-reference/ledger/get-account-balance",
+        "api-reference/ledger/list-account-transactions"
+      ]
+    },
+    {
+      "group": "Crypto Deposits",
+      "pages": [
+        "api-reference/deposits/create-deposit-session",
+        "api-reference/deposits/get-deposit-session",
+        "api-reference/deposits/list-deposit-sessions",
+        "api-reference/deposits/cancel-deposit-session",
+        "api-reference/deposits/get-crypto-balances",
+        "api-reference/deposits/convert-crypto-to-fiat",
+        "api-reference/deposits/get-deposit-public-status"
+      ]
+    },
+    {
+      "group": "Bank Deposits",
+      "pages": [
+        "api-reference/bank-deposits/create-bank-deposit-session",
+        "api-reference/bank-deposits/get-bank-deposit-session",
+        "api-reference/bank-deposits/list-bank-deposit-sessions",
+        "api-reference/bank-deposits/cancel-bank-deposit-session",
+        "api-reference/bank-deposits/list-virtual-accounts"
+      ]
+    },
+    {
+      "group": "Payment Links",
+      "pages": [
+        "api-reference/payment-links/create-payment-link",
+        "api-reference/payment-links/list-payment-links",
+        "api-reference/payment-links/get-payment-link",
+        "api-reference/payment-links/disable-payment-link",
+        "api-reference/payment-links/resolve-payment-link",
+        "api-reference/payment-links/redeem-payment-link"
+      ]
+    },
+    {
+      "group": "Routes",
+      "pages": [
+        "api-reference/routes/get-routing-options"
+      ]
+    },
+    {
+      "group": "Verification",
+      "pages": [
+        "api-reference/verification/verify-transaction",
+        "api-reference/verification/lookup-transaction"
+      ]
+    },
+    {
+      "group": "Webhooks",
+      "pages": [
+        "api-reference/webhooks/receive-provider-webhook"
+      ]
+    },
+    {
+      "group": "Auth",
+      "pages": [
+        "api-reference/auth/register",
+        "api-reference/auth/login",
+        "api-reference/auth/verify-email",
+        "api-reference/auth/refresh-token"
+      ]
+    },
+    {
+      "group": "Reference",
+      "pages": [
+        "reference/error-codes",
+        "reference/rate-limits",
+        "reference/webhooks-reference",
+        "reference/sdks",
+        "reference/changelog"
+      ]
+    }
+  ],
+  "openapi": "openapi.json",
+  "footerSocials": {
+    "x": "https://x.com/settla_io",
+    "github": "https://github.com/settla-io",
+    "linkedin": "https://linkedin.com/company/settla"
+  }
+}
