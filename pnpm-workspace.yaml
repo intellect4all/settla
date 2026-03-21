@@ -3,3 +3,4 @@ packages:
   - "api/webhook"
   - "dashboard"
   - "portal"
+  - "packages/*"
