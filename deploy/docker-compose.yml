@@ -12,6 +12,7 @@ services:
 
   postgres-ledger:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_DB: settla_ledger
       POSTGRES_USER: ${POSTGRES_USER:-settla}
@@ -40,6 +41,7 @@ services:
 
   postgres-transfer:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_DB: settla_transfer
       POSTGRES_USER: ${POSTGRES_USER:-settla}
@@ -68,6 +70,7 @@ services:
 
   postgres-treasury:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_DB: settla_treasury
       POSTGRES_USER: ${POSTGRES_USER:-settla}
@@ -95,8 +98,8 @@ services:
           memory: 512M
 
   # ── PgBouncer (connection pooling per bounded context) ──────────
-  # Production: 6+ settla-server replicas × 100 conns = 600 client conns
-  # PgBouncer pools these to ~50 actual Postgres connections per DB.
+  # Production: 10+ settla-server replicas × 200 conns = 2,000+ client conns
+  # PgBouncer pools these to ~200 actual Postgres connections per DB.
   # pool_mode=transaction: connections released back to pool after each transaction.
 
   pgbouncer-ledger:
@@ -104,11 +107,11 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 50
-      MIN_POOL_SIZE: 10
-      RESERVE_POOL_SIZE: 10
-      RESERVE_POOL_TIMEOUT: 3
+      MAX_CLIENT_CONN: 2000
+      DEFAULT_POOL_SIZE: 600
+      MIN_POOL_SIZE: 50
+      RESERVE_POOL_SIZE: 20
+      RESERVE_POOL_TIMEOUT: 5
       SERVER_IDLE_TIMEOUT: 300
       SERVER_LIFETIME: 3600
       LOG_CONNECTIONS: 0
@@ -138,11 +141,11 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 50
-      MIN_POOL_SIZE: 10
-      RESERVE_POOL_SIZE: 10
-      RESERVE_POOL_TIMEOUT: 3
+      MAX_CLIENT_CONN: 2000
+      DEFAULT_POOL_SIZE: 600
+      MIN_POOL_SIZE: 50
+      RESERVE_POOL_SIZE: 20
+      RESERVE_POOL_TIMEOUT: 5
       SERVER_IDLE_TIMEOUT: 300
       SERVER_LIFETIME: 3600
       LOG_CONNECTIONS: 0
@@ -172,11 +175,11 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 50
-      MIN_POOL_SIZE: 10
-      RESERVE_POOL_SIZE: 10
-      RESERVE_POOL_TIMEOUT: 3
+      MAX_CLIENT_CONN: 2000
+      DEFAULT_POOL_SIZE: 600
+      MIN_POOL_SIZE: 50
+      RESERVE_POOL_SIZE: 20
+      RESERVE_POOL_TIMEOUT: 5
       SERVER_IDLE_TIMEOUT: 300
       SERVER_LIFETIME: 3600
       LOG_CONNECTIONS: 0
@@ -302,7 +305,7 @@ services:
   # L1 is an in-process local cache in gateway/settla-server (30s TTL).
   #
   # Production: 3-node Redis cluster.
-  # Dev: single node, 512MB max.
+  # Dev: single node, 2GB max.
 
   redis:
     image: redis:7.2-alpine
@@ -319,9 +322,9 @@ services:
       - "--save"
       - "300 10"
       - "--maxmemory"
-      - "512mb"
+      - "2gb"
       - "--maxmemory-policy"
-      - "allkeys-lru"
+      - "volatile-lru"
     ports:
       - "6380:6379"
     volumes:
@@ -347,6 +350,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/settla-server.Dockerfile
+    stop_grace_period: 30s
     ports:
       - "${SETTLA_SERVER_HTTP_PORT:-8081}:8080"
       - "${SETTLA_SERVER_GRPC_PORT:-9090}:9090"
@@ -364,9 +368,13 @@ services:
       # SETTLA_TRANSFER_APP_DB_URL: postgres://settla_app:settla_app@postgres-transfer:5432/settla_transfer?sslmode=disable
       # SETTLA_LEDGER_APP_DB_URL: postgres://settla_app:settla_app@postgres-ledger:5432/settla_ledger?sslmode=disable
       # SETTLA_TREASURY_APP_DB_URL: postgres://settla_app:settla_app@postgres-treasury:5432/settla_treasury?sslmode=disable
-      # SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001  # Disabled: TB Go client v0.16.11 address parsing issue; ledger runs in stub mode
+      # SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001
+      # Re-enable once TB Go client address parsing is fixed (v0.16.11 bug).
+      # Check: go list -m github.com/tigerbeetle/tigerbeetle-go
+      # When re-enabled, remove the stub mode fallback in cmd/settla-server/main.go.
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       SETTLA_NATS_URL: nats://nats:4222
+      SETTLA_JWT_SECRET: ${SETTLA_JWT_SECRET:?SETTLA_JWT_SECRET must be set in .env}
       SETTLA_SERVER_HTTP_PORT: "8080"
       SETTLA_SERVER_GRPC_PORT: "9090"
       SETTLA_PPROF_PORT: "6060"
@@ -422,6 +430,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/settla-node.Dockerfile
+    stop_grace_period: 30s
     ports:
       - "${SETTLA_NODE_METRICS_PORT:-9091}:9091"
     volumes:
@@ -489,20 +498,24 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/gateway.Dockerfile
+    stop_grace_period: 30s
     ports:
-      - "${SETTLA_GATEWAY_PORT:-3000}:3000"
+      - "${SETTLA_GATEWAY_PORT:-3100}:3000"
     environment:
       PORT: "3000"
       HOST: "0.0.0.0"
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       SETTLA_SERVER_GRPC_URL: settla-server:9090
+      SETTLA_SERVER_HTTP_URL: http://settla-server:${SETTLA_SERVER_HTTP_PORT:-8081}
+      SETTLA_OPS_API_KEY: ${SETTLA_OPS_API_KEY:-settla-ops-secret-change-me}
       SETTLA_GRPC_POOL_SIZE: "${SETTLA_GRPC_POOL_SIZE:-50}"
       SETTLA_TENANT_CACHE_TTL_SECONDS: "${SETTLA_TENANT_CACHE_TTL_SECONDS:-30}"
       SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-debug}
       SETTLA_ENV: ${SETTLA_ENV:-development}
+      SETTLA_JWT_SECRET: ${SETTLA_JWT_SECRET:?SETTLA_JWT_SECRET must be set in .env}
       SETTLA_RATE_LIMIT_PER_TENANT: "${SETTLA_RATE_LIMIT_PER_TENANT:-10000}"
       SETTLA_LOAD_SHED_MAX_CONCURRENT: "${SETTLA_LOAD_SHED_MAX_CONCURRENT:-5000}"
-      SETTLA_LOAD_SHED_TARGET_LATENCY_MS: "${SETTLA_LOAD_SHED_TARGET_LATENCY_MS:-500}"
+      SETTLA_LOAD_SHED_TARGET_LATENCY_MS: "${SETTLA_LOAD_SHED_TARGET_LATENCY_MS:-1000}"
       SETTLA_LOAD_SHED_INITIAL_LIMIT: "${SETTLA_LOAD_SHED_INITIAL_LIMIT:-2000}"
     networks:
       - settla-net
@@ -734,7 +747,7 @@ services:
       start_period: 5s
 
   pgbouncer-exporter-ledger:
-    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    image: prometheuscommunity/pgbouncer-exporter:latest
     ports:
       - "9127:9127"
     environment:
@@ -753,7 +766,7 @@ services:
       start_period: 5s
 
   pgbouncer-exporter-transfer:
-    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    image: prometheuscommunity/pgbouncer-exporter:latest
     ports:
       - "9128:9127"
     environment:
@@ -772,7 +785,7 @@ services:
       start_period: 5s
 
   pgbouncer-exporter-treasury:
-    image: spreaker/prometheus-pgbouncer-exporter:2.2.1
+    image: prometheuscommunity/pgbouncer-exporter:latest
     ports:
       - "9129:9127"
     environment:
@@ -803,6 +816,37 @@ services:
       retries: 3
       start_period: 5s
 
+  # ── Metabase (DB GUI) ────────────────────────────────────────────────
+  metabase:
+    image: metabase/metabase:v0.52.6
+    ports:
+      - "${SETTLA_METABASE_PORT:-3003}:3000"
+    environment:
+      MB_DB_TYPE: h2
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - metabasedata:/metabase-data
+    networks:
+      - settla-net
+    depends_on:
+      postgres-ledger:
+        condition: service_healthy
+      postgres-transfer:
+        condition: service_healthy
+      postgres-treasury:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+
 volumes:
   pgdata-ledger:
   pgdata-transfer:
@@ -812,6 +856,7 @@ volumes:
   redisdata:
   promdata:
   grafanadata:
+  metabasedata:
 
 networks:
   settla-net:

@@ -45,8 +45,8 @@ data:
         - data-checksums
       postgresql:
         parameters:
-          # Connection management — sized for PgBouncer pool (not direct clients)
-          max_connections: 200
+          # Connection management — sized for PgBouncer pool (DEFAULT_POOL_SIZE=200 + reserve)
+          max_connections: 400
           # Memory — tuned for 4Gi container limit
           shared_buffers: 1GB
           effective_cache_size: 3GB
@@ -57,6 +57,9 @@ data:
           max_wal_senders: 10
           max_replication_slots: 10
           hot_standby: "on"
+          hot_standby_feedback: "on"
+          max_standby_streaming_delay: 30s
+          max_standby_archive_delay: 30s
           wal_keep_size: 1GB
           # Synchronous replication for zero data loss
           synchronous_commit: "on"

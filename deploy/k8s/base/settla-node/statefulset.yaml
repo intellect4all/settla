@@ -22,8 +22,20 @@ spec:
         prometheus.io/port: "9091"
         prometheus.io/path: "/metrics"
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 60
       serviceAccountName: settla-node
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - settla-node
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: settla-node
           image: settla-node:latest
@@ -34,11 +46,11 @@ spec:
               protocol: TCP
           resources:
             requests:
-              cpu: "1000m"
-              memory: "2Gi"
+              cpu: "1"
+              memory: "3Gi"
             limits:
-              cpu: "2000m"
-              memory: "4Gi"
+              cpu: "2"
+              memory: "6Gi"
           readinessProbe:
             httpGet:
               path: /health
