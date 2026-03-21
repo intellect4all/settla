@@ -52,3 +52,5 @@ gen/
 # Generated reports
 bench-results.txt
 tests/loadtest/reports/
+tests/api-test/results.json
+tests/api-test/report.md
