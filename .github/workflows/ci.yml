@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,7 +22,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -73,7 +75,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -128,7 +130,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -215,7 +217,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Start Postgres instances
         run: |
@@ -308,7 +310,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Start Postgres instances
         run: |
@@ -374,6 +376,26 @@ jobs:
           SETTLA_MOCK_DELAY_MS: "1"
         run: make loadtest-quick
 
+  loadtest-peak:
+    name: Load Test (Peak - Nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run peak load test
+        run: make loadtest
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-peak-results
+          path: bench-results.txt
+
   bench:
     name: Benchmark Regression
     runs-on: ubuntu-latest
@@ -385,7 +407,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Run benchmarks
         id: bench
@@ -435,7 +457,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Run benchmarks
         run: |
@@ -462,13 +484,18 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
+      - name: Secret scanning
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
           cache: true
 
       - name: Install govulncheck

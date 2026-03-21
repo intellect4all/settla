@@ -1,8 +1,8 @@
 .PHONY: build test lint proto migrate-up migrate-down docker-up docker-down docker-logs docker-reset \
        seed demo clean bench loadtest loadtest-quick loadtest-sustained loadtest-burst loadtest-flood \
-       loadtest-multi soak soak-short chaos report test-integration profile \
+       loadtest-multi loadtest-daily soak soak-short chaos report test-integration profile \
        testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet \
-       tyk-setup
+       tyk-setup openapi-export docs-openapi docs-dev docs-build api-test api-test-full
 
 # Go
 GO := go
@@ -67,6 +67,7 @@ sqlc-generate:
 ## db-seed: Load seed data into all databases (uses raw Postgres, not PgBouncer)
 db-seed:
 	psql "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" -f db/seed/transfer_seed.sql
+	psql "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" -f db/seed/crypto_seed.sql
 	psql "$${SETTLA_LEDGER_DB_MIGRATE_URL}" -f db/seed/ledger_seed.sql
 	psql "$${SETTLA_TREASURY_DB_MIGRATE_URL}" -f db/seed/treasury_seed.sql
 
@@ -128,6 +129,11 @@ loadtest-flood:
 ## loadtest-multi: Multi-tenant scale test (50 tenants × 100 TPS)
 loadtest-multi:
 	$(GO) run ./tests/loadtest/ -tps=5000 -duration=10m -tenants=50 -gateway=$(GATEWAY_URL) -drain=300s
+
+## loadtest-daily: Simulated daily volume (580 TPS for 1 hour = 2.1M transfers)
+loadtest-daily:
+	$(GO) run ./tests/loadtest/ -tps=580 -duration=1h -tenants=50 -gateway=$(GATEWAY_URL) -drain=600s \
+		-verify-ledger -verify-settlements
 
 ## soak: 2-hour soak test at 1,000 TPS (with health monitoring)
 soak:
@@ -206,6 +212,38 @@ provider-mode-testnet:
 ## tyk-setup: Create Tyk API keys for seed tenants (run after docker-up)
 tyk-setup:
 	@bash scripts/tyk-setup.sh
+
+## openapi-export: Export OpenAPI spec from gateway
+openapi-export:
+	pnpm --filter @settla/gateway run export-openapi
+
+## docs-openapi: Export OpenAPI spec and copy to docs-site
+docs-openapi: openapi-export
+	cp api/gateway/openapi.json docs-site/openapi.json
+
+## docs-dev: Run Mintlify dev server locally
+docs-dev:
+	cd docs-site && npx mintlify dev
+
+## docs-build: Build the docs site
+docs-build:
+	cd docs-site && npx mintlify build
+
+## api-test: Run tenant API tests against running services
+api-test:
+	$(GO) run ./tests/api-test/ -gateway=$(GATEWAY_URL)
+
+## api-test-full: Start Docker, seed, then run tenant API tests
+api-test-full:
+	$(COMPOSE) up -d --build
+	@echo "Waiting for gateway health..."
+	@for i in $$(seq 1 24); do \
+		curl -sf $(GATEWAY_URL)/health > /dev/null 2>&1 && break; \
+		echo "  Attempt $$i/24 — retrying in 5s..."; \
+		sleep 5; \
+	done
+	$(MAKE) db-seed
+	$(GO) run ./tests/api-test/ -gateway=$(GATEWAY_URL)
 
 ## clean: Remove build artifacts
 clean:
