@@ -1,0 +1,79 @@
+# NetworkPolicy for the gateway-router (NGINX consistent-hash proxy).
+#
+# The router sits between Tyk and the gateway pods, hashing on the
+# Authorization header to achieve per-tenant pod affinity.
+#
+# Ingress:
+#   - :3000 HTTP — from Tyk API Gateway pods only
+#
+# Egress:
+#   - gateway :3000 — forward to upstream gateway pods
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-router-ingress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: gateway-router
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-router
+  policyTypes:
+    - Ingress
+  ingress:
+    # HTTP traffic from Tyk API Gateway
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tyk
+      ports:
+        - port: 3000
+          protocol: TCP
+    # Prometheus scrapes /nginx-status on :3000
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 3000
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-router-egress
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: gateway-router
+    app.kubernetes.io/part-of: settla
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-router
+  policyTypes:
+    - Egress
+  egress:
+    # Forward to gateway pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - port: 3000
+          protocol: TCP
+    # DNS resolution (required for headless service lookups)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
