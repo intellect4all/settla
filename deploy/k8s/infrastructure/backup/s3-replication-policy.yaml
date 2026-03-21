@@ -1,0 +1,33 @@
+# S3 Cross-Region Replication Configuration
+# Apply via: aws s3api put-bucket-replication --bucket settla-backups --replication-configuration file://replication.json
+#
+# This YAML documents the required replication setup. The actual configuration
+# must be applied via AWS CLI or Terraform.
+#
+# Required setup:
+# 1. Create DR bucket in secondary region: aws s3 mb s3://settla-backups-dr --region eu-west-1
+# 2. Enable versioning on both buckets:
+#    aws s3api put-bucket-versioning --bucket settla-backups --versioning-configuration Status=Enabled
+#    aws s3api put-bucket-versioning --bucket settla-backups-dr --versioning-configuration Status=Enabled
+# 3. Create IAM role for replication (settla-s3-replication)
+# 4. Apply replication rule:
+#    aws s3api put-bucket-replication --bucket settla-backups --replication-configuration file://replication.json
+#
+# replication.json:
+# {
+#   "Role": "arn:aws:iam::ACCOUNT:role/settla-s3-replication",
+#   "Rules": [
+#     {
+#       "Status": "Enabled",
+#       "Priority": 1,
+#       "Filter": { "Prefix": "" },
+#       "Destination": {
+#         "Bucket": "arn:aws:s3:::settla-backups-dr",
+#         "StorageClass": "STANDARD_IA"
+#       },
+#       "DeleteMarkerReplication": { "Status": "Enabled" }
+#     }
+#   ]
+# }
+#
+# Verify: aws s3api get-bucket-replication --bucket settla-backups

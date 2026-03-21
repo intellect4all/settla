@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-dr-verification
+  namespace: settla
+  labels:
+    app: backup-verification
+spec:
+  schedule: "0 */4 * * *"  # Every 4 hours
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: verify-backups
+              image: amazon/aws-cli:2.15.0
+              env:
+                - name: PRIMARY_BUCKET
+                  value: settla-backups
+                - name: DR_BUCKET
+                  value: settla-backups-dr
+                - name: MAX_AGE_HOURS
+                  value: "8"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Verifying DR backup freshness..."
+
+                  # Check latest backup in DR bucket
+                  LATEST=$(aws s3 ls s3://${DR_BUCKET}/postgres/ --recursive | sort | tail -1 | awk '{print $1" "$2}')
+                  if [ -z "$LATEST" ]; then
+                    echo "CRITICAL: No backups found in DR bucket"
+                    exit 1
+                  fi
+
+                  BACKUP_TIME=$(date -d "$LATEST" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$LATEST" +%s)
+                  NOW=$(date +%s)
+                  AGE_HOURS=$(( (NOW - BACKUP_TIME) / 3600 ))
+
+                  echo "Latest DR backup age: ${AGE_HOURS} hours"
+
+                  if [ "$AGE_HOURS" -gt "$MAX_AGE_HOURS" ]; then
+                    echo "CRITICAL: DR backup is ${AGE_HOURS}h old (max: ${MAX_AGE_HOURS}h)"
+                    exit 1
+                  fi
+
+                  echo "DR backup verification passed"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
