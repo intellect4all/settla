@@ -114,7 +114,7 @@ func (s *settlementStoreInMem) GetNetSettlement(ctx context.Context, id uuid.UUI
 	return ns, nil
 }
 
-func (s *settlementStoreInMem) ListPendingSettlements(ctx context.Context) ([]domain.NetSettlement, error) {
+func (s *settlementStoreInMem) ListPendingSettlements(ctx context.Context, _ domain.AdminCaller) ([]domain.NetSettlement, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -414,7 +414,10 @@ func TestSettlement_SchedulerRunOnce(t *testing.T) {
 	}
 
 	// Verify a settlement was created for the active tenant.
-	pending, err := settlStore.ListPendingSettlements(ctx)
+	pending, err := settlStore.ListPendingSettlements(ctx, domain.AdminCaller{
+		Service: "integration_test",
+		Reason:  "verify_settlement_created",
+	})
 	if err != nil {
 		t.Fatalf("ListPendingSettlements failed: %v", err)
 	}
@@ -445,3 +448,123 @@ func TestSettlement_SchedulerRunOnce(t *testing.T) {
 	}
 	settlStore.mu.RUnlock()
 }
+
+// ─── TEST-36: Settlement Batch Timing Boundary ──────────────────────────────
+
+// TestSettlement_BatchTimingBoundary verifies that transfers created just before
+// and just after the settlement batch boundary are correctly included/excluded.
+// The scheduler runs at 00:30 UTC covering [yesterday 00:00, today 00:00).
+func TestSettlement_BatchTimingBoundary(t *testing.T) {
+	ctx := context.Background()
+	logger := observability.NewLogger("test", "test")
+
+	tenantStore := newMemTenantStore()
+	transferStore := newMemTransferStore()
+
+	tenantStore.addTenant(&domain.Tenant{
+		ID:              NetSettlementTenantID,
+		Name:            "NetSettler",
+		Slug:            "netsettler",
+		Status:          domain.TenantStatusActive,
+		FeeSchedule:     domain.FeeSchedule{OnRampBPS: 30, OffRampBPS: 25},
+		SettlementModel: domain.SettlementModelNetSettlement,
+		KYBStatus:       domain.KYBStatusVerified,
+		DailyLimitUSD:   decimal.NewFromInt(10_000_000),
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	})
+
+	// Batch window: [yesterday 00:00 UTC, today 00:00 UTC)
+	todayMidnight := time.Now().UTC().Truncate(24 * time.Hour)
+	yesterdayMidnight := todayMidnight.Add(-24 * time.Hour)
+
+	// Transfer A: completed 1 second BEFORE batch end (should be INCLUDED)
+	transferIncluded := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       NetSettlementTenantID,
+		ExternalRef:    uuid.New().String(),
+		IdempotencyKey: uuid.New().String(),
+		Status:         domain.TransferStatusCompleted,
+		Version:        1,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromInt(1000),
+		DestCurrency:   domain.CurrencyNGN,
+		DestAmount:     decimal.NewFromInt(500_000),
+		Fees:           domain.FeeBreakdown{OnRampFee: decimal.NewFromFloat(3), OffRampFee: decimal.NewFromFloat(2.5), NetworkFee: decimal.NewFromFloat(0.5), TotalFeeUSD: decimal.NewFromInt(6)},
+		CompletedAt:    timePtr(todayMidnight.Add(-1 * time.Second)), // 23:59:59 yesterday
+		CreatedAt:      yesterdayMidnight.Add(12 * time.Hour),
+		UpdatedAt:      todayMidnight.Add(-1 * time.Second),
+	}
+
+	// Transfer B: completed 1 second AFTER batch end (should be EXCLUDED)
+	transferExcluded := &domain.Transfer{
+		ID:             uuid.New(),
+		TenantID:       NetSettlementTenantID,
+		ExternalRef:    uuid.New().String(),
+		IdempotencyKey: uuid.New().String(),
+		Status:         domain.TransferStatusCompleted,
+		Version:        1,
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromInt(2000),
+		DestCurrency:   domain.CurrencyNGN,
+		DestAmount:     decimal.NewFromInt(1_000_000),
+		Fees:           domain.FeeBreakdown{OnRampFee: decimal.NewFromFloat(6), OffRampFee: decimal.NewFromFloat(5), NetworkFee: decimal.NewFromFloat(1), TotalFeeUSD: decimal.NewFromInt(12)},
+		CompletedAt:    timePtr(todayMidnight.Add(1 * time.Second)), // 00:00:01 today
+		CreatedAt:      todayMidnight.Add(1 * time.Second),
+		UpdatedAt:      todayMidnight.Add(1 * time.Second),
+	}
+
+	transferStore.mu.Lock()
+	transferStore.transfers[transferIncluded.ID] = transferIncluded
+	transferStore.transfers[transferExcluded.ID] = transferExcluded
+	transferStore.mu.Unlock()
+
+	settlStore := newMemSettlementStore()
+	calc := settlement.NewCalculator(logger)
+	scheduler := settlement.NewScheduler(
+		&memSettlementTransferStore{ts: transferStore},
+		settlStore,
+		tenantStore,
+		calc,
+		logger,
+	)
+
+	results, err := scheduler.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least one settlement result")
+	}
+
+	// Find the settlement for our tenant.
+	var found *domain.NetSettlement
+	settlStore.mu.RLock()
+	for _, s := range settlStore.settlements {
+		if s.TenantID == NetSettlementTenantID {
+			found = s
+			break
+		}
+	}
+	settlStore.mu.RUnlock()
+
+	if found == nil {
+		t.Fatal("no settlement created for NetSettlement tenant")
+	}
+
+	// The settlement should include ONLY transferIncluded (1000 GBP), not transferExcluded (2000 GBP).
+	if len(found.Corridors) != 1 {
+		t.Fatalf("expected 1 corridor, got %d", len(found.Corridors))
+	}
+	if found.Corridors[0].TransferCount != 1 {
+		t.Errorf("expected 1 transfer in settlement batch, got %d (boundary transfer may have leaked)", found.Corridors[0].TransferCount)
+	}
+
+	t.Logf("Settlement batch: %d corridors, %d transfers, period [%s, %s)",
+		len(found.Corridors), found.Corridors[0].TransferCount,
+		found.PeriodStart.Format(time.RFC3339), found.PeriodEnd.Format(time.RFC3339))
+	_ = results
+}
+
+func timePtr(t time.Time) *time.Time { return &t }

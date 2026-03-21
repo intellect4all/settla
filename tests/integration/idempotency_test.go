@@ -97,7 +97,7 @@ func TestIdempotency_DifferentKeys_CreateDifferentTransfers(t *testing.T) {
 		tr, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 			IdempotencyKey: key,
 			SourceCurrency: domain.CurrencyGBP,
-			SourceAmount:   decimal.NewFromInt(100),
+			SourceAmount:   decimal.NewFromInt(1000),
 			DestCurrency:   domain.CurrencyNGN,
 			Sender: domain.Sender{
 				ID:      uuid.New(),
@@ -148,7 +148,7 @@ func TestIdempotency_CrossTenantSameKey(t *testing.T) {
 	lemfiTransfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(200),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Sender: domain.Sender{
 			ID:      uuid.New(),
@@ -171,7 +171,7 @@ func TestIdempotency_CrossTenantSameKey(t *testing.T) {
 	fincraTransfer, err := h.Engine.CreateTransfer(ctx, FincraTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyNGN,
-		SourceAmount:   decimal.NewFromInt(100_000),
+		SourceAmount:   decimal.NewFromInt(400_000),
 		DestCurrency:   domain.CurrencyGBP,
 		Sender: domain.Sender{
 			ID:      uuid.New(),

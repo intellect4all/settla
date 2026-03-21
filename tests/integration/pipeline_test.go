@@ -173,11 +173,11 @@ func TestTenantIsolation(t *testing.T) {
 	h := newTestHarness(t)
 	ctx := context.Background()
 
-	// Create a Lemfi transfer
+	// Create a Lemfi transfer (amount must be large enough to cover fees)
 	lemfiTransfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: "isolation-lemfi-1",
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient: domain.Recipient{
 			Name:    "Test Recipient",
@@ -268,7 +268,7 @@ func TestSuspendedTenant(t *testing.T) {
 	_, err := h.Engine.CreateTransfer(ctx, suspendedID, core.CreateTransferRequest{
 		IdempotencyKey: "suspended-1",
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient:      domain.Recipient{Name: "Test", Country: "NG"},
 	})
@@ -288,7 +288,7 @@ func TestIdempotencyPerTenant(t *testing.T) {
 	lemfi, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient:      domain.Recipient{Name: "LemfiRecipient", Country: "NG"},
 	})
@@ -317,7 +317,7 @@ func TestIdempotencyPerTenant(t *testing.T) {
 	lemfi2, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient:      domain.Recipient{Name: "LemfiRecipient", Country: "NG"},
 	})

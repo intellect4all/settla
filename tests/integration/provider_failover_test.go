@@ -25,7 +25,7 @@ func TestProviderFailover(t *testing.T) {
 	transfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: "failover-onramp-1",
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Sender: domain.Sender{
 			ID:      uuid.New(),
@@ -127,7 +127,7 @@ func TestProviderFailoverAfterPartialSuccess(t *testing.T) {
 	transfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: "failover-partial-success-1",
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Sender: domain.Sender{
 			ID:      uuid.New(),

@@ -47,7 +47,7 @@ func TestProviderChaos_MultipleFailuresThenSuccess(t *testing.T) {
 		transfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 			IdempotencyKey: key,
 			SourceCurrency: domain.CurrencyGBP,
-			SourceAmount:   decimal.NewFromInt(200),
+			SourceAmount:   decimal.NewFromInt(1000),
 			DestCurrency:   domain.CurrencyNGN,
 			Sender: domain.Sender{
 				ID:      uuid.New(),

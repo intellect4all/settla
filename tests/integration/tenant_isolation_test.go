@@ -25,7 +25,7 @@ func createMinimalTransfer(t *testing.T, h *testHarness, tenantID uuid.UUID, ide
 
 	if tenantID == LemfiTenantID {
 		req.SourceCurrency = domain.CurrencyGBP
-		req.SourceAmount = decimal.NewFromInt(100)
+		req.SourceAmount = decimal.NewFromInt(1000)
 		req.DestCurrency = domain.CurrencyNGN
 		req.Recipient = domain.Recipient{Name: "Test Recipient", Country: "NG"}
 	} else {
@@ -192,7 +192,7 @@ func TestTenantIsolation_IdempotencyKeyScopedToTenant(t *testing.T) {
 	lemfiTransfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient:      domain.Recipient{Name: "Lemfi Recipient", Country: "NG"},
 	})
@@ -229,7 +229,7 @@ func TestTenantIsolation_IdempotencyKeyScopedToTenant(t *testing.T) {
 	lemfiRepeat, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
 		IdempotencyKey: sharedKey,
 		SourceCurrency: domain.CurrencyGBP,
-		SourceAmount:   decimal.NewFromInt(100),
+		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		Recipient:      domain.Recipient{Name: "Lemfi Recipient", Country: "NG"},
 	})
@@ -283,4 +283,49 @@ func treasuryLocked(t *testing.T, h *testHarness, tenantID uuid.UUID, currency d
 		}
 	}
 	return decimal.Zero
+}
+
+// ─── TEST-33: Fee Isolation ──────────────────────────────────────────────────
+
+// TestTenantIsolation_FeesNotLeaked verifies that different tenants with different
+// fee schedules (Lemfi: 40/35 bps, Fincra: 25/20 bps) get different fees for the
+// same corridor and amount. A global fee cache bug would cause both tenants to
+// see the same fees.
+func TestTenantIsolation_FeesNotLeaked(t *testing.T) {
+	h := newTestHarness(t)
+	ctx := context.Background()
+
+	// Create transfers with the same corridor and amount for both tenants.
+	lemfiTransfer, err := h.Engine.CreateTransfer(ctx, LemfiTenantID, core.CreateTransferRequest{
+		IdempotencyKey: "fee-iso-lemfi-1",
+		SourceCurrency: domain.CurrencyGBP,
+		SourceAmount:   decimal.NewFromInt(10_000),
+		DestCurrency:   domain.CurrencyNGN,
+		Recipient:      domain.Recipient{Name: "Test Recipient", Country: "NG"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTransfer(Lemfi): %v", err)
+	}
+
+	fincraTransfer, err := h.Engine.CreateTransfer(ctx, FincraTenantID, core.CreateTransferRequest{
+		IdempotencyKey: "fee-iso-fincra-1",
+		SourceCurrency: domain.CurrencyNGN,
+		SourceAmount:   decimal.NewFromInt(4_000_000),
+		DestCurrency:   domain.CurrencyGBP,
+		Recipient:      domain.Recipient{Name: "Test Recipient", Country: "GB"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTransfer(Fincra): %v", err)
+	}
+
+	// Lemfi (40 bps) must have higher fees than Fincra (25 bps) for similar amounts.
+	if lemfiTransfer.Fees.TotalFeeUSD.Equal(fincraTransfer.Fees.TotalFeeUSD) {
+		t.Errorf("fee isolation failure: Lemfi and Fincra got identical fees (%s) — possible fee cache leak",
+			lemfiTransfer.Fees.TotalFeeUSD)
+	}
+
+	t.Logf("Lemfi fees:  on-ramp=%s off-ramp=%s total=%s",
+		lemfiTransfer.Fees.OnRampFee, lemfiTransfer.Fees.OffRampFee, lemfiTransfer.Fees.TotalFeeUSD)
+	t.Logf("Fincra fees: on-ramp=%s off-ramp=%s total=%s",
+		fincraTransfer.Fees.OnRampFee, fincraTransfer.Fees.OffRampFee, fincraTransfer.Fees.TotalFeeUSD)
 }

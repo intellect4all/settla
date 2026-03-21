@@ -669,3 +669,68 @@ func TestCompensationCreditStablecoin(t *testing.T) {
 
 	t.Logf("Credit stablecoin compensation verified for transfers %s and %s", transfer.ID, transfer2.ID)
 }
+
+// ─── TEST-34: Concurrent Compensation Race ───────────────────────────────────
+
+// TestCompensationConcurrentRace verifies that two concurrent compensation
+// triggers on the same transfer both reach a terminal state without leaving the
+// transfer in an inconsistent intermediate state.
+func TestCompensationConcurrentRace(t *testing.T) {
+	h := newTestHarness(t)
+	ctx := context.Background()
+
+	// Create a transfer and advance to ON_RAMPING state.
+	transfer := createMinimalTransfer(t, h, LemfiTenantID, "comp-race-1")
+	if err := h.Engine.FundTransfer(ctx, transfer.TenantID, transfer.ID); err != nil {
+		t.Fatalf("FundTransfer: %v", err)
+	}
+	h.executeOutbox(ctx)
+
+	if err := h.Engine.InitiateOnRamp(ctx, transfer.TenantID, transfer.ID); err != nil {
+		t.Fatalf("InitiateOnRamp: %v", err)
+	}
+	h.executeOutbox(ctx)
+
+	// Concurrently trigger two competing failure paths.
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = h.Engine.HandleOnRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{
+			Success:   false,
+			ErrorMsg:  "concurrent-fail-1",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = h.Engine.HandleOnRampResult(ctx, transfer.TenantID, transfer.ID, domain.IntentResult{
+			Success:   false,
+			ErrorMsg:  "concurrent-fail-2",
+		})
+	}()
+	wg.Wait()
+
+	// At least one should succeed; the other may fail with a state transition error.
+	successCount := 0
+	for _, err := range errs {
+		if err == nil {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		t.Fatalf("both concurrent HandleOnRampResult failed: err[0]=%v, err[1]=%v", errs[0], errs[1])
+	}
+
+	// The transfer must be in a terminal or compensation state — never stuck in ON_RAMPING.
+	final := reloadTransfer(t, h, ctx, transfer.ID)
+	switch final.Status {
+	case domain.TransferStatusFailed, domain.TransferStatusCompensating:
+		// Expected terminal/compensation states.
+	default:
+		t.Errorf("expected terminal state after concurrent failures, got %s", final.Status)
+	}
+
+	t.Logf("Concurrent compensation race: %d succeeded, final state=%s", successCount, final.Status)
+}
