@@ -1,0 +1,76 @@
+# Gateway Router — NGINX consistent-hash proxy in front of gateway pods.
+#
+# Traffic flow: Tyk → gateway-router (this) → gateway pods (consistent-hash)
+#
+# This ensures each tenant's requests always hit the same gateway pod,
+# maximizing L1 auth cache hit rate at high tenant counts (1M+).
+# Without this, 8 gateway pods each get 1/8 of all tenants randomly,
+# thrashing the 500K-entry L1 cache. With consistent hashing, each pod
+# "owns" ~125K tenants and achieves near-100% cache locality.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-router
+  labels:
+    app.kubernetes.io/name: gateway-router
+    app.kubernetes.io/component: load-balancer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-router
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-router
+        app.kubernetes.io/component: load-balancer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/nginx-status"
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /nginx-status
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /nginx-status
+              port: 3000
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 3 && nginx -s quit"]
+      volumes:
+        - name: config
+          configMap:
+            name: gateway-router-config

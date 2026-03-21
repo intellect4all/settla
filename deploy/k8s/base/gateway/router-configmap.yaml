@@ -1,0 +1,97 @@
+# NGINX consistent-hash router for gateway pods.
+#
+# Why: At 1M concurrent tenants, the L1 auth cache (500K entries) on each
+# gateway instance can only hold a fraction of all tenants. Without affinity,
+# requests scatter across all gateway pods and every pod has ~12% hit rate
+# (500K / 4M unique keys across 8 pods). With consistent hashing on the
+# Authorization header, each tenant always hits the same pod, giving each
+# pod near-100% L1 cache hit rate for its tenant subset.
+#
+# The router hashes on $http_authorization so that the same API key or JWT
+# always routes to the same upstream gateway pod. On pod scale-up/down,
+# ketama consistent hashing minimizes key redistribution (~1/N keys move).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-router-config
+  labels:
+    app.kubernetes.io/name: gateway-router
+    app.kubernetes.io/component: load-balancer
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 4096;
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        # Resolve gateway pod IPs dynamically via Kubernetes DNS.
+        # The headless service (gateway-headless) returns individual pod IPs.
+        resolver kube-dns.kube-system.svc.cluster.local valid=5s ipv6=off;
+
+        # Upstream with consistent hashing on the Authorization header.
+        # ketama_churn ensures minimal redistribution when pods are added/removed.
+        upstream gateway_pods {
+            hash $http_authorization consistent;
+            server gateway-headless:3000 resolve;
+        }
+
+        # Logging
+        log_format main '$remote_addr - $remote_user [$time_local] '
+                        '"$request" $status $body_bytes_sent '
+                        '"$http_referer" "$http_user_agent" '
+                        'upstream=$upstream_addr rt=$request_time';
+        access_log /var/log/nginx/access.log main;
+
+        # Timeouts aligned with gateway probes
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+
+        # Buffer settings for gRPC-sized responses
+        proxy_buffer_size 16k;
+        proxy_buffers 8 16k;
+
+        # Keepalive to upstream pods (reduces TCP handshake overhead)
+        keepalive_timeout 65;
+
+        server {
+            listen 3000;
+
+            # Health check — doesn't need consistent hashing
+            location = /health {
+                proxy_pass http://gateway_pods;
+            }
+
+            # Metrics — round-robin is fine, each pod has its own metrics
+            location = /metrics {
+                proxy_pass http://gateway_pods;
+            }
+
+            # All API traffic — consistent-hash routed
+            location / {
+                proxy_pass http://gateway_pods;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Request-ID $request_id;
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+            }
+
+            # Stub status for monitoring
+            location = /nginx-status {
+                stub_status on;
+                allow 10.0.0.0/8;
+                allow 172.16.0.0/12;
+                allow 192.168.0.0/16;
+                deny all;
+            }
+        }
+    }

@@ -1,0 +1,19 @@
+# Service for the consistent-hash gateway router.
+# Tyk and other internal services should target this instead of the
+# gateway service directly, to benefit from tenant-affinity routing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-router
+  labels:
+    app.kubernetes.io/name: gateway-router
+    app.kubernetes.io/component: load-balancer
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway-router
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
