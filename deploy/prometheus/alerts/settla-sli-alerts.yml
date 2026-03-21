@@ -353,16 +353,30 @@ groups:
           runbook: "https://settla.internal/runbooks/load-shedding"
           dashboard: "https://settla.internal/grafana/d/capacity-planning"
 
+      # ── Load shedding warning ───────────────────────────────────────────
+      # Any rejection above 1 req/s warrants investigation.
+      - alert: SettlaLoadSheddingWarning
+        expr: rate(settla_loadshed_rejected_total[5m]) > 1
+        for: 30s
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Load shedding rejecting >1 req/s on {{ $labels.instance }} — {{ $value | humanize }} req/s"
+          description: "Sustained load shedding above 1 req/s. Rate: {{ $value | humanize }}/s. Investigate capacity and consider scaling."
+          runbook: "https://settla.internal/runbooks/load-shedding"
+          dashboard: "https://settla.internal/grafana/d/capacity-planning"
+
       # ── Load shedding critical ─────────────────────────────────────────
       - alert: SettlaLoadSheddingCritical
-        expr: rate(settla_loadshed_rejected_total[5m]) > 100
-        for: 1m
+        expr: rate(settla_loadshed_rejected_total[5m]) > 10
+        for: 30s
         labels:
           severity: critical
           team: platform
         annotations:
           summary: "Heavy load shedding: rejecting {{ $value | humanize }} req/s on {{ $labels.instance }}"
-          description: "System is under extreme load, rejecting >100 req/s. Immediate scaling required."
+          description: "System is under extreme load, rejecting >10 req/s. Immediate scaling required."
           runbook: "https://settla.internal/runbooks/load-shedding-critical"
           dashboard: "https://settla.internal/grafana/d/capacity-planning"
 
@@ -402,6 +416,26 @@ groups:
           description: "gRPC p99 latency is {{ $value | humanizeDuration }}. Investigate settla-server processing time, database queries, and TigerBeetle latency."
           runbook: "https://settla.internal/runbooks/grpc-latency"
           dashboard: "https://settla.internal/grafana/d/api-performance"
+
+      # ── Provider error rate SLI ───────────────────────────────────────
+      # Fires when any single provider's error rate exceeds 5% over 5 minutes.
+      # Metric: settla_provider_requests_total{provider, operation, status}
+      - alert: SettlaProviderErrorRateHigh
+        expr: |
+          (
+            sum by (provider) (rate(settla_provider_requests_total{status="error"}[5m]))
+            /
+            sum by (provider) (rate(settla_provider_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Provider {{ $labels.provider }} error rate {{ $value | humanizePercentage }} exceeds 5%"
+          description: "Provider {{ $labels.provider }} is failing at {{ $value | humanizePercentage }}. Check provider health, circuit breaker state, and consider routing traffic to alternative providers."
+          runbook: "https://settla.internal/runbooks/provider-error-rate"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
 
       # ── Webhook delivery failures ──────────────────────────────────────
       - alert: SettlaWebhookDeliveryFailureHigh
@@ -684,9 +718,9 @@ groups:
 
       # ── PgBouncer pool saturation ──────────────────────────────────────
       # 6+ settla-server replicas share PgBouncer pools.
-      # At 85% saturation, new connections will queue or be rejected.
+      # At 70% saturation, new connections may start queuing.
       - alert: SettlaPgBouncerPoolSaturated
-        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.85
+        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.70
         for: 2m
         labels:
           severity: warning
@@ -699,8 +733,8 @@ groups:
 
       # ── PgBouncer pool critical ────────────────────────────────────────
       - alert: SettlaPgBouncerPoolCritical
-        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.95
-        for: 1m
+        expr: pgbouncer_pools_server_active / pgbouncer_pools_server_max > 0.90
+        for: 30s
         labels:
           severity: critical
           team: platform
@@ -893,3 +927,433 @@ groups:
           description: "settla_synthetic_runs_total has not incremented in 5m. The canary goroutine has stopped or cannot reach the API gateway. Verify the canary is configured (SETTLA_SYNTHETIC_ENABLED=true) and the gateway URL is reachable."
           runbook: "https://settla.internal/runbooks/synthetic-stale"
           dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Crypto Deposit Alerts
+  # Monitors deposit session health, address pool availability,
+  # chain monitor lag, and email notification delivery.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-crypto-deposits
+    interval: 15s
+    rules:
+      # ── Stuck deposit sessions ────────────────────────────────────────
+      # Sessions in non-terminal state with no update for >10 min indicate
+      # stalled processing — chain monitor may be down or worker is stuck.
+      - alert: SettlaDepositStuckSessions
+        expr: settla_deposit_sessions_stuck > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} deposit sessions stuck with no update for >10 min"
+          description: "Deposit sessions are stuck in non-terminal state. Check chain monitor health, deposit worker logs, and NATS consumer lag."
+          runbook: "https://settla.internal/runbooks/deposit-stuck-sessions"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Address pool low ──────────────────────────────────────────────
+      # Below 50 available addresses per tenant/chain — replenishment needed.
+      - alert: SettlaDepositAddressPoolLow
+        expr: settla_deposit_address_pool_available < 50
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Deposit address pool low: {{ $value }} available for {{ $labels.tenant }}/{{ $labels.chain }}"
+          description: "Address pool for {{ $labels.tenant }}/{{ $labels.chain }} is below 50. Trigger address generation or investigate why addresses are not being recycled."
+          runbook: "https://settla.internal/runbooks/deposit-address-pool-low"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Address pool critical ─────────────────────────────────────────
+      # Below 10 available addresses — new deposit sessions will fail imminently.
+      - alert: SettlaDepositAddressPoolCritical
+        expr: settla_deposit_address_pool_available < 10
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Deposit address pool critical: {{ $value }} available for {{ $labels.tenant }}/{{ $labels.chain }}"
+          description: "Address pool for {{ $labels.tenant }}/{{ $labels.chain }} is below 10. New deposit sessions will fail. Immediate address generation required."
+          runbook: "https://settla.internal/runbooks/deposit-address-pool-critical"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Chain monitor block lag ───────────────────────────────────────
+      # Block lag > 20 means the chain monitor is falling behind the chain tip.
+      # Deposits may be detected late.
+      - alert: SettlaChainMonitorLagHigh
+        expr: settla_chain_monitor_block_lag > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Chain monitor lag {{ $value }} blocks on {{ $labels.chain }}"
+          description: "Chain monitor for {{ $labels.chain }} is {{ $value }} blocks behind chain tip. Deposit detection will be delayed. Check RPC node health and monitor throughput."
+          runbook: "https://settla.internal/runbooks/chain-monitor-lag-high"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Chain monitor block lag critical ──────────────────────────────
+      # Block lag > 100 means the monitor is severely behind — deposits
+      # may be missed or confirmed extremely late.
+      - alert: SettlaChainMonitorLagCritical
+        expr: settla_chain_monitor_block_lag > 100
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Chain monitor lag critical: {{ $value }} blocks on {{ $labels.chain }}"
+          description: "Chain monitor for {{ $labels.chain }} is {{ $value }} blocks behind. Deposits are being missed. Immediate action: check RPC node, restart monitor, verify chain connectivity."
+          runbook: "https://settla.internal/runbooks/chain-monitor-lag-critical"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Deposit failure rate ──────────────────────────────────────────
+      # >5% of deposit sessions failing or expiring in a 15m window.
+      - alert: SettlaDepositFailureRateHigh
+        expr: |
+          (
+            sum(rate(settla_deposit_sessions_total{status=~"FAILED|EXPIRED"}[15m]))
+            /
+            sum(rate(settla_deposit_sessions_total[15m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Deposit failure rate {{ $value | humanizePercentage }} exceeds 5%"
+          description: "Deposit sessions are failing/expiring at {{ $value | humanizePercentage }} over 15m. Check chain monitor health, address pool availability, and provider connectivity."
+          runbook: "https://settla.internal/runbooks/deposit-failure-rate-high"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+      # ── Email delivery failure rate ───────────────────────────────────
+      # >10% of email notifications failing — tenants are not being notified.
+      - alert: SettlaEmailDeliveryFailureHigh
+        expr: |
+          (
+            sum(rate(settla_email_notifications_total{status="failed"}[15m]))
+            /
+            sum(rate(settla_email_notifications_total[15m]))
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Email notification failure rate {{ $value | humanizePercentage }} exceeds 10%"
+          description: "Email delivery is failing at {{ $value | humanizePercentage }}. Tenants are not receiving deposit notifications. Check SMTP/email provider connectivity and credentials."
+          runbook: "https://settla.internal/runbooks/email-delivery-failure-high"
+          dashboard: "https://settla.internal/grafana/d/deposit-health"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Operational Alerts
+  # Business-level and pipeline health alerts.
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-operational
+    interval: 30s
+    rules:
+      # ── Stuck transfers ──────────────────────────────────────────────
+      # Transfers in non-terminal state with no update for >5 minutes.
+      # Recovery detector handles this at 60s intervals, but this alert
+      # ensures ops visibility.
+      - alert: SettlaStuckTransfers
+        expr: |
+          (
+            sum(rate(settla_transfers_total{status=~"FUNDED|ON_RAMPING|SETTLING|OFF_RAMPING"}[10m]))
+            -
+            sum(rate(settla_transfers_total{status=~"COMPLETED|FAILED|REFUNDED"}[10m]))
+          ) > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value | humanize }} transfers accumulating in intermediate states"
+          description: "More transfers are entering intermediate states than completing. Pipeline may be stalled. Check NATS consumer lag, provider health, and recovery detector."
+          runbook: "https://settla.internal/runbooks/stuck-transfers"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Zero transfers ───────────────────────────────────────────────
+      # No new transfers in the last 15 minutes may indicate a silent outage.
+      - alert: SettlaZeroTransfers
+        expr: |
+          sum(rate(settla_transfers_total[15m])) == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "No new transfers in the last 15 minutes"
+          description: "Zero transfer activity detected. Possible upstream outage, API gateway failure, or tenant-side issue."
+          runbook: "https://settla.internal/runbooks/zero-transfers"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Outbox relay lag ─────────────────────────────────────────────
+      # Oldest unpublished outbox entry is more than 10s old.
+      - alert: SettlaOutboxRelayLagHigh
+        expr: settla_outbox_relay_lag_seconds > 10
+        for: 30s
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Outbox relay lag {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "Unpublished outbox entries are backlogging. Relay may be stuck or DB queries are slow. Transfer state changes are delayed."
+          runbook: "https://settla.internal/runbooks/outbox-relay-lag"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Outbox relay lag critical ────────────────────────────────────
+      - alert: SettlaOutboxRelayLagCritical
+        expr: settla_outbox_relay_lag_seconds > 60
+        for: 30s
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Outbox relay lag critical: {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: "Outbox relay is severely behind. Transfers will stall indefinitely. Check relay process health and Transfer DB connectivity."
+          runbook: "https://settla.internal/runbooks/outbox-relay-lag-critical"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── NATS partition imbalance ─────────────────────────────────────
+      # One partition has 3x more pending messages than the average.
+      - alert: SettlaNATSPartitionImbalance
+        expr: |
+          settla_nats_partition_lag_messages
+          /
+          avg(settla_nats_partition_lag_messages) by (stream)
+          > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS partition {{ $labels.partition }} has {{ $value }}x average lag in stream {{ $labels.stream }}"
+          description: "Partition {{ $labels.partition }} is processing messages much slower than peers. Possible hot tenant on this partition or stuck consumer."
+          runbook: "https://settla.internal/runbooks/nats-partition-imbalance"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Compensation cascade ─────────────────────────────────────────
+      # More than 5% of transfers entering compensation/refund flow.
+      - alert: SettlaCompensationCascade
+        expr: |
+          (
+            sum(rate(settla_transfers_total{status=~"REFUNDING|FAILED"}[15m]))
+            /
+            sum(rate(settla_transfers_total[15m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Compensation/failure rate {{ $value | humanizePercentage }} exceeds 5%"
+          description: "High rate of transfers entering compensation or failure. Check provider health, treasury balance, and on-ramp/off-ramp availability."
+          runbook: "https://settla.internal/runbooks/compensation-cascade"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── DLQ accumulation ─────────────────────────────────────────────
+      # Dead letter queue is growing — failed messages need manual review.
+      - alert: SettlaDLQAccumulating
+        expr: rate(settla_dlq_messages_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "DLQ accumulating at {{ $value | humanize }} msg/s"
+          description: "Messages are being dead-lettered faster than 1/s. Check worker logs for recurring failures. Review DLQ entries via ops API for replay."
+          runbook: "https://settla.internal/runbooks/dlq-accumulation"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+      # ── Treasury WAL write failures ──────────────────────────────────
+      # WAL failures mean reserve ops may not survive a crash.
+      - alert: SettlaTreasuryWALFailures
+        expr: rate(settla_treasury_wal_write_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Treasury WAL write failures detected on {{ $labels.instance }}"
+          description: "Reserve operations are failing to persist to WAL. Risk of position data loss on process restart. Check Treasury DB connectivity."
+          runbook: "https://settla.internal/runbooks/treasury-wal-failures"
+          dashboard: "https://settla.internal/grafana/d/treasury-health"
+
+      # ── Ledger sync queue drops ──────────────────────────────────────
+      # Entries being dropped from the TB→PG sync queue.
+      - alert: SettlaLedgerSyncDrops
+        expr: rate(settla_ledger_sync_queue_dropped_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Ledger sync queue dropping entries on {{ $labels.instance }}"
+          description: "TigerBeetle-to-Postgres sync queue is full and dropping entries. Read model will have gaps. Run reconciliation to catch up."
+          runbook: "https://settla.internal/runbooks/ledger-sync-drops"
+          dashboard: "https://settla.internal/grafana/d/settla-overview"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Bank Deposit Alerts
+  # ═══════════════════════════════════════════════════════════════════════
+  - name: settla-bank-deposit-alerts
+    interval: 30s
+    rules:
+      - alert: BankDepositSessionsStuck
+        expr: |
+          sum(rate(settla_bank_deposit_sessions_total{status="CREDITING"}[10m])) > 0
+          unless
+          sum(rate(settla_bank_deposit_sessions_total{status="CREDITED"}[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Bank deposit sessions stuck in CREDITING state"
+          description: "Bank deposit sessions are entering CREDITING but none are completing to CREDITED for over 5 minutes."
+          dashboard: "https://settla.internal/grafana/d/settla-bank-deposit-health"
+
+      - alert: VirtualAccountPoolLow
+        expr: |
+          settla_virtual_account_pool_available < 5
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Virtual account pool running low"
+          description: "Virtual account pool for tenant {{ $labels.tenant_id }} currency {{ $labels.currency }} has only {{ $value }} available accounts."
+          dashboard: "https://settla.internal/grafana/d/settla-bank-deposit-health"
+
+      - alert: BankDepositFailureRateHigh
+        expr: |
+          (
+            sum(rate(settla_bank_deposit_sessions_total{status="FAILED"}[5m]))
+            /
+            sum(rate(settla_bank_deposit_sessions_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Bank deposit failure rate exceeds 10%"
+          description: "Bank deposit failure rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+          dashboard: "https://settla.internal/grafana/d/settla-bank-deposit-health"
+
+  - name: settla-infrastructure-components
+    rules:
+      # NATS consumer lag
+      - alert: SettlaNATSConsumerLagWarning
+        expr: max(nats_jetstream_consumer_num_pending) by (stream, consumer) > 5000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NATS consumer lag >5K on {{ $labels.stream }}/{{ $labels.consumer }}"
+          runbook_url: "deploy/runbooks/nats-consumer-lag.md"
+
+      - alert: SettlaNATSConsumerLagCritical
+        expr: max(nats_jetstream_consumer_num_pending) by (stream, consumer) > 50000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NATS consumer lag >50K on {{ $labels.stream }}/{{ $labels.consumer }} — workers stalled"
+          runbook_url: "deploy/runbooks/nats-consumer-lag.md"
+
+      # Postgres replication lag
+      - alert: SettlaPostgresReplicationLagWarning
+        expr: max(pg_stat_replication_replay_lag_seconds) by (instance) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres replication lag >5s on {{ $labels.instance }}"
+
+      - alert: SettlaPostgresReplicationLagCritical
+        expr: max(pg_stat_replication_replay_lag_seconds) by (instance) > 30
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres replication lag >30s — RPO at risk"
+
+      # TigerBeetle quorum
+      - alert: SettlaTigerBeetleQuorumDegraded
+        expr: tigerbeetle_cluster_healthy_replicas < 3
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "TigerBeetle cluster has {{ $value }} of 3 replicas healthy"
+
+      - alert: SettlaTigerBeetleQuorumLost
+        expr: tigerbeetle_cluster_healthy_replicas < 2
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "TigerBeetle quorum lost — all ledger writes are blocked"
+
+      # Outbox relay backlog
+      - alert: SettlaOutboxRelayLagWarning
+        expr: settla_outbox_relay_lag_seconds > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox relay lag {{ $value }}s — events delayed"
+
+      - alert: SettlaOutboxRelayLagCritical
+        expr: settla_outbox_relay_lag_seconds > 30
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox relay lag {{ $value }}s — check DB connectivity and NATS health"
+
+      - alert: SettlaOutboxUnpublishedCritical
+        expr: settla_outbox_unpublished_count > 5000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} unpublished outbox entries — relay may be stalled"
+
+      # Treasury flush lag
+      - alert: SettlaTreasuryFlushLagHigh
+        expr: settla_treasury_flush_duration_seconds > 0.5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Treasury flush taking {{ $value }}s — DB write contention"
+
+      - alert: SettlaTreasuryFlushFailures
+        expr: increase(settla_treasury_flush_errors_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Treasury flush failing repeatedly — in-memory positions may diverge from DB"
+
+      # Provider circuit breaker
+      - alert: SettlaProviderCircuitBreakerOpen
+        expr: settla_provider_circuit_breaker_state == 1
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker OPEN for provider {{ $labels.provider }} — transfers failing"
+
+      - alert: SettlaProviderCircuitBreakerSustained
+        expr: settla_provider_circuit_breaker_state == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker OPEN for provider {{ $labels.provider }} for 5+ minutes — escalate to provider ops"

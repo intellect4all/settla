@@ -1,7 +1,7 @@
 {
-  "name": "Settla Health API",
-  "slug": "settla-health",
-  "api_id": "settla-health",
+  "name": "Settla Payment Links API",
+  "slug": "settla-payment-links",
+  "api_id": "settla-payment-links",
   "org_id": "settla",
   "use_keyless": true,
   "definition": {
@@ -14,16 +14,24 @@
       "Default": {
         "name": "Default",
         "use_extended_paths": true,
-        "extended_paths": {}
+        "extended_paths": {
+          "rate_limit": []
+        }
       }
     }
   },
   "proxy": {
-    "listen_path": "/health",
+    "listen_path": "/v1/payment-links",
     "target_url": "http://gateway-router:3000",
     "strip_listen_path": false,
     "preserve_host_header": false
   },
   "active": true,
-  "enable_batch_request_support": false
+  "enable_batch_request_support": false,
+  "enable_circuit_breaker": true,
+  "circuit_breaker": {
+    "threshold_percent": 0.5,
+    "samples": 5,
+    "return_to_service_after": 60
+  }
 }
