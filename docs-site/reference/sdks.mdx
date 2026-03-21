@@ -1,0 +1,43 @@
+---
+title: "SDKs & Libraries"
+description: "Client libraries and code generation"
+---
+
+# SDKs & Libraries
+
+## OpenAPI Specification
+
+The Settla API publishes a complete OpenAPI 3.0 specification that you can use to generate typed client libraries in any language.
+
+```bash
+# Download the spec
+curl https://api.settla.io/openapi.json -o settla-openapi.json
+```
+
+## Code Generation
+
+Use [OpenAPI Generator](https://openapi-generator.tech/) to create a typed client:
+
+```bash
+# TypeScript
+npx @openapitools/openapi-generator-cli generate \
+  -i settla-openapi.json \
+  -g typescript-fetch \
+  -o ./settla-client
+
+# Python
+openapi-generator generate \
+  -i settla-openapi.json \
+  -g python \
+  -o ./settla-client
+
+# Go
+openapi-generator generate \
+  -i settla-openapi.json \
+  -g go \
+  -o ./settla-client
+```
+
+## Community SDKs
+
+Community-maintained SDKs will be listed here as they become available. If you've built a Settla client library, let us know at support@settla.io.

@@ -1,0 +1,104 @@
+---
+title: "Create a Transfer"
+description: "Step-by-step guide to creating a cross-border transfer"
+---
+
+# Create a Transfer
+
+This guide walks through the full transfer flow: quote, create, and track.
+
+## Step 1: Get a Quote
+
+Request a quote for your corridor. The quote includes the FX rate, fees, and selected route.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/quotes \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"source_currency": "GBP", "source_amount": "1000", "dest_currency": "NGN"}'
+```
+
+```javascript Node.js
+const quote = await fetch("https://sandbox.settla.io/v1/quotes", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    source_currency: "GBP",
+    source_amount: "1000",
+    dest_currency: "NGN",
+  }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+<Note>Quotes expire after 5 minutes. Create the transfer promptly.</Note>
+
+## Step 2: Create the Transfer
+
+Submit the transfer with a unique idempotency key and recipient details.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/transfers \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "'$(uuidgen)'",
+    "source_currency": "GBP",
+    "source_amount": "1000",
+    "dest_currency": "NGN",
+    "recipient": {"name": "Adebayo Ogunlesi", "country": "NG"}
+  }'
+```
+
+```javascript Node.js
+const transfer = await fetch("https://sandbox.settla.io/v1/transfers", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    idempotency_key: crypto.randomUUID(),
+    source_currency: "GBP",
+    source_amount: "1000",
+    dest_currency: "NGN",
+    recipient: { name: "Adebayo Ogunlesi", country: "NG" },
+  }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+## Step 3: Track the Transfer
+
+Poll the transfer status or set up [webhooks](/guides/webhooks) for real-time updates.
+
+```bash
+curl https://sandbox.settla.io/v1/transfers/$TRANSFER_ID \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+## Step 4: Handle the Result
+
+Check the final status:
+
+```javascript
+if (transfer.status === "COMPLETED") {
+  console.log("Transfer delivered successfully");
+} else if (transfer.status === "FAILED") {
+  // Check events for failure reason
+  const events = await fetch(
+    `https://sandbox.settla.io/v1/transfers/${transfer.id}/events`,
+    { headers: { "Authorization": `Bearer ${API_KEY}` } }
+  ).then(r => r.json());
+  console.log("Failure reason:", events[events.length - 1]);
+}
+```

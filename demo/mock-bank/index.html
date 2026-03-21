@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settla Mock Bank — Virtual Account Tester</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 2rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .subtitle { color: #666; margin-bottom: 2rem; font-size: 0.9rem; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .card h2 { font-size: 1.1rem; margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; color: #555; }
+    input, select { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; margin-bottom: 0.8rem; }
+    button { padding: 0.6rem 1.2rem; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .btn-secondary { background: #64748b; }
+    .btn-secondary:hover { background: #475569; }
+    .row { display: flex; gap: 1rem; }
+    .row > * { flex: 1; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #eee; }
+    th { font-weight: 600; color: #555; }
+    .status { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+    .status-pending { background: #fef3c7; color: #92400e; }
+    .status-received { background: #d1fae5; color: #065f46; }
+    .status-credited { background: #dbeafe; color: #1e40af; }
+    .status-settled { background: #d1fae5; color: #065f46; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    .status-expired { background: #e5e7eb; color: #374151; }
+    .log { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.8rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    .log-entry { margin-bottom: 0.3rem; }
+    .log-time { color: #94a3b8; }
+    .log-success { color: #4ade80; }
+    .log-error { color: #f87171; }
+    .log-info { color: #60a5fa; }
+    #config { display: flex; gap: 1rem; align-items: flex-end; margin-bottom: 1rem; }
+    #config label { margin-bottom: 0; }
+    #config input { margin-bottom: 0; width: auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Settla Mock Bank</h1>
+    <p class="subtitle">Virtual Account / Bank Deposit tester — zero build step, just open in a browser.</p>
+
+    <div id="config" class="card">
+      <div>
+        <label for="gateway-url">Gateway URL</label>
+        <input id="gateway-url" type="text" value="http://localhost:3000" style="width:250px">
+      </div>
+      <div>
+        <label for="api-key">API Key</label>
+        <input id="api-key" type="text" placeholder="sk_live_..." style="width:300px">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Create Bank Deposit Session</h2>
+      <div class="row">
+        <div>
+          <label for="currency">Currency</label>
+          <select id="currency">
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="NGN">NGN</option>
+          </select>
+        </div>
+        <div>
+          <label for="amount">Expected Amount</label>
+          <input id="amount" type="text" placeholder="1000.00" value="1000.00">
+        </div>
+        <div>
+          <label for="mismatch-policy">Mismatch Policy</label>
+          <select id="mismatch-policy">
+            <option value="REJECT">REJECT</option>
+            <option value="ACCEPT">ACCEPT</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="settlement-pref">Settlement Pref</label>
+          <select id="settlement-pref">
+            <option value="HOLD">HOLD</option>
+            <option value="AUTO_CONVERT">AUTO_CONVERT</option>
+          </select>
+        </div>
+        <div>
+          <label for="ttl">TTL (seconds)</label>
+          <input id="ttl" type="number" value="3600">
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button onclick="createSession()">Create Session</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Fund Account (Simulate Bank Credit)</h2>
+      <div class="row">
+        <div>
+          <label for="fund-account">Account Number</label>
+          <input id="fund-account" type="text" placeholder="VA-USD-lemfi-001">
+        </div>
+        <div>
+          <label for="fund-amount">Amount</label>
+          <input id="fund-amount" type="text" placeholder="1000.00" value="1000.00">
+        </div>
+        <div>
+          <label for="fund-currency">Currency</label>
+          <select id="fund-currency">
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="NGN">NGN</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="payer-name">Payer Name</label>
+          <input id="payer-name" type="text" value="John Doe">
+        </div>
+        <div>
+          <label for="payer-ref">Payer Reference</label>
+          <input id="payer-ref" type="text" value="INV-2026-001">
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <button onclick="fundAccount()">Fund Account</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Sessions <button class="btn-secondary" onclick="refreshSessions()" style="float:right;font-size:0.8rem;padding:0.3rem 0.8rem">Refresh</button></h2>
+      <table>
+        <thead><tr><th>ID</th><th>Status</th><th>Account</th><th>Expected</th><th>Received</th><th>Currency</th><th>Created</th></tr></thead>
+        <tbody id="sessions-table"><tr><td colspan="7" style="text-align:center;color:#999">No sessions yet</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Event Log</h2>
+      <div id="event-log" class="log"><span class="log-info">Ready. Configure gateway URL and API key above, then create a session.</span></div>
+    </div>
+  </div>
+
+  <script>
+    function gw() { return document.getElementById('gateway-url').value.replace(/\/$/, ''); }
+    function apiKey() { return document.getElementById('api-key').value; }
+    function headers() { return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey() }; }
+
+    function log(msg, type = 'info') {
+      const el = document.getElementById('event-log');
+      const time = new Date().toLocaleTimeString();
+      const cls = type === 'error' ? 'log-error' : type === 'success' ? 'log-success' : 'log-info';
+      el.innerHTML += `\n<span class="log-entry"><span class="log-time">[${time}]</span> <span class="${cls}">${msg}</span></span>`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function statusClass(s) {
+      if (!s) return '';
+      const lower = s.toLowerCase();
+      if (lower.includes('pending')) return 'status-pending';
+      if (lower.includes('received') || lower.includes('settled')) return 'status-received';
+      if (lower.includes('credited')) return 'status-credited';
+      if (lower.includes('fail') || lower.includes('under') || lower.includes('over')) return 'status-failed';
+      if (lower.includes('expired') || lower.includes('cancelled')) return 'status-expired';
+      return '';
+    }
+
+    async function createSession() {
+      try {
+        log('Creating bank deposit session...');
+        const res = await fetch(gw() + '/v1/bank-deposits', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            currency: document.getElementById('currency').value,
+            expected_amount: document.getElementById('amount').value,
+            mismatch_policy: document.getElementById('mismatch-policy').value,
+            settlement_pref: document.getElementById('settlement-pref').value,
+            ttl_seconds: parseInt(document.getElementById('ttl').value) || 3600,
+            idempotency_key: 'demo-' + Date.now(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) { log('Error: ' + JSON.stringify(data), 'error'); return; }
+        const s = data.session;
+        log(`Session created: ${s.id} | Account: ${s.accountNumber} | Status: ${s.status}`, 'success');
+        document.getElementById('fund-account').value = s.accountNumber || '';
+        refreshSessions();
+      } catch (e) { log('Request failed: ' + e.message, 'error'); }
+    }
+
+    async function fundAccount() {
+      try {
+        const acct = document.getElementById('fund-account').value;
+        const amt = document.getElementById('fund-amount').value;
+        log(`Funding account ${acct} with ${amt} ${document.getElementById('fund-currency').value}...`);
+        const res = await fetch(gw() + '/api/mock-bank/fund', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_number: acct,
+            amount: amt,
+            currency: document.getElementById('fund-currency').value,
+            payer_name: document.getElementById('payer-name').value,
+            payer_reference: document.getElementById('payer-ref').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) { log('Error: ' + JSON.stringify(data), 'error'); return; }
+        log(`Funded! bank_reference: ${data.bank_reference}`, 'success');
+        setTimeout(refreshSessions, 2000);
+      } catch (e) { log('Request failed: ' + e.message, 'error'); }
+    }
+
+    async function refreshSessions() {
+      try {
+        const res = await fetch(gw() + '/v1/bank-deposits?limit=20', { headers: headers() });
+        if (!res.ok) { log('Failed to refresh sessions: ' + res.status, 'error'); return; }
+        const data = await res.json();
+        const tbody = document.getElementById('sessions-table');
+        if (!data.sessions || data.sessions.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999">No sessions</td></tr>';
+          return;
+        }
+        tbody.innerHTML = data.sessions.map(s => `<tr>
+          <td title="${s.id}">${(s.id || '').substring(0, 8)}...</td>
+          <td><span class="status ${statusClass(s.status)}">${s.status}</span></td>
+          <td>${s.accountNumber || '-'}</td>
+          <td>${s.expectedAmount || '0'}</td>
+          <td>${s.receivedAmount || '0'}</td>
+          <td>${s.currency || '-'}</td>
+          <td>${s.createdAt ? new Date(s.createdAt).toLocaleTimeString() : '-'}</td>
+        </tr>`).join('');
+      } catch (e) { log('Refresh failed: ' + e.message, 'error'); }
+    }
+  </script>
+</body>
+</html>

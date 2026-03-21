@@ -1,0 +1,63 @@
+---
+title: "Error Handling"
+description: "Error response format and retry strategies"
+---
+
+# Error Handling
+
+All Settla API errors follow a consistent JSON format.
+
+## Error Response Format
+
+```json
+{
+  "error": "TRANSFER_NOT_FOUND",
+  "code": "TRANSFER_NOT_FOUND",
+  "message": "Transfer with ID abc123 not found",
+  "request_id": "req_550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `error` | Machine-readable error code (use for programmatic handling) |
+| `code` | Same as `error` (for backwards compatibility) |
+| `message` | Human-readable description |
+| `request_id` | Unique request ID for support tickets |
+
+## HTTP Status Codes
+
+| Status | Meaning | Action |
+|--------|---------|--------|
+| 400 | Bad request / invalid parameters | Fix request and retry |
+| 401 | Invalid or missing API key | Check your API key |
+| 403 | Tenant suspended | Contact support |
+| 404 | Resource not found | Check the ID |
+| 409 | Conflict (idempotency or state) | Check existing resource |
+| 422 | Precondition failed (expired quote, invalid transition) | Get a new quote / check state |
+| 429 | Rate limited or insufficient funds | Back off and retry |
+| 500 | Internal error | Retry with backoff |
+| 503 | Provider unavailable | Retry with backoff |
+| 504 | Timeout | Retry with same idempotency key |
+
+## Retry Strategy
+
+For 429, 500, 503, and 504 errors, use exponential backoff:
+
+```javascript
+async function retryWithBackoff(fn, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      const status = err.response?.status;
+      if (![429, 500, 503, 504].includes(status)) throw err;
+      const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+```
+
+See [Error Codes](/reference/error-codes) for the complete list of domain error codes.

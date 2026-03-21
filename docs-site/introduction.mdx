@@ -1,0 +1,62 @@
+---
+title: "Introduction"
+description: "Settla is B2B stablecoin settlement infrastructure for fintechs"
+---
+
+# Welcome to Settla
+
+Settla provides cross-border payment infrastructure powered by stablecoin rails. We handle the complexity of FX quotes, smart routing, blockchain settlement, and treasury management so you can focus on your product.
+
+## What Settla Does
+
+- **Cross-border transfers** — Send money between countries via stablecoin rails (USDT, USDC on Tron, Ethereum, Polygon)
+- **Smart routing** — Automatically selects the best route based on cost (40%), speed (30%), liquidity (20%), and reliability (10%)
+- **Crypto deposits** — Accept on-chain stablecoin payments from your users
+- **Bank deposits** — Accept fiat deposits via virtual bank accounts
+- **Payment links** — Create shareable links for crypto payments
+- **Real-time treasury** — Track balances, positions, and liquidity across all corridors
+- **Automatic settlement** — Daily net settlement reduces N transfers to 1 net position per currency pair
+
+## Supported Corridors
+
+| From | To | Stablecoin | Chain |
+|------|------|------|------|
+| GBP | NGN | USDT/USDC | Tron, Ethereum |
+| USD | NGN | USDT/USDC | Tron, Ethereum |
+| EUR | NGN | USDT/USDC | Tron, Polygon |
+| GBP | GHS | USDT | Tron |
+| USD | KES | USDT | Tron |
+
+## How It Works
+
+<Steps>
+  <Step title="Get a Quote">
+    Request a real-time FX quote for your corridor. Quotes include fees, route details, and a 5-minute expiry.
+  </Step>
+  <Step title="Create a Transfer">
+    Submit a transfer with the quote ID and recipient details. Settla handles the stablecoin settlement end-to-end.
+  </Step>
+  <Step title="Track Progress">
+    Monitor transfer status via polling or webhooks. Each transfer moves through a well-defined state machine.
+  </Step>
+  <Step title="Settlement">
+    Funds are settled to the recipient. Daily net settlement optimizes for minimum on-chain transactions.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get your first transfer running in 5 minutes
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/overview">
+    Explore the full API
+  </Card>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Learn about API keys and JWT auth
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
+    Set up real-time notifications
+  </Card>
+</CardGroup>

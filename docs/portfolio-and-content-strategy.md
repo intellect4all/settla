@@ -24,11 +24,12 @@ Most portfolio projects are CRUD apps with a framework. Settla is none of that:
 | Data layer | Single Postgres | TigerBeetle (1M+ TPS) + 3 Postgres DBs + PgBouncer + Redis + NATS JetStream |
 | Consistency | Hope and prayers | Transactional outbox, CAS loops, double-entry ledger, 5 reconciliation checks |
 | Testing | Unit tests maybe | Unit + integration + benchmark + load (5K TPS) + chaos + soak tests |
-| Blockchain | "I deployed a smart contract" | 4 testnets (Tron, Ethereum, Solana, Base), real wallet management, circuit breakers |
-| Multi-tenancy | Single user | Full tenant isolation with per-tenant fees, limits, API keys, webhooks |
-| DevOps | Dockerfile | Docker Compose (14 services), K8s manifests (48 YAMLs), CI/CD, Grafana dashboards |
+| Blockchain | "I deployed a smart contract" | 4 testnets (Tron, Ethereum, Solana, Base), real-time chain monitor, HD wallet management, circuit breakers |
+| Deposit infrastructure | N/A | Crypto deposits (on-chain monitoring), bank deposits (virtual accounts), payment links — full inbound payment stack |
+| Multi-tenancy | Single user | Full tenant isolation with per-tenant fees, limits, API keys, webhooks, portal auth (JWT), onboarding |
+| DevOps | Dockerfile | Docker Compose (14 services), K8s manifests (48 YAMLs), CI/CD, 7 Grafana dashboards |
 | Documentation | README | 18 ADRs, architecture doc, SLA, security, DR, cost estimation, compliance |
-| Codebase size | 500-2000 LOC | ~69,000 LOC across Go + TypeScript + Vue |
+| Codebase size | 500-2000 LOC | ~142,000 LOC across Go + TypeScript + Vue |
 
 ### What It Demonstrates to Employers/Investors
 
@@ -36,37 +37,47 @@ Most portfolio projects are CRUD apps with a framework. Settla is none of that:
    failure, scale, and money correctly?"
 
 2. **Financial domain expertise** — Double-entry accounting, FX loss calculation, net settlement,
-   compensation strategies, fee schedules. This is real fintech, not a toy.
+   compensation strategies, fee schedules, crypto + bank deposit flows, payment links. This is
+   real fintech, not a toy.
 
 3. **Distributed systems mastery** — Transactional outbox, event-driven sagas, CAS loops,
-   CQRS, partitioned messaging, circuit breakers. Each pattern exists because the math demands it.
+   CQRS, partitioned messaging, circuit breakers, real-time chain monitoring. Each pattern exists
+   because the math demands it.
 
-4. **Production readiness mindset** — SLAs, runbooks, disaster recovery, cost estimation,
-   security hardening. This isn't a demo; it's a system designed to run in production.
+4. **Full product surface** — Not just settlement. Complete inbound payment stack (crypto deposits,
+   bank deposits via virtual accounts, shareable payment links), tenant portal with JWT auth,
+   analytics dashboards, email notifications, and onboarding flows.
 
-5. **Polyglot capability** — Go (high-throughput core), TypeScript (API gateway, webhooks),
-   Vue/Nuxt (dashboard), Protocol Buffers (cross-language contracts), SQL (SQLC-generated).
+5. **Production readiness mindset** — SLAs, runbooks, disaster recovery, cost estimation,
+   security hardening, 7 Grafana dashboards (including deposit-health and bank-deposit-health).
+   This isn't a demo; it's a system designed to run in production.
 
-6. **Blockchain integration** — Not theoretical. Real testnet transactions on 4 chains with
-   wallet management, RPC failover, and explorer URL generation.
+6. **Polyglot capability** — Go (high-throughput core), TypeScript (API gateway, webhooks),
+   Vue/Nuxt (dashboard + tenant portal), Protocol Buffers (cross-language contracts), SQL
+   (SQLC-generated).
+
+7. **Blockchain integration** — Not theoretical. Real-time chain monitor polling Tron/EVM RPCs,
+   HD wallet-derived deposit addresses, block checkpoint tracking, confirmation thresholds,
+   and multi-chain token registry.
 
 ### Target Audiences
 
 | Audience | What They'd Notice |
 |----------|--------------------|
 | **Senior/Staff engineer hiring managers** | The 18 ADRs. Every decision is threshold-driven ("at X TPS, pattern Y breaks"). This is how staff engineers think. |
-| **Fintech companies** | Domain accuracy: double-entry ledger, multi-tenant fee schedules, compliance docs, settlement flows. This person understands the business. |
-| **Infrastructure/Platform teams** | K8s manifests, observability stack, chaos testing, DR runbooks. Production-grade thinking. |
-| **Blockchain/Web3 companies** | Real testnet integration (not just Hardhat), multi-chain support, wallet key management, circuit breakers on RPCs. |
-| **VCs / Technical due diligence** | Cost estimation ($0.000004/txn), SLA commitments, scaling math. This person can build AND reason about unit economics. |
+| **Fintech companies** | Domain accuracy: double-entry ledger, multi-tenant fee schedules, crypto + bank deposit flows, payment links, settlement. This person understands the business end-to-end. |
+| **Infrastructure/Platform teams** | K8s manifests, 7 Grafana dashboards, chaos testing, DR runbooks, chain monitor architecture. Production-grade thinking. |
+| **Blockchain/Web3 companies** | Real-time chain monitor (Tron + EVM pollers), HD wallet address pools, block checkpoint tracking, multi-chain token registry. Not a toy integration. |
+| **Product-focused teams** | Full tenant portal with JWT auth, onboarding, analytics dashboards, payment link generation, deposit settings — complete product surface, not just backend plumbing. |
+| **VCs / Technical due diligence** | Cost estimation ($0.000004/txn), SLA commitments, scaling math, 142K LOC solo. This person can build AND reason about unit economics. |
 
 ### Potential Weaknesses to Address
 
 | Gap | Mitigation |
 |-----|------------|
 | No production traffic | Load test + chaos test results with real numbers close this gap |
-| Mock providers (no real banking APIs) | Explicitly frame as "testnet-grade" — the provider interface is clean, real providers plug in |
-| Single developer | Frame as a strength: "I built the entire system solo, including all infrastructure" |
+| Mock providers (no real banking APIs) | Mock bank UI (`demo/mock-bank/`) demonstrates the interface; `bank.Registry` is pluggable for real partners |
+| Single developer | Frame as a strength: "I built 142K LOC solo, including all infrastructure, deposit flows, portal, and chain monitor" |
 | No CI running publicly | Set up GitHub Actions with the existing pipeline definition |
 
 ---
@@ -93,9 +104,11 @@ Category 3: HIGH-THROUGHPUT ENGINEERING (performance depth)
 Category 4: BLOCKCHAIN INTEGRATION (Web3 depth)
 Category 5: PRODUCTION READINESS (operational depth)
 Category 6: SYSTEM DESIGN (big-picture thinking)
+Category 7: DEPOSIT INFRASTRUCTURE (inbound payments depth)
+Category 8: PRODUCT ENGINEERING (full-stack product depth)
 ```
 
-### Full Article List (22 Topics)
+### Full Article List (30 Topics)
 
 ---
 
@@ -345,6 +358,100 @@ Category 6: SYSTEM DESIGN (big-picture thinking)
 
 ---
 
+#### CATEGORY 7: DEPOSIT INFRASTRUCTURE (4 articles)
+
+**7.1 — "Building a Crypto Deposit System: On-Chain Monitoring, Address Pools, and Settlement"**
+- Problem: Accepting stablecoin deposits requires watching multiple blockchains in real-time,
+  assigning unique addresses per session, tracking confirmations, and settling to fiat or holding.
+- Solution: Chain monitor with per-chain pollers (TronPoller, EVMPoller), HD wallet-derived address
+  pools, block checkpoint tracking, configurable settlement preferences (AUTO_CONVERT, HOLD, THRESHOLD)
+- Key content: Address pool pre-provisioning (why not generate on-demand), block checkpoint recovery
+  after restart, confirmation thresholds per chain, late payment recovery after session expiry
+- Hot angle: "How to build a crypto payment gateway that doesn't miss transactions"
+- **Target: Web3 engineering, crypto payments, fintech infrastructure**
+
+**7.2 — "Virtual Account Bank Deposits: Fiat On-Ramps Without Card Rails"**
+- Problem: Accepting bank transfers at scale needs virtual accounts per session, automatic matching
+  of incoming payments, and handling mismatches (underpaid, overpaid).
+- Solution: Virtual account pool from banking partners, payment matching with configurable tolerance
+  policies (ACCEPT vs REJECT mismatches), automatic refunds via banking partner adapter, account
+  recycling after session completion
+- Key content: Banking partner registry (pluggable adapters), mismatch handling state machine,
+  permanent vs temporary virtual accounts, payer detail capture, fee deduction before crediting
+- Hot angle: "Building bank deposit infrastructure that handles real-world payment chaos"
+- **Target: Payments engineering, BaaS, fintech ops**
+
+**7.3 — "Payment Links: Making Crypto Deposits as Simple as a URL"**
+- Problem: Non-technical users can't navigate wallet addresses and chain selection. Merchants need
+  a Stripe-like "share a link, get paid" experience for crypto.
+- Solution: Payment links with short codes (12-char Nano ID), session templates (amount, currency,
+  chain, token, settlement preference, TTL), public redemption pages, usage tracking
+- Key content: Why this is a thin CRUD layer over the deposit engine (not a new state machine),
+  short code generation, idempotent redemption, redirect flows after payment
+- Hot angle: "The Stripe payment link model, but for stablecoin deposits"
+- **Target: Product engineering, Web3 UX, crypto payments**
+
+**7.4 — "Two Deposit Engines, One Architecture: How State Machines Scale Across Domains"**
+- Problem: Crypto deposits and bank deposits have different triggers (on-chain tx vs bank webhook)
+  but share the same lifecycle (detect → credit → settle). Building two systems is wasteful.
+- Solution: Identical architectural patterns — pure state machine engines, outbox-only side effects,
+  optimistic locking (Version field), pool-based resource allocation — with domain-specific state
+  transitions and worker implementations
+- Key content: Comparing the two engines side-by-side, shared patterns (address/account pools,
+  settlement preferences, fee deduction), why they aren't merged into one generic engine
+- Hot angle: "When to reuse patterns vs reuse code in financial state machines"
+- **Target: DDD community, software architecture, fintech engineering**
+
+---
+
+#### CATEGORY 8: PRODUCT ENGINEERING (4 articles)
+
+**8.1 — "From Backend to Product: Building a Tenant Portal with JWT Auth and Onboarding"**
+- Problem: A settlement API is useless without self-service. Tenants need to manage API keys,
+  configure webhooks, view transfers, and set deposit preferences — without emailing support.
+- Solution: Portal with JWT auth (HS256, refresh token rotation), role-based access (OWNER, ADMIN,
+  MEMBER), email verification flow, onboarding wizard, per-tenant feature toggles
+- Key content: JWT vs API key auth (different concerns), rate limiting login attempts (per-IP
+  sliding window), email verification via outbox + email worker, portal user vs API key identity
+- Hot angle: "The auth layer that turns an API into a product"
+- **Target: Full-stack engineering, SaaS product, developer experience**
+
+**8.2 — "Async Email Notifications in a Transactional System"**
+- Problem: Signup confirmations, deposit alerts, and password resets must be reliable but can't
+  block the request path. Email providers fail, templates change, rate limits apply.
+- Solution: Email intents published to SETTLA_EMAILS stream via outbox, consumed by EmailWorker
+  with pluggable sender interface (Resend, SendGrid, SMTP), template engine with dynamic data,
+  retry + DLQ via NATS WorkQueue
+- Key content: Why email is an outbox intent (not a direct call), template registration,
+  sender interface design, testing with log-only sender, tenant branding
+- Hot angle: "Email is a side effect — treat it like one"
+- **Target: Backend engineering, event-driven architecture**
+
+**8.3 — "Pre-Aggregated Analytics: Daily Snapshots for Dashboard Performance"**
+- Problem: Querying 50M transfers in real-time for dashboard charts kills the database. Tenants
+  want instant-loading analytics with corridor breakdowns, fee summaries, and latency percentiles.
+- Solution: SnapshotScheduler runs daily at 01:00 UTC, pre-aggregates yesterday's metrics into
+  DailySnapshot rows (volume, fees, latencies, success rates per corridor). Portal reads snapshots,
+  not raw transfer tables.
+- Key content: Why pre-aggregation over materialized views, snapshot schema design, async
+  CSV/JSON export with signed URLs, crypto + bank deposit analytics
+- Hot angle: "How to make dashboards fast when you have 50 million rows per day"
+- **Target: Data engineering, SaaS product, backend performance**
+
+**8.4 — "Real-Time Chain Monitoring: Building a Multi-Chain Block Poller"**
+- Problem: Crypto deposits require detecting on-chain transactions targeting your addresses
+  across multiple blockchains (Tron, Ethereum, Base) with different block times and confirmation
+  requirements.
+- Solution: Monitor orchestrator with per-chain pollers (TronPoller for TRC-20, EVMPoller for
+  ERC-20), in-memory AddressSet synced from DB, TokenRegistry for contract address mapping,
+  block checkpoints for crash recovery, configurable confirmation thresholds
+- Key content: Tron vs EVM polling differences, address set refresh strategy, block reorg handling
+  via checkpoint rollback, token registry hot-reload, back-pressure when chain is slow
+- Hot angle: "Polling blockchains reliably: the unglamorous side of crypto payments"
+- **Target: Blockchain engineering, Web3 infrastructure, crypto payments**
+
+---
+
 ### Publishing Strategy
 
 #### Platform Priority
@@ -352,8 +459,8 @@ Category 6: SYSTEM DESIGN (big-picture thinking)
 | Platform | Best For | Frequency |
 |----------|----------|-----------|
 | **Personal blog / dev.to** | All articles (canonical URL) | 2/month |
-| **HackerNews** | Articles 2.1, 2.5, 3.1, 5.1, 5.3, 6.1, 6.2 | Submit when published |
-| **Medium / Fintech publications** | Category 1 (fintech depth) | Cross-post |
+| **HackerNews** | Articles 2.1, 2.5, 3.1, 5.1, 5.3, 6.1, 7.1, 8.4 | Submit when published |
+| **Medium / Fintech publications** | Categories 1, 7 (fintech + deposit depth) | Cross-post |
 | **Hashnode** | Categories 2-3 (distributed systems, performance) | Cross-post |
 | **Twitter/X threads** | Key insights from each article (5-10 tweets) | With each publish |
 | **LinkedIn** | Business-facing angle (5.3, 6.1) | 1/month |
@@ -377,10 +484,17 @@ Category 6: SYSTEM DESIGN (big-picture thinking)
 8. Article 2.5 — "Modular Monolith"
 9. Article 6.2 — "18 ADRs: Threshold-Driven Architecture"
 
-**Phase 4 — Blockchain + operations (complete the picture):**
-10. Article 4.1 — "Multi-Chain Stablecoin Settlement"
-11. Article 5.1 — "Chaos Testing a Payment System"
-12. Remaining articles as appetite demands
+**Phase 4 — Deposit infrastructure (the inbound payment story):**
+10. Article 7.1 — "Building a Crypto Deposit System" (on-chain monitoring, address pools)
+11. Article 7.2 — "Virtual Account Bank Deposits" (fiat on-ramps)
+12. Article 7.3 — "Payment Links: Crypto Deposits as Simple as a URL"
+
+**Phase 5 — Product + operations (complete the picture):**
+13. Article 8.1 — "From Backend to Product: Tenant Portal with JWT Auth"
+14. Article 8.4 — "Real-Time Chain Monitoring: Multi-Chain Block Poller"
+15. Article 4.1 — "Multi-Chain Stablecoin Settlement"
+16. Article 5.1 — "Chaos Testing a Payment System"
+17. Remaining articles as appetite demands
 
 ---
 
@@ -404,7 +518,10 @@ Settla articles should position against these conversations:
 | **Go for financial infrastructure** | Full system in Go with benchmarks | Go is becoming the default for payment backends |
 | **NATS vs Kafka** | NATS JetStream at payment scale | NATS gaining mind-share as simpler alternative to Kafka |
 | **Modular monolith renaissance** | 18 ADRs + extraction readiness | Shopify, Gusto, others publicly advocating modular monolith |
-| **AI-assisted development** | 69K LOC system built with Claude Code | AI-assisted engineering is the meta-topic everywhere |
+| **Crypto payment gateways** | Full deposit flow: chain monitor → credit → settle, payment links, address pools | Stripe, Coinbase Commerce, MoonPay — everyone building crypto acceptance |
+| **Virtual accounts / BaaS** | Bank deposit via virtual accounts, banking partner registry, mismatch handling | Column, Increase, Moov — embedded banking is booming |
+| **Self-service developer portals** | Tenant portal with JWT auth, onboarding wizard, analytics dashboards | Developer experience as competitive moat (Stripe Atlas model) |
+| **AI-assisted development** | 142K LOC system built with Claude Code | AI-assisted engineering is the meta-topic everywhere |
 
 ---
 
@@ -418,12 +535,12 @@ show something that would break in a naive implementation.
 ### Demo Environment
 
 ```
-Docker Compose (14 services):
+Docker Compose (14+ services):
   TigerBeetle | Postgres ×3 | PgBouncer ×3 | Redis | NATS |
-  settla-server | settla-node | gateway | webhook | dashboard
+  settla-server | settla-node | gateway | webhook | dashboard | portal | mock-bank
 ```
 
-### Demo Scenarios (12 Scenarios, 4 Categories)
+### Demo Scenarios (18 Scenarios, 6 Categories)
 
 ---
 
@@ -517,10 +634,58 @@ Docker Compose (14 services):
 
 ---
 
+#### Category E: Deposit Flows (prove inbound payments work)
+
+**E1 — "Crypto deposit: on-chain USDT to tenant balance"**
+- Create deposit session (USDT on Tron, auto-convert to GBP)
+- Show: HD-derived address assigned from pool
+- Simulate on-chain transaction (chain monitor detects it)
+- Watch: PENDING_PAYMENT → DETECTED → CONFIRMED → CREDITING → CREDITED → SETTLING → SETTLED
+- Show: ledger credit, fee deduction, treasury position updated
+- **What it proves:** Full crypto deposit lifecycle, chain monitoring, settlement preferences
+
+**E2 — "Bank deposit via virtual account (with mock bank UI)"**
+- Create bank deposit session (GBP, £500)
+- Show: virtual account assigned (sort code, account number)
+- Use `demo/mock-bank/` UI to simulate incoming payment
+- Watch: PENDING_PAYMENT → PAYMENT_RECEIVED → CREDITING → CREDITED → SETTLED
+- **What it proves:** Virtual account provisioning, bank webhook processing, fiat deposit flow
+
+**E3 — "Payment link: share URL, receive crypto"**
+- Create payment link (100 USDT on Tron, auto-convert)
+- Visit public page `/p/{shortCode}` — show customer-facing UI
+- Redeem link → deposit session created automatically
+- Show: use count incremented, deposit proceeds through normal flow
+- **What it proves:** Payment links as thin layer over deposit engine, public-facing UX
+
+**E4 — "Bank deposit mismatch: underpaid with REJECT policy"**
+- Create session for £500, configure REJECT mismatch policy
+- Simulate £400 payment via mock bank
+- Show: UNDERPAID state, automatic refund intent published
+- **What it proves:** Mismatch detection, policy-driven behavior, automated refund flow
+
+---
+
+#### Category F: Portal & Self-Service (prove it's a product)
+
+**F1 — "Portal signup → email verification → dashboard"**
+- Register portal user, show JWT issued
+- Show: email verification intent in outbox → email worker picks it up
+- Verify email → access granted
+- **What it proves:** Full auth flow, email via outbox pattern, role-based access
+
+**F2 — "Tenant onboarding: enable crypto deposits, configure chains"**
+- Walk through onboarding wizard in portal UI
+- Enable crypto deposits, select Tron + Base chains, set auto-convert preference
+- Show: TenantCryptoConfig saved, deposit endpoints now functional
+- **What it proves:** Self-service configuration, per-tenant feature toggles
+
+---
+
 ### Demo Script Execution Plan
 
 ```
-Total demo time: ~25 minutes
+Total demo time: ~35 minutes
 
 Setup (2 min):
   make docker-up && sleep 25 && make migrate-up && make db-seed
@@ -529,25 +694,34 @@ Act 1 — "It works" (5 min):
   A1: Lemfi GBP→NGN (show full saga, ledger entries, blockchain URL)
   A2: Fincra NGN→GBP (show different fees)
 
-Act 2 — "It's fast" (5 min):
+Act 2 — "Accept payments" (7 min):
+  E1: Crypto deposit — on-chain USDT detected by chain monitor, settled to GBP
+  E2: Bank deposit — virtual account, mock bank webhook, credited
+  E3: Payment link — share URL, customer pays, deposit flows automatically
+  E4: Bank mismatch — underpaid, automatic refund
+
+Act 3 — "It's fast" (5 min):
   C2: Treasury benchmark (sub-microsecond)
   C3: Auth cache benchmark (107ns)
   C1: 1,000 TPS load test with live Grafana (2 min run)
 
-Act 3 — "It survives failure" (8 min):
+Act 4 — "It survives failure" (8 min):
   B1: Off-ramp failure + compensation
   B2: Worker crash + NATS redelivery
   B3: Stuck transfer + auto-recovery
   B4: Relay crash + catchup
 
-Act 4 — "It's secure" (3 min):
+Act 5 — "It's a product" (5 min):
+  F1: Portal signup + email verification
+  F2: Tenant onboarding — enable crypto, configure chains
   D1: Tenant isolation (404 not 403)
-  A3: 100 concurrent transfers (no over-reservation)
   D2: Webhook HMAC verification
+  A3: 100 concurrent transfers (no over-reservation)
 
-Closing (2 min):
-  Show dashboard, Grafana, ADR list
-  Recap: 50M txn/day design, $0.000004/txn, 18 ADRs, 69K LOC
+Closing (3 min):
+  Show dashboard, portal, Grafana (7 dashboards), ADR list
+  Recap: 50M txn/day design, $0.000004/txn, 18 ADRs, 142K LOC
+  Highlight: settlement + deposits + payment links + portal — full payment platform
 ```
 
 ### Demo Recording Tips
@@ -561,8 +735,11 @@ For a video demo or conference talk:
 5. **Script the chaos** — `docker stop settla-node` is more dramatic than describing it
 6. **Show the code briefly** — Flash the CAS loop, the outbox transaction, the compensation
    strategy. Don't explain line-by-line; let the audience see it's real.
-7. **End with numbers** — "69,000 lines of code. 18 architecture decisions. 50 million
-   transactions per day. $0.000004 each."
+7. **Show the portal** — Demonstrate the tenant portal (onboarding, deposits, analytics) to
+   prove this isn't just a backend. It's a product.
+8. **End with numbers** — "142,000 lines of code. 18 architecture decisions. 50 million
+   transactions per day. $0.000004 each. Crypto deposits, bank deposits, payment links, and
+   a full tenant portal."
 
 ---
 
@@ -570,20 +747,23 @@ For a video demo or conference talk:
 
 ### Immediate (this week)
 1. Complete Milestone 8 load test consistency verification
-2. Record a 5-minute demo video (scenarios A1, C1, B2)
-3. Write Article 6.1 (the capstone system design article)
+2. Record a 5-minute demo video (scenarios A1, E1, B2 — settlement + deposit + failure recovery)
+3. Write Article 6.1 (the capstone system design article — now covering deposits + portal)
 
 ### Short-term (2-4 weeks)
 4. Publish articles 6.1, 3.1, 2.1 (the hook articles)
-5. Submit to HackerNews, share on Twitter/X
-6. Record full 25-minute demo
+5. Write Article 7.1 — crypto deposit system (high virality in Web3 circles)
+6. Submit to HackerNews, share on Twitter/X
+7. Record full 35-minute demo (all 6 categories)
 
 ### Medium-term (1-3 months)
-7. Complete article series (2/month cadence)
-8. Submit conference talk proposals (GopherCon, FinTech DevCon)
-9. Open-source consideration (public repo, if desired)
+8. Complete article series (2/month cadence, 30 articles total)
+9. Submit conference talk proposals (GopherCon, FinTech DevCon, ETHGlobal)
+10. Open-source consideration (public repo, if desired)
+11. Connect real banking partner sandbox (Modulr, ClearBank, or Column)
 
 ### Long-term
-10. Convert to real provider integrations (Flutterwave, Paystack APIs)
-11. Mainnet deployment path
-12. Commercial viability assessment
+12. Convert to real provider integrations (Flutterwave, Paystack APIs)
+13. Integrate real email provider (Resend) for portal notifications
+14. Mainnet deployment path
+15. Commercial viability assessment

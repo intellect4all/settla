@@ -1,0 +1,72 @@
+---
+title: "Payment Links"
+description: "Create shareable payment links for crypto deposits"
+---
+
+# Payment Links
+
+Create shareable payment links that allow anyone to make a crypto deposit without needing a Settla account.
+
+## Create a Payment Link
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/payment-links \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "100",
+    "currency": "USDT",
+    "chain": "tron",
+    "token": "USDT",
+    "description": "Invoice #1234",
+    "use_limit": 1
+  }'
+```
+
+```javascript Node.js
+const link = await fetch("https://sandbox.settla.io/v1/payment-links", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    amount: "100",
+    currency: "USDT",
+    chain: "tron",
+    token: "USDT",
+    description: "Invoice #1234",
+    use_limit: 1,
+  }),
+}).then(r => r.json());
+
+console.log(`Share this link: https://pay.settla.io/p/${link.link.shortCode}`);
+```
+
+</CodeGroup>
+
+## Resolve a Link (Public)
+
+Anyone with the short code can view the payment details:
+
+```bash
+curl https://sandbox.settla.io/v1/payment-links/resolve/ABC123
+```
+
+## Redeem a Link (Public)
+
+When a payer is ready to pay, redeem the link to create a deposit session:
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/payment-links/redeem/ABC123
+```
+
+This returns a deposit session with a blockchain address for payment.
+
+## Manage Links
+
+- **List links:** `GET /v1/payment-links`
+- **Get link:** `GET /v1/payment-links/:id`
+- **Disable link:** `DELETE /v1/payment-links/:id`

@@ -1,0 +1,29 @@
+---
+title: "Transaction Verification"
+description: "Verify and look up transactions"
+---
+
+# Transaction Verification
+
+Verify transaction details and look up transactions by ID, reference, or blockchain hash.
+
+## Verify by ID
+
+```bash
+curl https://sandbox.settla.io/v1/transactions/verify/TX_ID \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+## Look Up by Reference or Hash
+
+```bash
+# By reference
+curl "https://sandbox.settla.io/v1/transactions/lookup?reference=REF123" \
+  -H "Authorization: Bearer $API_KEY"
+
+# By blockchain hash
+curl "https://sandbox.settla.io/v1/transactions/lookup?tx_hash=0xabc..." \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+The response includes the full transfer or deposit details along with blockchain transaction information.

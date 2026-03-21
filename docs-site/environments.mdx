@@ -1,0 +1,44 @@
+---
+title: "Environments"
+description: "Sandbox and production environments"
+---
+
+# Environments
+
+Settla provides two environments for development and production use.
+
+## Sandbox
+
+Use the sandbox for development and testing. No real funds are moved.
+
+| | |
+|---|---|
+| **Base URL** | `https://sandbox.settla.io` |
+| **API Keys** | `sk_test_*` |
+| **Blockchain** | Testnets (Tron Nile, Sepolia) |
+| **Transfers** | Simulated, complete in seconds |
+
+## Production
+
+Production handles real money and real blockchain transactions.
+
+| | |
+|---|---|
+| **Base URL** | `https://api.settla.io` |
+| **API Keys** | `sk_live_*` |
+| **Blockchain** | Mainnets |
+| **KYB Required** | Yes — tenant must be approved |
+
+## Local Development
+
+For local development against the Settla stack:
+
+```bash
+# Base URL
+http://localhost:3000
+
+# Start all services
+make docker-up
+```
+
+See the [repository README](https://github.com/settla-io/settla) for full local setup instructions.

@@ -1,0 +1,41 @@
+---
+title: "API Reference Overview"
+description: "Complete reference for the Settla API"
+---
+
+# API Reference
+
+The Settla API is organized around REST. All requests and responses use JSON. Authentication is via Bearer token (API key or JWT).
+
+## Base URLs
+
+| Environment | URL |
+|-------------|-----|
+| Production | `https://api.settla.io` |
+| Sandbox | `https://sandbox.settla.io` |
+
+## Authentication
+
+Include your API key in every request:
+
+```
+Authorization: Bearer sk_test_your_api_key
+```
+
+## Common Patterns
+
+- **Pagination**: List endpoints accept `limit` (default 20, max 100) and `offset` query parameters
+- **Idempotency**: Mutation endpoints accept `idempotency_key` in the request body
+- **Timestamps**: All timestamps are ISO 8601 in UTC
+- **IDs**: All entity IDs are UUIDs
+- **Amounts**: All monetary amounts are strings to preserve decimal precision
+
+## OpenAPI Spec
+
+Download the full OpenAPI specification:
+
+```
+GET /openapi.json
+```
+
+Use it with your preferred code generator to create typed client libraries.

@@ -1,0 +1,36 @@
+---
+title: "Currencies & Corridors"
+description: "Supported currencies, countries, and payment corridors"
+---
+
+# Currencies & Corridors
+
+## Fiat Currencies
+
+| Currency | Country | Direction |
+|----------|---------|-----------|
+| GBP | United Kingdom | Source |
+| USD | United States | Source |
+| EUR | Eurozone | Source |
+| NGN | Nigeria | Destination |
+| GHS | Ghana | Destination |
+| KES | Kenya | Destination |
+
+## Stablecoins
+
+| Token | Chains | Usage |
+|-------|--------|-------|
+| USDT (Tether) | Tron, Ethereum, Polygon | Settlement rail |
+| USDC (Circle) | Tron, Ethereum, Polygon | Settlement rail |
+
+## Supported Corridors
+
+| Source | Destination | Chains | Tokens |
+|--------|-------------|--------|--------|
+| GBP → NGN | UK → Nigeria | Tron, Ethereum | USDT, USDC |
+| USD → NGN | US → Nigeria | Tron, Ethereum | USDT, USDC |
+| EUR → NGN | Europe → Nigeria | Tron, Polygon | USDT, USDC |
+| GBP → GHS | UK → Ghana | Tron | USDT |
+| USD → KES | US → Kenya | Tron | USDT |
+
+Use `POST /v1/routes` to check real-time availability and pricing for a specific corridor.
