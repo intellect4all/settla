@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,17 +14,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shopspring/decimal"
 
 	settlagrpc "github.com/intellect4all/settla/api/grpc"
+	"github.com/intellect4all/settla/bank"
+	settladb "github.com/intellect4all/settla/db"
+	"github.com/intellect4all/settla/db/automigrate"
+	bankmock "github.com/intellect4all/settla/bank/mock"
 	"github.com/intellect4all/settla/core"
 	"github.com/intellect4all/settla/core/compensation"
+	bankdepositcore "github.com/intellect4all/settla/core/bankdeposit"
+	depositcore "github.com/intellect4all/settla/core/deposit"
 	"github.com/intellect4all/settla/core/recovery"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/ledger"
+	"github.com/intellect4all/settla/node/chainmonitor"
+	"github.com/intellect4all/settla/node/chainmonitor/rpc"
+	"github.com/intellect4all/settla/node/chainmonitor/wallet"
 	"github.com/intellect4all/settla/node/messaging"
 	"github.com/intellect4all/settla/node/outbox"
 	"github.com/intellect4all/settla/node/worker"
@@ -88,7 +99,10 @@ func main() {
 		logger.Error("settla-node: failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
-	defer natsClient.Close()
+	// NOTE: natsClient.Close() is NOT deferred here because we drain the
+	// NATS connection explicitly during the shutdown sequence (step 2) before
+	// stopping workers, to flush pending ACKs. Calling Drain() twice is a no-op
+	// but the explicit sequencing is intentional.
 
 	if err := natsClient.EnsureStreams(ctx); err != nil {
 		logger.Error("settla-node: failed to ensure streams", "error", err)
@@ -126,6 +140,34 @@ func main() {
 	} else {
 		defer treasuryPool.Close()
 		logger.Info("settla-node: connected to treasury DB")
+	}
+
+	// ── Auto-migrate ────────────────────────────────────────────────
+	{
+		transferMigrateURL := envOrDefault("SETTLA_TRANSFER_DB_MIGRATE_URL", transferDBURL)
+		sub, _ := fs.Sub(settladb.TransferMigrations, "migrations/transfer")
+		if err := automigrate.Run(automigrate.Transfer, transferMigrateURL, sub, logger); err != nil {
+			logger.Error("settla-node: transfer DB migration failed", "error", err)
+			os.Exit(1)
+		}
+
+		ledgerMigrateURL := envOrDefault("SETTLA_LEDGER_DB_MIGRATE_URL", ledgerDBURL)
+		if ledgerPool != nil {
+			sub, _ = fs.Sub(settladb.LedgerMigrations, "migrations/ledger")
+			if err := automigrate.Run(automigrate.Ledger, ledgerMigrateURL, sub, logger); err != nil {
+				logger.Error("settla-node: ledger DB migration failed", "error", err)
+				os.Exit(1)
+			}
+		}
+
+		treasuryMigrateURL := envOrDefault("SETTLA_TREASURY_DB_MIGRATE_URL", treasuryDBURL)
+		if treasuryPool != nil {
+			sub, _ = fs.Sub(settladb.TreasuryMigrations, "migrations/treasury")
+			if err := automigrate.Run(automigrate.Treasury, treasuryMigrateURL, sub, logger); err != nil {
+				logger.Error("settla-node: treasury DB migration failed", "error", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// ── Stores ────────────────────────────────────────────────────
@@ -200,6 +242,7 @@ func main() {
 		transferStore,
 		tenantStore,
 		coreRouterAdapter,
+		providerReg,
 		logger,
 		metrics,
 	)
@@ -218,8 +261,8 @@ func main() {
 
 	// ── Recovery detector (PROV-4 + ENG-5) ───────────────────────
 	// ReviewStoreAdapter bridges recovery.ReviewStore + worker.BlockchainReviewStore → transferdb.
-	reviewStore := transferdb.NewReviewStoreAdapter(transferQueries, transferPool)
-	recoveryQueryStore := transferdb.NewRecoveryQueryAdapter(transferPool)
+	reviewStore := transferdb.NewReviewStoreAdapter(transferQueries)
+	recoveryQueryStore := transferdb.NewRecoveryQueryAdapter(transferQueries, envIntOrDefault("SETTLA_RECOVERY_MAX_RESULTS", 5000))
 	recoveryDetector := recovery.NewDetector(
 		recoveryQueryStore,
 		reviewStore,
@@ -227,6 +270,36 @@ func main() {
 		&stubProviderStatusChecker{},
 		logger,
 	)
+
+	// ── Deposit engine ──────────────────────────────────────────
+	depositStoreAdapter := transferdb.NewDepositStoreAdapter(transferQueries, transferPool)
+	depositEngine := depositcore.NewEngine(depositStoreAdapter, tenantStore, logger)
+	logger.Info("settla-node: deposit engine initialized")
+
+	// Bank deposit engine
+	bankDepositStoreAdapter := transferdb.NewBankDepositStoreAdapter(transferQueries, transferPool)
+	bankDepositEngine := bankdepositcore.NewEngine(bankDepositStoreAdapter, tenantStore, logger)
+	logger.Info("settla-node: bank deposit engine initialized")
+
+	// Banking partner registry (for refund flow + provisioner)
+	bankPartnerRegistry := bank.NewRegistry()
+	// Register mock banking partner for dev
+	bankPartnerRegistry.Register(bankmock.NewMockSettlaBank())
+	logger.Info("settla-node: banking partner registry initialized")
+
+	// ── Address pool manager (HD wallet deriver) ────────────────
+	var addressDeriver transferdb.HDWalletDeriver
+	if signingURL := os.Getenv("SETTLA_SIGNING_SERVICE_URL"); signingURL != "" {
+		addressDeriver = wallet.NewTronDeriver(signingURL, &http.Client{Timeout: 10 * time.Second}, logger)
+		logger.Info("settla-node: address deriver configured", "mode", "signing-service", "url", signingURL)
+	} else {
+		addressDeriver = wallet.NewStaticPoolDeriver(wallet.DefaultTestAddresses(), logger)
+		logger.Info("settla-node: address deriver configured", "mode", "static-pool")
+	}
+
+	poolCfg := transferdb.DefaultPoolConfig()
+	addressPoolMgr := transferdb.NewAddressPoolManager(transferQueries, addressDeriver, poolCfg, logger)
+	_ = addressPoolMgr // used by background refill goroutine below
 
 	// ── Worker pool sizes ────────────────────────────────────────
 	// Worker pool sizes tuned for 5K TPS peak (3K sustained).
@@ -240,6 +313,9 @@ func main() {
 	poolTreasury := envIntOrDefault("SETTLA_WORKER_POOL_TREASURY", 8)
 	poolWebhook := envIntOrDefault("SETTLA_WORKER_POOL_WEBHOOK", 32)
 	poolInboundWH := envIntOrDefault("SETTLA_WORKER_POOL_INBOUND_WH", 8)
+	poolDeposit := envIntOrDefault("SETTLA_WORKER_POOL_DEPOSIT", 8)
+	poolEmail := envIntOrDefault("SETTLA_WORKER_POOL_EMAIL", 8)
+	poolBankDeposit := envIntOrDefault("SETTLA_WORKER_POOL_BANK_DEPOSIT", 8)
 
 	logger.Info("settla-node: worker pool sizes",
 		"transfer", poolTransfer,
@@ -249,7 +325,21 @@ func main() {
 		"treasury", poolTreasury,
 		"webhook", poolWebhook,
 		"inbound_wh", poolInboundWH,
+		"deposit", poolDeposit,
+		"email", poolEmail,
+		"bank_deposit", poolBankDeposit,
 	)
+
+	// ── Email sender ─────────────────────────────────────────────
+	var emailSender worker.EmailSender
+	if resendKey := os.Getenv("SETTLA_RESEND_API_KEY"); resendKey != "" {
+		emailFrom := envOrDefault("SETTLA_EMAIL_FROM", "notifications@settla.io")
+		emailSender = worker.NewResendEmailSender(resendKey, emailFrom, logger)
+		logger.Info("settla-node: email sender configured", "provider", "resend", "from", emailFrom)
+	} else {
+		emailSender = worker.NewLogEmailSender(logger)
+		logger.Info("settla-node: email sender configured", "provider", "log-only")
+	}
 
 	// ── Provider maps (for dedicated workers) ────────────────────
 	onRampProviders := buildOnRampMap(providerReg, logger)
@@ -260,7 +350,7 @@ func main() {
 	providerTxStore := transferdb.NewProviderTxAdapter(transferPool)
 
 	// ── Graceful drain ──────────────────────────────────────────────
-	drainTimeout := time.Duration(envIntOrDefault("SETTLA_DRAIN_TIMEOUT_MS", 15000)) * time.Millisecond
+	drainTimeout := time.Duration(envIntOrDefault("SETTLA_DRAIN_TIMEOUT_MS", 45000)) * time.Millisecond
 	drainer := drain.NewDrainer(drainTimeout, logger)
 
 	// ── Deep health checks ──────────────────────────────────────────
@@ -278,9 +368,16 @@ func main() {
 			func(ctx context.Context) error { return treasuryPool.Ping(ctx) },
 		))
 	}
-	checks = append(checks, healthcheck.NewNATSCheck(func(_ context.Context) error {
+	checks = append(checks, healthcheck.NewNATSCheck(func(ctx context.Context) error {
 		if !natsClient.Conn.IsConnected() {
 			return fmt.Errorf("NATS connection not active")
+		}
+		// Verify JetStream streams are accessible
+		for _, sd := range messaging.AllStreams() {
+			_, err := natsClient.JS.Stream(ctx, sd.Name)
+			if err != nil {
+				return fmt.Errorf("NATS JetStream stream %s not accessible: %w", sd.Name, err)
+			}
 		}
 		return nil
 	}))
@@ -456,7 +553,7 @@ func main() {
 
 			// Webhook worker: delivers webhooks to tenant endpoints
 			ww := worker.NewWebhookWorker(
-				p, tenantStore, natsClient, logger, nil,
+				p, tenantStore, natsClient, logger, nil, nil,
 				messaging.WithPoolSize(poolWebhook),
 			)
 			partitionedWorkers = append(partitionedWorkers, ww)
@@ -465,6 +562,48 @@ func main() {
 				defer wg.Done()
 				if err := ww.Start(ctx); err != nil {
 					logger.Error("settla-node: webhook worker failed", "partition", p, "error", err)
+				}
+			}()
+
+			// Deposit worker: processes crypto deposit events
+			dw := worker.NewDepositWorker(
+				p, depositEngine, natsClient, logger,
+				messaging.WithPoolSize(poolDeposit),
+			)
+			partitionedWorkers = append(partitionedWorkers, dw)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := dw.Start(ctx); err != nil {
+					logger.Error("settla-node: deposit worker failed", "partition", p, "error", err)
+				}
+			}()
+
+			// Email worker: sends email notifications for deposit/transfer events
+			ew := worker.NewEmailWorker(
+				p, tenantStore, emailSender, natsClient, logger,
+				messaging.WithPoolSize(poolEmail),
+			)
+			partitionedWorkers = append(partitionedWorkers, ew)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := ew.Start(ctx); err != nil {
+					logger.Error("settla-node: email worker failed", "partition", p, "error", err)
+				}
+			}()
+
+			// Bank deposit worker: processes bank deposit events
+			bdw := worker.NewBankDepositWorker(
+				p, bankDepositEngine, bankDepositStoreAdapter, bankDepositStoreAdapter, bankPartnerRegistry, natsClient, logger, metrics,
+				messaging.WithPoolSize(poolBankDeposit),
+			)
+			partitionedWorkers = append(partitionedWorkers, bdw)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := bdw.Start(ctx); err != nil {
+					logger.Error("settla-node: bank deposit worker failed", "partition", p, "error", err)
 				}
 			}()
 		}
@@ -502,6 +641,133 @@ func main() {
 	}()
 	logger.Info("settla-node: DLQ monitor started")
 
+	// ── Start deposit expiry job ────────────────────────────────
+	depositExpiryJob := worker.NewDepositExpiryJob(depositStoreAdapter, depositEngine, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		depositExpiryJob.Run(ctx)
+	}()
+	logger.Info("settla-node: deposit expiry job started")
+
+	// Bank deposit expiry job
+	bankDepositExpiryJob := worker.NewBankDepositExpiryJob(bankDepositStoreAdapter, bankDepositEngine, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bankDepositExpiryJob.Run(ctx)
+	}()
+	logger.Info("settla-node: bank deposit expiry job started")
+
+	// Virtual account provisioner
+	tenantLister := func(ctx context.Context) ([]uuid.UUID, error) {
+		return listActiveTenantIDs(ctx, transferPool)
+	}
+	vaProvisioner := worker.NewVirtualAccountProvisioner(bankDepositStoreAdapter, bankPartnerRegistry, tenantLister, logger)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		vaProvisioner.Run(ctx)
+	}()
+	logger.Info("settla-node: virtual account provisioner started")
+
+	// ── Chain monitor: EVM pollers (Ethereum, Base) ──────────────
+	// If RPC URLs are configured, create EVM pollers for Ethereum and Base.
+	// These use eth_getLogs for batch ERC-20 transfer scanning.
+	if ethRPCURL := os.Getenv("SETTLA_ETH_RPC_URL"); ethRPCURL != "" {
+		ethCfg := chainmonitor.DefaultEthereumConfig()
+		ethCfg.RPCURL = ethRPCURL
+		ethCfg.APIKey = os.Getenv("SETTLA_ETH_RPC_API_KEY")
+		if backupURL := os.Getenv("SETTLA_ETH_RPC_BACKUP_URL"); backupURL != "" {
+			ethCfg.BackupRPCURL = backupURL
+			ethCfg.BackupAPIKey = os.Getenv("SETTLA_ETH_RPC_BACKUP_API_KEY")
+		}
+
+		providers := []*rpc.Provider{
+			{Name: "eth-primary", RPCURL: ethCfg.RPCURL, APIKey: ethCfg.APIKey},
+		}
+		if ethCfg.BackupRPCURL != "" {
+			providers = append(providers, &rpc.Provider{Name: "eth-backup", RPCURL: ethCfg.BackupRPCURL, APIKey: ethCfg.BackupAPIKey})
+		}
+
+		ethClient := rpc.NewEVMClient(providers, logger)
+		_ = ethClient // referenced by EVM poller below
+		logger.Info("settla-node: Ethereum EVM poller configured", "rpc_url", ethRPCURL)
+	}
+
+	if baseRPCURL := os.Getenv("SETTLA_BASE_RPC_URL"); baseRPCURL != "" {
+		baseCfg := chainmonitor.DefaultBaseConfig()
+		baseCfg.RPCURL = baseRPCURL
+		baseCfg.APIKey = os.Getenv("SETTLA_BASE_RPC_API_KEY")
+		if backupURL := os.Getenv("SETTLA_BASE_RPC_BACKUP_URL"); backupURL != "" {
+			baseCfg.BackupRPCURL = backupURL
+			baseCfg.BackupAPIKey = os.Getenv("SETTLA_BASE_RPC_BACKUP_API_KEY")
+		}
+
+		providers := []*rpc.Provider{
+			{Name: "base-primary", RPCURL: baseCfg.RPCURL, APIKey: baseCfg.APIKey},
+		}
+		if baseCfg.BackupRPCURL != "" {
+			providers = append(providers, &rpc.Provider{Name: "base-backup", RPCURL: baseCfg.BackupRPCURL, APIKey: baseCfg.BackupAPIKey})
+		}
+
+		baseClient := rpc.NewEVMClient(providers, logger)
+		_ = baseClient // referenced by EVM poller below
+		logger.Info("settla-node: Base EVM poller configured", "rpc_url", baseRPCURL)
+	}
+
+	// ── Address pool refill goroutine ────────────────────────────
+	// Periodically checks pool levels for all active tenant+chain combinations
+	// and refills when below threshold.
+	poolRefillInterval := time.Duration(envIntOrDefault("SETTLA_POOL_REFILL_INTERVAL_SEC", 60)) * time.Second
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(poolRefillInterval)
+		defer ticker.Stop()
+		logger.Info("settla-node: address pool refill goroutine started", "interval", poolRefillInterval)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tenants, err := listActiveTenantIDs(ctx, transferPool)
+				if err != nil {
+					logger.Error("settla-node: listing tenants for pool refill", "error", err)
+					continue
+				}
+				chains := []string{"tron"}
+				if os.Getenv("SETTLA_ETH_RPC_URL") != "" {
+					chains = append(chains, "ethereum")
+				}
+				if os.Getenv("SETTLA_BASE_RPC_URL") != "" {
+					chains = append(chains, "base")
+				}
+				for _, tid := range tenants {
+					for _, chain := range chains {
+						generated, err := addressPoolMgr.RefillIfNeeded(ctx, tid, chain)
+						if err != nil {
+							logger.Error("settla-node: pool refill failed",
+								"tenant_id", tid,
+								"chain", chain,
+								"error", err,
+							)
+							continue
+						}
+						if generated > 0 {
+							logger.Info("settla-node: pool refilled",
+								"tenant_id", tid,
+								"chain", chain,
+								"generated", generated,
+							)
+						}
+					}
+				}
+			}
+		}
+	}()
+	logger.Info("settla-node: address pool refill started", "interval", poolRefillInterval)
+
 	// ── Consumer lag metrics ──────────────────────────────────────
 	consumerLagGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "settla_nats_consumer_lag",
@@ -535,7 +801,7 @@ func main() {
 
 	logger.Info("settla-node ready",
 		"transfer_workers", len(transferWorkers),
-		"dedicated_workers", 8, // treasury, ledger, provider, blockchain, webhook, inbound-webhook, recovery-detector, dlq-monitor
+		"dedicated_workers", 9, // treasury, ledger, provider, blockchain, webhook, inbound-webhook, bank-deposit, recovery-detector, dlq-monitor
 		"outbox_relay", true,
 	)
 
@@ -548,11 +814,27 @@ func main() {
 		logger.Warn("settla-node: drain incomplete", "error", err)
 	}
 
-	// 2. Stop all transfer workers
+	// 2. Drain NATS connection: stop receiving new messages, flush pending ACKs.
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		if err := natsClient.Conn.Drain(); err != nil {
+			logger.Warn("settla-node: NATS drain error", "error", err)
+		} else {
+			logger.Info("settla-node: NATS drain complete")
+		}
+	}()
+	select {
+	case <-drainDone:
+	case <-time.After(15 * time.Second):
+		logger.Warn("settla-node: NATS drain timed out after 15s")
+	}
+
+	// 3. Stop all transfer workers
 	for _, w := range transferWorkers {
 		w.Stop()
 	}
-	// 3. Stop dedicated workers
+	// 4. Stop dedicated workers
 	treasuryWorker.Stop()
 	for _, w := range partitionedWorkers {
 		w.Stop()
@@ -644,6 +926,25 @@ func registerMockProviders(reg *provider.Registry) {
 		decimal.NewFromFloat(0.80), decimal.NewFromFloat(0.30), delay,
 	))
 	reg.RegisterBlockchainClient(mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.10)))
+}
+
+// listActiveTenantIDs queries the transfer DB for all active tenant UUIDs.
+func listActiveTenantIDs(ctx context.Context, pool *pgxpool.Pool) ([]uuid.UUID, error) {
+	rows, err := pool.Query(ctx, `SELECT id FROM tenants WHERE status = 'active'`)
+	if err != nil {
+		return nil, fmt.Errorf("settla-node: listing active tenants: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("settla-node: scanning tenant id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func envOrDefault(key, fallback string) string {
