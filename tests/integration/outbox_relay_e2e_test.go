@@ -320,10 +320,17 @@ func TestOutboxRelayE2E(t *testing.T) {
 		SourceAmount:   decimal.NewFromInt(1000),
 		DestCurrency:   domain.CurrencyNGN,
 		DestAmount:     decimal.NewFromInt(750000),
+		StableAmount:   decimal.NewFromFloat(1245.5), // USDT stable amount after on-ramp
 		FXRate:         decimal.NewFromFloat(750),
 		Fees:           domain.FeeBreakdown{TotalFeeUSD: decimal.NewFromFloat(4)},
-		ExpiresAt:      time.Now().Add(15 * time.Minute),
-		CreatedAt:      time.Now().UTC(),
+		Route: domain.RouteInfo{
+			Chain:             "tron",
+			StableCoin:        domain.CurrencyUSDT,
+			OnRampProvider:  "mock-onramp-gbp",
+			OffRampProvider: "mock-offramp-ngn",
+		},
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+		CreatedAt: time.Now().UTC(),
 	})
 
 	req := core.CreateTransferRequest{
@@ -451,10 +458,17 @@ func TestOutboxRelayFullPipeline(t *testing.T) {
 		SourceAmount:   decimal.NewFromInt(500),
 		DestCurrency:   domain.CurrencyNGN,
 		DestAmount:     decimal.NewFromInt(375000),
+		StableAmount:   decimal.NewFromFloat(622.5), // USDT stable amount after on-ramp
 		FXRate:         decimal.NewFromFloat(750),
 		Fees:           domain.FeeBreakdown{TotalFeeUSD: decimal.NewFromFloat(2)},
-		ExpiresAt:      time.Now().Add(15 * time.Minute),
-		CreatedAt:      time.Now().UTC(),
+		Route: domain.RouteInfo{
+			Chain:             "tron",
+			StableCoin:        domain.CurrencyUSDT,
+			OnRampProvider:  "mock-onramp-gbp",
+			OffRampProvider: "mock-offramp-ngn",
+		},
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+		CreatedAt: time.Now().UTC(),
 	})
 
 	// Create the transfer.

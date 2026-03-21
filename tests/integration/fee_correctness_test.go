@@ -52,12 +52,9 @@ func TestPerTenantFeeSchedule(t *testing.T) {
 		t.Error("Lemfi off-ramp fee should not be zero for 1000 GBP")
 	}
 
-	// Verify BPS calculation: fee = amount * bps / 10000.
+	// Verify on-ramp BPS calculation: on-ramp fee = source_amount * onramp_bps / 10000.
 	expectedLemfiOnRamp := decimal.NewFromInt(gbpAmount).
 		Mul(decimal.NewFromInt(int64(lemfiTenant.FeeSchedule.OnRampBPS))).
-		Div(bpsDivisor)
-	expectedLemfiOffRamp := decimal.NewFromInt(gbpAmount).
-		Mul(decimal.NewFromInt(int64(lemfiTenant.FeeSchedule.OffRampBPS))).
 		Div(bpsDivisor)
 
 	// Clamp to min/max if configured (the test tenant has no min/max set, but
@@ -73,9 +70,28 @@ func TestPerTenantFeeSchedule(t *testing.T) {
 		t.Errorf("Lemfi on-ramp fee: want %s (40 bps of %d GBP), got %s",
 			expectedLemfiOnRamp, gbpAmount, lemfiQuote.Fees.OnRampFee)
 	}
+
+	// Off-ramp fee is BPS of the intermediate stableAmount (USDT), NOT the source amount.
+	// The router calculates: offRampFee = stableAmount * offramp_bps / 10000.
+	expectedLemfiOffRamp := lemfiQuote.StableAmount.
+		Mul(decimal.NewFromInt(int64(lemfiTenant.FeeSchedule.OffRampBPS))).
+		Div(bpsDivisor)
 	if !lemfiQuote.Fees.OffRampFee.Equal(expectedLemfiOffRamp) {
-		t.Errorf("Lemfi off-ramp fee: want %s (35 bps of %d GBP), got %s",
-			expectedLemfiOffRamp, gbpAmount, lemfiQuote.Fees.OffRampFee)
+		t.Errorf("Lemfi off-ramp fee: want %s (35 bps of %s USDT stable), got %s",
+			expectedLemfiOffRamp, lemfiQuote.StableAmount, lemfiQuote.Fees.OffRampFee)
+	}
+
+	// Verify network fee is present (provider-level fees: on-ramp + off-ramp + blockchain).
+	if lemfiQuote.Fees.NetworkFee.IsZero() {
+		t.Error("Lemfi network fee should not be zero (provider fees exist)")
+	}
+
+	// Verify total fee = on-ramp + off-ramp + network.
+	expectedLemfiTotal := lemfiQuote.Fees.OnRampFee.Add(lemfiQuote.Fees.OffRampFee).Add(lemfiQuote.Fees.NetworkFee)
+	if !lemfiQuote.Fees.TotalFeeUSD.Equal(expectedLemfiTotal) {
+		t.Errorf("Lemfi total fee: want %s (onramp %s + offramp %s + network %s), got %s",
+			expectedLemfiTotal, lemfiQuote.Fees.OnRampFee, lemfiQuote.Fees.OffRampFee,
+			lemfiQuote.Fees.NetworkFee, lemfiQuote.Fees.TotalFeeUSD)
 	}
 
 	// Verify dest_amount = (source_amount - total_fee) * fx_rate.
@@ -110,17 +126,19 @@ func TestPerTenantFeeSchedule(t *testing.T) {
 	expectedFincraOnRamp := decimal.NewFromInt(ngnAmount).
 		Mul(decimal.NewFromInt(int64(fincraTenant.FeeSchedule.OnRampBPS))).
 		Div(bpsDivisor)
-	expectedFincraOffRamp := decimal.NewFromInt(ngnAmount).
-		Mul(decimal.NewFromInt(int64(fincraTenant.FeeSchedule.OffRampBPS))).
-		Div(bpsDivisor)
 
 	if !fincraQuote.Fees.OnRampFee.Equal(expectedFincraOnRamp) {
 		t.Errorf("Fincra on-ramp fee: want %s (25 bps of %d NGN), got %s",
 			expectedFincraOnRamp, ngnAmount, fincraQuote.Fees.OnRampFee)
 	}
+
+	// Off-ramp fee is BPS of stableAmount (USDT), not source amount.
+	expectedFincraOffRamp := fincraQuote.StableAmount.
+		Mul(decimal.NewFromInt(int64(fincraTenant.FeeSchedule.OffRampBPS))).
+		Div(bpsDivisor)
 	if !fincraQuote.Fees.OffRampFee.Equal(expectedFincraOffRamp) {
-		t.Errorf("Fincra off-ramp fee: want %s (20 bps of %d NGN), got %s",
-			expectedFincraOffRamp, ngnAmount, fincraQuote.Fees.OffRampFee)
+		t.Errorf("Fincra off-ramp fee: want %s (20 bps of %s USDT stable), got %s",
+			expectedFincraOffRamp, fincraQuote.StableAmount, fincraQuote.Fees.OffRampFee)
 	}
 
 	// Verify Fincra's BPS rates (25/20) are lower than Lemfi's (40/35).

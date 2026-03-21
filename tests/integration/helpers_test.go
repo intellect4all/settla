@@ -192,6 +192,33 @@ func (s *memTransferStore) ListTransfers(ctx context.Context, tenantID uuid.UUID
 	return result[offset:end], nil
 }
 
+func (s *memTransferStore) ListTransfersFiltered(_ context.Context, tenantID uuid.UUID, statusFilter, searchQuery string, limit int) ([]domain.Transfer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []domain.Transfer
+	for _, t := range s.transfers {
+		if t.TenantID != tenantID {
+			continue
+		}
+		if statusFilter != "" && string(t.Status) != statusFilter {
+			continue
+		}
+		if searchQuery != "" {
+			q := strings.ToLower(searchQuery)
+			if !strings.Contains(strings.ToLower(t.ID.String()), q) &&
+				!strings.Contains(strings.ToLower(t.ExternalRef), q) &&
+				!strings.Contains(strings.ToLower(t.IdempotencyKey), q) {
+				continue
+			}
+		}
+		result = append(result, *t)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
 func (s *memTransferStore) TransitionWithOutbox(ctx context.Context, transferID uuid.UUID, newStatus domain.TransferStatus, expectedVersion int64, entries []domain.OutboxEntry) error {
 	s.mu.Lock()
 	t, ok := s.transfers[transferID]
@@ -268,6 +295,18 @@ func (s *memTransferStore) CreateTransferWithOutbox(ctx context.Context, transfe
 		}
 	}
 	return nil
+}
+
+func (s *memTransferStore) GetTransferByExternalRef(_ context.Context, tenantID uuid.UUID, externalRef string) (*domain.Transfer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.transfers {
+		if t.TenantID == tenantID && t.ExternalRef == externalRef {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("transfer not found for external ref %s", externalRef)
 }
 
 func (s *memTransferStore) addQuote(q *domain.Quote) {
@@ -681,6 +720,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		transferStore,
 		tenantStore,
 		coreRouterAdapter,
+		reg,
 		logger,
 		metrics,
 	)
