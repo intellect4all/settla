@@ -70,12 +70,12 @@ const (
 type DepositSession struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
-	IdempotencyKey string
+	IdempotencyKey IdempotencyKey
 	Status         DepositSessionStatus
 	Version        int64
 
 	// Payment details
-	Chain          string          // e.g. "tron", "ethereum", "base"
+	Chain          CryptoChain     // e.g. ChainTron, ChainEthereum, ChainBase
 	Token          string          // e.g. "USDT", "USDC"
 	DepositAddress string          // derived HD wallet address
 	ExpectedAmount decimal.Decimal // amount requested by tenant
@@ -88,7 +88,7 @@ type DepositSession struct {
 	NetAmount        decimal.Decimal // received - fee = net credited to tenant
 
 	// Settlement
-	SettlementPref    SettlementPreference
+	SettlementPref       SettlementPreference
 	SettlementTransferID *uuid.UUID // linked transfer if AUTO_CONVERT
 
 	// Address derivation
@@ -156,7 +156,7 @@ type DepositTransaction struct {
 	SessionID uuid.UUID
 	TenantID  uuid.UUID
 
-	Chain           string
+	Chain           CryptoChain
 	TxHash          string
 	FromAddress     string
 	ToAddress       string
@@ -176,7 +176,7 @@ type DepositTransaction struct {
 // IncomingTransaction is a raw on-chain transaction detected by the chain monitor.
 // It carries enough data for the engine to match it to a deposit session.
 type IncomingTransaction struct {
-	Chain         string
+	Chain         CryptoChain
 	TxHash        string
 	FromAddress   string
 	ToAddress     string
@@ -191,7 +191,7 @@ type IncomingTransaction struct {
 type CryptoAddressPool struct {
 	ID              uuid.UUID
 	TenantID        uuid.UUID
-	Chain           string
+	Chain           CryptoChain
 	Address         string
 	DerivationIndex int64
 	Dispensed       bool
@@ -203,7 +203,7 @@ type CryptoAddressPool struct {
 // BlockCheckpoint tracks the last scanned block per chain for the chain monitor.
 type BlockCheckpoint struct {
 	ID          uuid.UUID
-	Chain       string
+	Chain       CryptoChain
 	BlockNumber int64
 	BlockHash   string
 	UpdatedAt   time.Time
@@ -212,7 +212,7 @@ type BlockCheckpoint struct {
 // Token represents a supported token on a specific chain.
 type Token struct {
 	ID              uuid.UUID
-	Chain           string // e.g. "tron", "ethereum", "base"
+	Chain           CryptoChain // e.g. ChainTron, ChainEthereum, ChainBase
 	Symbol          string // e.g. "USDT", "USDC"
 	ContractAddress string
 	Decimals        int32
@@ -223,12 +223,12 @@ type Token struct {
 
 // TenantCryptoConfig holds per-tenant crypto deposit configuration.
 type TenantCryptoConfig struct {
-	CryptoEnabled          bool
-	DefaultSettlementPref  SettlementPreference
-	SupportedChains        []string
-	MinConfirmationsTron   int32
-	MinConfirmationsEth    int32
-	MinConfirmationsBase   int32
-	PaymentToleranceBPS    int32
-	DefaultSessionTTLSecs  int32
+	CryptoEnabled         bool
+	DefaultSettlementPref SettlementPreference
+	SupportedChains       []CryptoChain
+	MinConfirmationsTron  int32
+	MinConfirmationsEth   int32
+	MinConfirmationsBase  int32
+	PaymentToleranceBPS   int32
+	DefaultSessionTTLSecs int32
 }

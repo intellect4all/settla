@@ -35,8 +35,8 @@ const (
 type MonitorAddressPayload struct {
 	SessionID uuid.UUID `json:"session_id"`
 	TenantID  uuid.UUID `json:"tenant_id"`
-	Chain     string    `json:"chain"`
-	Address   string    `json:"address"`
+	Chain     CryptoChain `json:"chain"`
+	Address   string      `json:"address"`
 	Token     string    `json:"token"`
 }
 
@@ -44,23 +44,23 @@ type MonitorAddressPayload struct {
 type CreditDepositPayload struct {
 	SessionID      uuid.UUID       `json:"session_id"`
 	TenantID       uuid.UUID       `json:"tenant_id"`
-	Chain          string          `json:"chain"`
+	Chain          CryptoChain     `json:"chain"`
 	Token          string          `json:"token"`
 	GrossAmount    decimal.Decimal `json:"gross_amount"`
 	FeeAmount      decimal.Decimal `json:"fee_amount"`
 	NetAmount      decimal.Decimal `json:"net_amount"`
 	TxHash         string          `json:"tx_hash"`
-	IdempotencyKey string          `json:"idempotency_key"`
+	IdempotencyKey IdempotencyKey  `json:"idempotency_key"`
 }
 
 // SettleDepositPayload is the payload for IntentSettleDeposit.
 type SettleDepositPayload struct {
-	SessionID    uuid.UUID        `json:"session_id"`
-	TenantID     uuid.UUID        `json:"tenant_id"`
-	Chain        string           `json:"chain"`
-	Token        string           `json:"token"`
-	Amount       decimal.Decimal  `json:"amount"`
-	TargetFiat   Currency         `json:"target_fiat"`
+	SessionID  uuid.UUID       `json:"session_id"`
+	TenantID   uuid.UUID       `json:"tenant_id"`
+	Chain      CryptoChain     `json:"chain"`
+	Token      string          `json:"token"`
+	Amount     decimal.Decimal `json:"amount"`
+	TargetFiat Currency        `json:"target_fiat"`
 }
 
 // DepositTxDetectedPayload is the payload for EventDepositTxDetected.
@@ -68,7 +68,7 @@ type DepositTxDetectedPayload struct {
 	SessionID   uuid.UUID       `json:"session_id"`
 	TenantID    uuid.UUID       `json:"tenant_id"`
 	TxHash      string          `json:"tx_hash"`
-	Chain       string          `json:"chain"`
+	Chain       CryptoChain     `json:"chain"`
 	Token       string          `json:"token"`
 	Amount      decimal.Decimal `json:"amount"`
 	BlockNumber int64           `json:"block_number"`
@@ -79,7 +79,7 @@ type DepositTxConfirmedPayload struct {
 	SessionID     uuid.UUID       `json:"session_id"`
 	TenantID      uuid.UUID       `json:"tenant_id"`
 	TxHash        string          `json:"tx_hash"`
-	Chain         string          `json:"chain"`
+	Chain         CryptoChain     `json:"chain"`
 	Token         string          `json:"token"`
 	Amount        decimal.Decimal `json:"amount"`
 	Confirmations int32           `json:"confirmations"`
@@ -90,7 +90,7 @@ type DepositSessionEventPayload struct {
 	SessionID uuid.UUID            `json:"session_id"`
 	TenantID  uuid.UUID            `json:"tenant_id"`
 	Status    DepositSessionStatus `json:"status"`
-	Chain     string               `json:"chain,omitempty"`
+	Chain     CryptoChain          `json:"chain,omitempty"`
 	Token     string               `json:"token,omitempty"`
 	Amount    decimal.Decimal      `json:"amount,omitempty"`
 	Reason    string               `json:"reason,omitempty"`
