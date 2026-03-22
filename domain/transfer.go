@@ -111,7 +111,7 @@ func (f FeeBreakdown) ValidateWithSchedule(schedule FeeSchedule) error {
 
 // BlockchainTx records a single blockchain transaction associated with a transfer.
 type BlockchainTx struct {
-	Chain       string // e.g. "tron", "ethereum"
+	Chain       CryptoChain // e.g. ChainTron, ChainEthereum
 	Type        string // "on_ramp", "off_ramp", "settlement"
 	TxHash      string
 	ExplorerURL string
@@ -135,7 +135,7 @@ type Transfer struct {
 
 	StableCoin   Currency
 	StableAmount decimal.Decimal
-	Chain        string
+	Chain        CryptoChain
 
 	FXRate              decimal.Decimal
 	Fees                FeeBreakdown
@@ -239,22 +239,51 @@ func (s Sender) Validate() error {
 	return nil
 }
 
+// CryptoChain represents a supported blockchain network.
+type CryptoChain string
+
+const (
+	ChainTron     CryptoChain = "tron"
+	ChainEthereum CryptoChain = "ethereum"
+	ChainSolana   CryptoChain = "solana"
+	ChainBase     CryptoChain = "base"
+	ChainPolygon  CryptoChain = "polygon"
+	ChainArbitrum CryptoChain = "arbitrum"
+)
+
+// String returns the chain name.
+func (c CryptoChain) String() string { return string(c) }
+
+// IsEVM returns true if the chain is EVM-compatible.
+func (c CryptoChain) IsEVM() bool {
+	return c == ChainEthereum || c == ChainBase || c == ChainPolygon || c == ChainArbitrum
+}
+
 // SupportedChains is the set of blockchain chains supported by Settla.
-var SupportedChains = map[string]struct{}{
-	"ethereum": {},
-	"tron":     {},
-	"solana":   {},
-	"polygon":  {},
-	"base":     {},
-	"arbitrum": {},
+var SupportedChains = map[CryptoChain]struct{}{
+	ChainEthereum: {},
+	ChainTron:     {},
+	ChainSolana:   {},
+	ChainPolygon:  {},
+	ChainBase:     {},
+	ChainArbitrum: {},
 }
 
 // ValidateChain returns an error if chain is not in SupportedChains.
-func ValidateChain(chain string) error {
+func ValidateChain(chain CryptoChain) error {
 	if _, ok := SupportedChains[chain]; !ok {
 		return fmt.Errorf("settla-domain: unsupported blockchain chain %q", chain)
 	}
 	return nil
+}
+
+// ValidChains returns all supported chains.
+func ValidChains() []CryptoChain {
+	chains := make([]CryptoChain, 0, len(SupportedChains))
+	for c := range SupportedChains {
+		chains = append(chains, c)
+	}
+	return chains
 }
 
 // Validate checks that the recipient has the minimum required fields populated.

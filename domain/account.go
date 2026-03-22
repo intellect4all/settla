@@ -69,7 +69,6 @@ type Account struct {
 // Example: TenantAccountCode("lemfi", "assets:bank:gbp:clearing") → "tenant:lemfi:assets:bank:gbp:clearing"
 //
 // Caller responsibility: tenantSlug must not be empty or contain colons.
-// Use ValidateSlug() at system boundaries; this function trusts internal callers.
 func TenantAccountCode(tenantSlug, path string) string {
 	return fmt.Sprintf("tenant:%s:%s", tenantSlug, path)
 }
@@ -83,7 +82,7 @@ func IsSystemAccount(code string) bool {
 // ParseAccountCode splits an account code on ":" and returns the segments.
 // Returns an error if the code is empty.
 func ParseAccountCode(code string) ([]string, error) {
-	if code == "" {
+	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("settla-domain: empty account code")
 	}
 	return strings.Split(code, ":"), nil
@@ -92,34 +91,6 @@ func ParseAccountCode(code string) ([]string, error) {
 // AccountCode is a validated, colon-delimited account identifier.
 type AccountCode string
 
-// NewAccountCode validates and returns an AccountCode.
-func NewAccountCode(code string) (AccountCode, error) {
-	if code == "" {
-		return "", fmt.Errorf("settla-domain: empty account code")
-	}
-	return AccountCode(code), nil
-}
-
-// ValidateSlug returns an error if the slug is empty or contains colons.
-// Slugs with colons would corrupt the colon-delimited account code format.
-func ValidateSlug(slug string) error {
-	if slug == "" {
-		return fmt.Errorf("settla-domain: tenant slug must not be empty")
-	}
-	if strings.Contains(slug, ":") {
-		return fmt.Errorf("settla-domain: tenant slug must not contain colons, got %q", slug)
-	}
-	return nil
-}
-
-// NewTenantAccountCode builds a tenant-scoped AccountCode value object.
-// Returns an error if the slug is invalid.
-func NewTenantAccountCode(slug, path string) (AccountCode, error) {
-	if err := ValidateSlug(slug); err != nil {
-		return "", err
-	}
-	return AccountCode(fmt.Sprintf("tenant:%s:%s", slug, path)), nil
-}
 
 // IsSystem returns true if the account code does NOT have a "tenant:" prefix.
 func (c AccountCode) IsSystem() bool {
