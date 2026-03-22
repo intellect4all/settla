@@ -71,7 +71,7 @@ type FeeSchedule struct {
 	FeeScheduleUpdatedAt time.Time `json:"fee_schedule_updated_at,omitempty"`
 }
 
-// ValidateFeeSchedule checks that the fee schedule has sensible values:
+// Validate ValidateFeeSchedule checks that the fee schedule has sensible values:
 //   - All BPS fields must be in [0, 10000] (0% to 100%).
 //   - MinFeeUSD must not exceed MaxFeeUSD (when both are set).
 //   - BankCollectionMinFeeUSD must not exceed BankCollectionMaxFeeUSD (when both are set).
@@ -155,24 +155,25 @@ func (f FeeSchedule) CalculateFee(amount decimal.Decimal, feeType string) (decim
 // Tenant represents a fintech customer (e.g., Lemfi, Fincra, Paystack).
 // Every piece of data in Settla is scoped to a tenant.
 type Tenant struct {
-	ID               uuid.UUID
-	Name             string
-	Slug             string
-	Status           TenantStatus
-	FeeSchedule      FeeSchedule
-	SettlementModel  SettlementModel
-	WebhookURL       string
-	WebhookSecret    string
-	DailyLimitUSD    decimal.Decimal
-	PerTransferLimit decimal.Decimal
-	KYBStatus        KYBStatus
-	KYBVerifiedAt    *time.Time
-	Metadata         map[string]string
+	ID                 uuid.UUID
+	Name               string
+	Slug               string
+	Status             TenantStatus
+	FeeSchedule        FeeSchedule
+	SettlementModel    SettlementModel
+	WebhookURL         string
+	WebhookSecret      string
+	DailyLimitUSD       decimal.Decimal
+	PerTransferLimit    decimal.Decimal
+	MaxPendingTransfers int
+	KYBStatus           KYBStatus
+	KYBVerifiedAt      *time.Time
+	Metadata           map[string]string
 	CryptoConfig       TenantCryptoConfig
 	BankConfig         TenantBankConfig
 	NotificationConfig TenantNotificationConfig
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // TenantNotificationConfig holds per-tenant email notification settings.
@@ -225,6 +226,19 @@ func (t *Tenant) ValidateMetadata() error {
 		}
 	}
 	return nil
+}
+
+func (t *Tenant) ChainSupported(chain CryptoChain) bool {
+	chainSupported := false
+	for _, c := range t.CryptoConfig.SupportedChains {
+		if c == chain {
+			chainSupported = true
+			break
+		}
+	}
+
+	return chainSupported
+
 }
 
 // APIKey represents a tenant's API credential used for authentication.
