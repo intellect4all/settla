@@ -19,12 +19,12 @@ const (
 // PaymentLinkSessionConfig holds the template configuration for deposit sessions
 // created when a payment link is redeemed. Stored as JSONB in the database.
 type PaymentLinkSessionConfig struct {
-	Amount           decimal.Decimal      `json:"amount"`
-	Currency         string               `json:"currency"`
-	Chain            string               `json:"chain"`
-	Token            string               `json:"token"`
-	SettlementPref   SettlementPreference `json:"settlement_pref,omitempty"`
-	TTLSeconds       int32                `json:"ttl_seconds,omitempty"`
+	Amount         decimal.Decimal      `json:"amount"`
+	Currency       Currency             `json:"currency"`
+	Chain          CryptoChain          `json:"chain"`
+	Token          string               `json:"token"`
+	SettlementPref SettlementPreference `json:"settlement_pref,omitempty"`
+	TTLSeconds     int32                `json:"ttl_seconds,omitempty"`
 }
 
 // PaymentLink is a shareable URL template that creates deposit sessions on redemption.

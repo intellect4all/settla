@@ -42,8 +42,8 @@ type StatusCount struct {
 
 // CorridorMetrics holds per-corridor analytics.
 type CorridorMetrics struct {
-	SourceCurrency string
-	DestCurrency   string
+	SourceCurrency Currency
+	DestCurrency   Currency
 	TransferCount  int64
 	VolumeUSD      decimal.Decimal
 	FeesUSD        decimal.Decimal
@@ -77,9 +77,9 @@ type ActivityItem struct {
 	TransferID     string
 	ExternalRef    string
 	Status         string
-	SourceCurrency string
+	SourceCurrency Currency
 	SourceAmount   decimal.Decimal
-	DestCurrency   string
+	DestCurrency   Currency
 	DestAmount     decimal.Decimal
 	UpdatedAt      time.Time
 	FailureReason  string
@@ -87,8 +87,8 @@ type ActivityItem struct {
 
 // FeeReportEntry holds fee data grouped by currency corridor.
 type FeeReportEntry struct {
-	SourceCurrency string
-	DestCurrency   string
+	SourceCurrency Currency
+	DestCurrency   Currency
 	TransferCount  int64
 	TotalVolumeUSD decimal.Decimal
 	OnRampFeesUSD  decimal.Decimal
