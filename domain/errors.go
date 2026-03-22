@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // DomainError represents a structured domain-level error with a machine-readable
 // code and a human-readable message. It optionally wraps an underlying error.
@@ -43,52 +46,53 @@ func (e *DomainError) IsRetriable() bool {
 
 // Error code constants.
 const (
-	CodeQuoteExpired        = "QUOTE_EXPIRED"
-	CodeInsufficientFunds   = "INSUFFICIENT_FUNDS"
-	CodeInvalidTransition   = "INVALID_TRANSITION"
-	CodeProviderError       = "PROVIDER_ERROR"
-	CodeChainError          = "CHAIN_ERROR"
-	CodeLedgerImbalance     = "LEDGER_IMBALANCE"
-	CodePositionLocked      = "POSITION_LOCKED"
-	CodeCorridorDisabled    = "CORRIDOR_DISABLED"
-	CodeAmountTooLow        = "AMOUNT_TOO_LOW"
-	CodeAmountTooHigh       = "AMOUNT_TOO_HIGH"
-	CodeIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
-	CodeOptimisticLock      = "OPTIMISTIC_LOCK"
-	CodeTenantSuspended     = "TENANT_SUSPENDED"
-	CodeTenantNotFound      = "TENANT_NOT_FOUND"
-	CodeDailyLimitExceeded  = "DAILY_LIMIT_EXCEEDED"
-	CodeUnauthorized        = "UNAUTHORIZED"
-	CodeReservationFailed           = "RESERVATION_FAILED"            // Deprecated: use CodeReservationLockTimeout or CodeReservationInsufficientFunds
-	CodeReservationLockTimeout      = "RESERVATION_LOCK_TIMEOUT"      // retryable — temporary lock contention
+	CodeQuoteExpired                 = "QUOTE_EXPIRED"
+	CodeInsufficientFunds            = "INSUFFICIENT_FUNDS"
+	CodeInvalidTransition            = "INVALID_TRANSITION"
+	CodeProviderError                = "PROVIDER_ERROR"
+	CodeChainError                   = "CHAIN_ERROR"
+	CodeLedgerImbalance              = "LEDGER_IMBALANCE"
+	CodePositionLocked               = "POSITION_LOCKED"
+	CodeCorridorDisabled             = "CORRIDOR_DISABLED"
+	CodeAmountTooLow                 = "AMOUNT_TOO_LOW"
+	CodeAmountTooHigh                = "AMOUNT_TOO_HIGH"
+	CodeIdempotencyConflict          = "IDEMPOTENCY_CONFLICT"
+	CodeOptimisticLock               = "OPTIMISTIC_LOCK"
+	CodeTenantSuspended              = "TENANT_SUSPENDED"
+	CodeTenantNotFound               = "TENANT_NOT_FOUND"
+	CodeDailyLimitExceeded           = "DAILY_LIMIT_EXCEEDED"
+	CodeUnauthorized                 = "UNAUTHORIZED"
+	CodeReservationFailed            = "RESERVATION_FAILED"             // Deprecated: use CodeReservationLockTimeout or CodeReservationInsufficientFunds
+	CodeReservationLockTimeout       = "RESERVATION_LOCK_TIMEOUT"       // retryable — temporary lock contention
 	CodeReservationInsufficientFunds = "RESERVATION_INSUFFICIENT_FUNDS" // NOT retryable — insufficient treasury balance
-	CodeCurrencyMismatch    = "CURRENCY_MISMATCH"
-	CodeAccountNotFound     = "ACCOUNT_NOT_FOUND"
-	CodeTransferNotFound      = "TRANSFER_NOT_FOUND"
-	CodeProviderUnavailable   = "PROVIDER_UNAVAILABLE"
-	CodeNetworkError          = "NETWORK_ERROR"
-	CodeBlockchainReorg       = "BLOCKCHAIN_REORG"
-	CodeCompensationFailed    = "COMPENSATION_FAILED"
-	CodeRateLimitExceeded     = "RATE_LIMIT_EXCEEDED"
-	CodeEmailAlreadyExists  = "EMAIL_ALREADY_EXISTS"
-	CodeInvalidCredentials  = "INVALID_CREDENTIALS"
-	CodeEmailNotVerified    = "EMAIL_NOT_VERIFIED"
-	CodeTokenExpired        = "TOKEN_EXPIRED"
-	CodeSlugConflict        = "SLUG_CONFLICT"
-	CodeDepositNotFound     = "DEPOSIT_NOT_FOUND"
-	CodeDepositExpired      = "DEPOSIT_EXPIRED"
-	CodeCryptoDisabled      = "CRYPTO_DISABLED"
-	CodeChainNotSupported   = "CHAIN_NOT_SUPPORTED"
-	CodeAddressPoolEmpty        = "ADDRESS_POOL_EMPTY"
-	CodeBankDepositsDisabled    = "BANK_DEPOSITS_DISABLED"
-	CodeCurrencyNotSupported    = "CURRENCY_NOT_SUPPORTED"
-	CodeVirtualAccountPoolEmpty = "VIRTUAL_ACCOUNT_POOL_EMPTY"
-	CodeBankDepositNotFound     = "BANK_DEPOSIT_NOT_FOUND"
-	CodePaymentMismatch         = "PAYMENT_MISMATCH"
-	CodePaymentLinkNotFound     = "PAYMENT_LINK_NOT_FOUND"
-	CodePaymentLinkExpired      = "PAYMENT_LINK_EXPIRED"
-	CodePaymentLinkExhausted    = "PAYMENT_LINK_EXHAUSTED"
-	CodePaymentLinkDisabled     = "PAYMENT_LINK_DISABLED"
+	CodeCurrencyMismatch             = "CURRENCY_MISMATCH"
+	CodeAccountNotFound              = "ACCOUNT_NOT_FOUND"
+	CodeTransferNotFound             = "TRANSFER_NOT_FOUND"
+	CodeProviderUnavailable          = "PROVIDER_UNAVAILABLE"
+	CodeNetworkError                 = "NETWORK_ERROR"
+	CodeBlockchainReorg              = "BLOCKCHAIN_REORG"
+	CodeCompensationFailed           = "COMPENSATION_FAILED"
+	CodeRateLimitExceeded            = "RATE_LIMIT_EXCEEDED"
+	CodeEmailAlreadyExists           = "EMAIL_ALREADY_EXISTS"
+	CodeInvalidCredentials           = "INVALID_CREDENTIALS"
+	CodeEmailNotVerified             = "EMAIL_NOT_VERIFIED"
+	CodeTokenExpired                 = "TOKEN_EXPIRED"
+	CodeSlugConflict                 = "SLUG_CONFLICT"
+	CodeDepositNotFound              = "DEPOSIT_NOT_FOUND"
+	CodeDepositExpired               = "DEPOSIT_EXPIRED"
+	CodeCryptoDisabled               = "CRYPTO_DISABLED"
+	CodeChainNotSupported            = "CHAIN_NOT_SUPPORTED"
+	CodeAddressPoolEmpty             = "ADDRESS_POOL_EMPTY"
+	CodeBankDepositsDisabled         = "BANK_DEPOSITS_DISABLED"
+	CodeCurrencyNotSupported         = "CURRENCY_NOT_SUPPORTED"
+	CodeVirtualAccountPoolEmpty      = "VIRTUAL_ACCOUNT_POOL_EMPTY"
+	CodeBankDepositNotFound          = "BANK_DEPOSIT_NOT_FOUND"
+	CodePaymentMismatch              = "PAYMENT_MISMATCH"
+	CodePaymentLinkNotFound          = "PAYMENT_LINK_NOT_FOUND"
+	CodePaymentLinkExpired           = "PAYMENT_LINK_EXPIRED"
+	CodePaymentLinkExhausted         = "PAYMENT_LINK_EXHAUSTED"
+	CodePaymentLinkDisabled          = "PAYMENT_LINK_DISABLED"
+	CodeShortCodeCollision           = "SHORT_CODE_COLLISION"
 )
 
 // ErrQuoteExpired creates a domain error for an expired quote.
@@ -172,8 +176,6 @@ func ErrUnauthorized(reason string) *DomainError {
 }
 
 // ErrReservationFailed creates a domain error for a failed treasury reservation.
-// Deprecated: use ErrReservationLockTimeout or ErrReservationInsufficientFunds for
-// more precise retriability semantics.
 func ErrReservationFailed(reason string) *DomainError {
 	return &DomainError{code: CodeReservationFailed, message: fmt.Sprintf("settla-domain: reservation failed: %s", reason)}
 }
@@ -318,6 +320,20 @@ func ErrPaymentLinkExhausted(linkID string) *DomainError {
 // ErrPaymentLinkDisabled creates a domain error for a disabled payment link.
 func ErrPaymentLinkDisabled(linkID string) *DomainError {
 	return &DomainError{code: CodePaymentLinkDisabled, message: fmt.Sprintf("settla-domain: payment link %s is disabled", linkID)}
+}
+
+// ErrShortCodeCollision creates a domain error when a generated short code already exists.
+func ErrShortCodeCollision() *DomainError {
+	return &DomainError{code: CodeShortCodeCollision, message: "settla-domain: generated short code already exists"}
+}
+
+// IsShortCodeCollision returns true if the error is a short code collision.
+func IsShortCodeCollision(err error) bool {
+	var domErr *DomainError
+	if errors.As(err, &domErr) {
+		return domErr.Code() == CodeShortCodeCollision
+	}
+	return false
 }
 
 // ErrPaymentMismatch creates a domain error when the received amount does not match the expected amount.
