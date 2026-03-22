@@ -13,9 +13,9 @@ import (
 
 // PIIEncryptionErrors.
 var (
-	ErrInvalidDEKSize    = errors.New("settla-domain: DEK must be 32 bytes (AES-256)")
+	ErrInvalidDEKSize     = errors.New("settla-domain: DEK must be 32 bytes (AES-256)")
 	ErrCiphertextTooShort = errors.New("settla-domain: ciphertext too short (must include nonce)")
-	ErrTenantShredded    = errors.New("settla-domain: tenant PII has been crypto-shredded")
+	ErrTenantShredded     = errors.New("settla-domain: tenant PII has been crypto-shredded")
 )
 
 // RedactedPII is the placeholder returned when a tenant has been crypto-shredded.

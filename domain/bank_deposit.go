@@ -62,13 +62,13 @@ const (
 // Alternative paths: CREDITED → HELD (hold preference), mismatch → UNDERPAID/OVERPAID,
 // late payment after EXPIRED/CANCELLED → PAYMENT_RECEIVED.
 var ValidBankDepositTransitions = map[BankDepositSessionStatus][]BankDepositSessionStatus{
-	BankDepositSessionStatusPendingPayment: {BankDepositSessionStatusPaymentReceived, BankDepositSessionStatusExpired, BankDepositSessionStatusCancelled},
+	BankDepositSessionStatusPendingPayment:  {BankDepositSessionStatusPaymentReceived, BankDepositSessionStatusExpired, BankDepositSessionStatusCancelled},
 	BankDepositSessionStatusPaymentReceived: {BankDepositSessionStatusCrediting, BankDepositSessionStatusUnderpaid, BankDepositSessionStatusOverpaid, BankDepositSessionStatusFailed},
 	BankDepositSessionStatusCrediting:       {BankDepositSessionStatusCredited, BankDepositSessionStatusFailed},
 	BankDepositSessionStatusCredited:        {BankDepositSessionStatusSettling, BankDepositSessionStatusHeld},
 	BankDepositSessionStatusSettling:        {BankDepositSessionStatusSettled, BankDepositSessionStatusFailed},
-	BankDepositSessionStatusUnderpaid:       {BankDepositSessionStatusFailed},  // REJECT policy terminal
-	BankDepositSessionStatusOverpaid:        {BankDepositSessionStatusFailed},  // REJECT policy terminal
+	BankDepositSessionStatusUnderpaid:       {BankDepositSessionStatusFailed},          // REJECT policy terminal
+	BankDepositSessionStatusOverpaid:        {BankDepositSessionStatusFailed},          // REJECT policy terminal
 	BankDepositSessionStatusExpired:         {BankDepositSessionStatusPaymentReceived}, // late payment after expiry
 	BankDepositSessionStatusCancelled:       {BankDepositSessionStatusPaymentReceived}, // late payment after cancel
 	BankDepositSessionStatusFailed:          {},                                        // terminal
@@ -82,7 +82,7 @@ var ValidBankDepositTransitions = map[BankDepositSessionStatus][]BankDepositSess
 type BankDepositSession struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
-	IdempotencyKey string
+	IdempotencyKey IdempotencyKey
 	Status         BankDepositSessionStatus
 	Version        int64
 
@@ -117,9 +117,9 @@ type BankDepositSession struct {
 	BankReference  string
 
 	// Timing
-	ExpiresAt   time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 	PaymentReceivedAt *time.Time
 	CreditedAt        *time.Time
 	SettledAt         *time.Time
@@ -217,9 +217,9 @@ type VirtualAccountPool struct {
 
 // TenantBankConfig holds per-tenant bank deposit configuration.
 type TenantBankConfig struct {
-	BankDepositsEnabled      bool                  `json:"bank_deposits_enabled"`
-	DefaultBankingPartner    string                `json:"default_banking_partner"`
-	BankSupportedCurrencies  []string              `json:"bank_supported_currencies"`
-	DefaultMismatchPolicy    PaymentMismatchPolicy `json:"default_mismatch_policy"`
-	DefaultSessionTTLSecs    int32                 `json:"default_session_ttl_secs"`
+	BankDepositsEnabled     bool                  `json:"bank_deposits_enabled"`
+	DefaultBankingPartner   string                `json:"default_banking_partner"`
+	BankSupportedCurrencies []Currency            `json:"bank_supported_currencies"`
+	DefaultMismatchPolicy   PaymentMismatchPolicy `json:"default_mismatch_policy"`
+	DefaultSessionTTLSecs   int32                 `json:"default_session_ttl_secs"`
 }
