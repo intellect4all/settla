@@ -165,3 +165,27 @@ func TestValidateCurrencyInvalid(t *testing.T) {
 		t.Error("expected error for unsupported currency XYZ")
 	}
 }
+
+func TestNewPositiveMoney_Valid(t *testing.T) {
+	m, err := NewPositiveMoney("100.50", CurrencyUSD)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !m.IsPositive() {
+		t.Error("expected positive money")
+	}
+}
+
+func TestNewPositiveMoney_Zero(t *testing.T) {
+	_, err := NewPositiveMoney("0", CurrencyUSD)
+	if err == nil {
+		t.Error("expected error for zero amount")
+	}
+}
+
+func TestNewPositiveMoney_Negative(t *testing.T) {
+	_, err := NewPositiveMoney("-50.00", CurrencyUSD)
+	if err == nil {
+		t.Error("expected error for negative amount")
+	}
+}

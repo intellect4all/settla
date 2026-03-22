@@ -9,6 +9,8 @@ import (
 // Currency represents an ISO 4217 currency code or stablecoin symbol.
 type Currency string
 
+func (c Currency) String() string { return string(c) }
+
 // Supported fiat and stablecoin currencies.
 const (
 	CurrencyNGN  Currency = "NGN"
@@ -31,6 +33,18 @@ var SupportedCurrencies = map[Currency]bool{
 	CurrencyKES:  true,
 	CurrencyUSDT: true,
 	CurrencyUSDC: true,
+}
+
+// StablecoinCurrencies is the set of stablecoin currencies that can serve
+// as the intermediate asset in settlement corridors (e.g., GBP→USDT→NGN).
+var StablecoinCurrencies = map[Currency]bool{
+	CurrencyUSDT: true,
+	CurrencyUSDC: true,
+}
+
+// IsStablecoin returns true if the currency is a stablecoin.
+func IsStablecoin(c Currency) bool {
+	return StablecoinCurrencies[c]
 }
 
 // ValidateCurrency returns an error if the currency is not supported.
@@ -61,18 +75,31 @@ func NewMoney(amount string, currency Currency) (Money, error) {
 	return Money{Amount: d, Currency: currency}, nil
 }
 
+// NewPositiveMoney creates a Money value that must be strictly positive.
+// Use this at API boundaries to reject zero and negative amounts early.
+func NewPositiveMoney(amount string, currency Currency) (Money, error) {
+	m, err := NewMoney(amount, currency)
+	if err != nil {
+		return Money{}, err
+	}
+	if !m.Amount.IsPositive() {
+		return Money{}, fmt.Errorf("settla-domain: amount must be positive, got %s", amount)
+	}
+	return m, nil
+}
+
 // Add returns a new Money with the sum. Returns an error if currencies differ.
 func (m Money) Add(other Money) (Money, error) {
-	if m.Currency != other.Currency {
+	if !m.IsSameCurrencyAs(other) {
 		return Money{}, fmt.Errorf("settla-domain: cannot add %s to %s: %w",
 			other.Currency, m.Currency, ErrCurrencyMismatch("add", string(m.Currency), string(other.Currency)))
 	}
 	return Money{Amount: m.Amount.Add(other.Amount), Currency: m.Currency}, nil
 }
 
-// Sub returns a new Money with the difference. Returns an error if currencies differ.
+// Sub returns new Money with the difference. Returns an error if currencies differ.
 func (m Money) Sub(other Money) (Money, error) {
-	if m.Currency != other.Currency {
+	if !m.IsSameCurrencyAs(other) {
 		return Money{}, fmt.Errorf("settla-domain: cannot subtract %s from %s: %w",
 			other.Currency, m.Currency, ErrCurrencyMismatch("subtract", string(m.Currency), string(other.Currency)))
 	}
@@ -102,4 +129,8 @@ func (m Money) IsNegative() bool {
 // String returns the amount and currency formatted as "100.00 USD".
 func (m Money) String() string {
 	return fmt.Sprintf("%s %s", m.Amount.StringFixed(2), m.Currency)
+}
+
+func (m Money) IsSameCurrencyAs(other Money) bool {
+	return m.Currency == other.Currency
 }
