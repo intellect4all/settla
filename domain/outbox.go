@@ -113,6 +113,8 @@ const (
 	IntentBlockchainSend        = "blockchain.send"
 	IntentWebhookDeliver        = "webhook.deliver"
 	IntentPositionCredit        = "position.credit"
+	IntentPositionDebit         = "position.debit"
+	IntentTreasuryConsume       = "treasury.consume"
 )
 
 // Result event types — workers publish these after executing intents.
@@ -128,6 +130,9 @@ const (
 	EventLedgerReversed        = "ledger.reversed"
 	EventBlockchainConfirmed   = "blockchain.confirmed"
 	EventBlockchainFailed      = "blockchain.failed"
+	EventPositionCredited      = "position.credited"
+	EventPositionDebited       = "position.debited"
+	EventTreasuryConsumed      = "treasury.consumed"
 )
 
 // knownEventTypes is the set of all valid outbox event/intent types.
@@ -139,12 +144,14 @@ var knownEventTypes = map[string]struct{}{
 	IntentLedgerPost: {}, IntentLedgerReverse: {},
 	IntentBlockchainSend: {}, IntentWebhookDeliver: {}, IntentEmailNotify: {},
 	IntentProviderReverseOnRamp: {}, IntentPositionCredit: {},
+	IntentPositionDebit: {}, IntentTreasuryConsume: {},
 	// Result events
 	EventTreasuryReserved: {}, EventTreasuryReleased: {}, EventTreasuryFailed: {},
 	EventProviderOnRampDone: {}, EventProviderOnRampFailed: {},
 	EventProviderOffRampDone: {}, EventProviderOffRampFailed: {},
 	EventLedgerPosted: {}, EventLedgerReversed: {},
 	EventBlockchainConfirmed: {}, EventBlockchainFailed: {},
+	EventPositionCredited: {}, EventPositionDebited: {}, EventTreasuryConsumed: {},
 	// Inbound provider webhooks
 	EventProviderOnRampWebhook: {}, EventProviderOffRampWebhook: {},
 	// Deposit intents
@@ -207,13 +214,48 @@ type TreasuryReleasePayload struct {
 	Reason     string          `json:"reason"`
 }
 
+// TreasuryConsumePayload is the payload for IntentTreasuryConsume.
+// Emitted when a transfer completes — the reserved funds are consumed because
+// money physically left the tenant's position.
+type TreasuryConsumePayload struct {
+	TransferID uuid.UUID       `json:"transfer_id"`
+	TenantID   uuid.UUID       `json:"tenant_id"`
+	Currency   Currency        `json:"currency"`
+	Amount     decimal.Decimal `json:"amount"`
+	Location   string          `json:"location"`
+}
+
+// PositionCreditPayload is the payload for IntentPositionCredit.
+// Used for deposit credits, manual top-ups, stablecoin compensation, and
+// internal rebalancing (destination side).
+type PositionCreditPayload struct {
+	TenantID  uuid.UUID       `json:"tenant_id"`
+	Currency  Currency        `json:"currency"`
+	Amount    decimal.Decimal `json:"amount"`
+	Location  string          `json:"location"`
+	Reference uuid.UUID       `json:"reference"` // source entity ID (session, transaction, transfer)
+	RefType   string          `json:"ref_type"`  // "deposit_session", "bank_deposit", "position_transaction", "transfer", "compensation"
+}
+
+// PositionDebitPayload is the payload for IntentPositionDebit.
+// Used for manual withdrawals and internal rebalancing (source side).
+type PositionDebitPayload struct {
+	TenantID    uuid.UUID       `json:"tenant_id"`
+	Currency    Currency        `json:"currency"`
+	Amount      decimal.Decimal `json:"amount"`
+	Location    string          `json:"location"`
+	Reference   uuid.UUID       `json:"reference"`
+	RefType     string          `json:"ref_type"`
+	Destination string          `json:"destination,omitempty"` // bank account ref or crypto address
+}
+
 // OnRampFallback is a fallback alternative for on-ramp provider execution.
 // It carries enough information for the worker to switch providers without
 // consulting the engine.
 type OnRampFallback struct {
 	ProviderID      string          `json:"provider_id"`
 	OffRampProvider string          `json:"off_ramp_provider"`
-	Chain           string          `json:"chain"`
+	Chain           CryptoChain     `json:"chain"`
 	StableCoin      Currency        `json:"stablecoin"`
 	Fee             Money           `json:"fee"`
 	Rate            decimal.Decimal `json:"rate"`
@@ -258,6 +300,9 @@ type ProviderOffRampPayload struct {
 	// QuotedRate is the FX rate shown to the user at quote time. Providers use
 	// this to enforce slippage limits at execution time.
 	QuotedRate decimal.Decimal `json:"quoted_rate"`
+	// SourceTxHash is the blockchain tx hash from the settlement send.
+	// Carried through to the off-ramp provider for on-chain verification.
+	SourceTxHash string `json:"source_tx_hash,omitempty"`
 }
 
 // LedgerPostPayload is the payload for IntentLedgerPost.
@@ -283,7 +328,7 @@ type LedgerLineEntry struct {
 type BlockchainSendPayload struct {
 	TransferID uuid.UUID       `json:"transfer_id"`
 	TenantID   uuid.UUID       `json:"tenant_id"`
-	Chain      string          `json:"chain"`
+	Chain      CryptoChain     `json:"chain"`
 	From       string          `json:"from"`
 	To         string          `json:"to"`
 	Token      string          `json:"token"`
@@ -314,16 +359,35 @@ type EmailNotifyPayload struct {
 	Data       []byte    `json:"data"` // JSON-encoded template data
 }
 
-// Inbound provider webhook event types — the webhook HTTP handler normalizes
-// raw provider callbacks into these events and publishes them to NATS.
+// Inbound provider webhook event types.
 const (
+	// EventProviderRawWebhook is published by the HTTP webhook receiver with the
+	// raw provider payload. The InboundWebhookWorker stores it, then normalizes
+	// using the provider's registered WebhookNormalizer before processing.
+	EventProviderRawWebhook = "provider.inbound.raw"
+
+	// EventProviderOnRampWebhook and EventProviderOffRampWebhook are the normalized
+	// event types. Published by ProviderListeners (non-HTTP providers) that do their
+	// own normalization, or used internally after Go-side normalization.
 	EventProviderOnRampWebhook  = "provider.inbound.onramp.webhook"
 	EventProviderOffRampWebhook = "provider.inbound.offramp.webhook"
 )
 
+// RawWebhookPayload is the un-normalized webhook payload forwarded by the HTTP
+// receiver. Contains the provider slug (from the URL path) and the exact raw
+// bytes of the POST body. Normalization happens in Go using the provider's
+// registered WebhookNormalizer.
+type RawWebhookPayload struct {
+	ProviderSlug   string            `json:"provider_slug"`
+	RawBody        []byte            `json:"raw_body"`          // exact bytes from provider HTTP POST (base64 in JSON)
+	IdempotencyKey string            `json:"idempotency_key"`   // SHA-256 prefix of raw body for dedup
+	HTTPHeaders    map[string]string `json:"http_headers,omitempty"`
+	SourceIP       string            `json:"source_ip,omitempty"`
+}
+
 // ProviderWebhookPayload is the normalized payload from a provider webhook callback.
-// The inbound webhook HTTP handler converts provider-specific formats into this
-// canonical structure before publishing to NATS for processing by InboundWebhookWorker.
+// Produced by calling WebhookNormalizer.NormalizeWebhook() on a RawWebhookPayload,
+// or published directly by ProviderListeners for non-HTTP providers.
 type ProviderWebhookPayload struct {
 	TransferID  uuid.UUID `json:"transfer_id"`
 	TenantID    uuid.UUID `json:"tenant_id"`

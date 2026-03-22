@@ -22,7 +22,7 @@ const (
 // Posting is a value object representing a single debit or credit against an account.
 // It captures the minimal information needed to express one side of a balanced entry.
 type Posting struct {
-	AccountCode string
+	AccountCode AccountCode
 	EntryType   EntryType
 	Amount      decimal.Decimal // Always positive; direction is determined by EntryType.
 	Currency    Currency
@@ -31,8 +31,8 @@ type Posting struct {
 
 // EntryLine is a persisted posting within a journal entry, enriched with IDs.
 type EntryLine struct {
-	ID          uuid.UUID
-	AccountID   uuid.UUID
+	ID        uuid.UUID
+	AccountID uuid.UUID
 	Posting
 }
 
@@ -42,7 +42,7 @@ type EntryLine struct {
 type JournalEntry struct {
 	ID             uuid.UUID
 	TenantID       *uuid.UUID // nil for system-level entries
-	IdempotencyKey string
+	IdempotencyKey IdempotencyKey
 	PostedAt       time.Time
 	EffectiveDate  time.Time
 	Description    string
@@ -114,7 +114,7 @@ func ValidateEntries(lines []EntryLine) error {
 			}
 			seenIDs[line.ID] = true
 		}
-		aeKey := line.AccountCode + ":" + string(line.EntryType)
+		aeKey := line.AccountCode.String() + ":" + string(line.EntryType)
 		if seenAccountEntry[aeKey] {
 			return ErrLedgerImbalance(fmt.Sprintf("duplicate account %s with entry type %s", line.AccountCode, line.EntryType))
 		}
