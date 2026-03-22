@@ -21,15 +21,15 @@ type FeeBreakdownEntry struct {
 
 // ProviderPerformance holds provider-level performance metrics.
 type ProviderPerformance struct {
-	Provider        string
-	SourceCurrency  string
-	DestCurrency    string
+	Provider         string
+	SourceCurrency   string
+	DestCurrency     string
 	TransactionCount int64
-	Completed       int64
-	Failed          int64
-	SuccessRate     decimal.Decimal
-	AvgSettlementMs int32
-	TotalVolume     decimal.Decimal
+	Completed        int64
+	Failed           int64
+	SuccessRate      decimal.Decimal
+	AvgSettlementMs  int32
+	TotalVolume      decimal.Decimal
 }
 
 // DepositAnalytics holds aggregated deposit session metrics.
@@ -56,27 +56,27 @@ type ReconciliationSummary struct {
 
 // DailySnapshot holds a pre-aggregated daily metric row.
 type DailySnapshot struct {
-	ID              uuid.UUID
-	TenantID        uuid.UUID
-	SnapshotDate    time.Time
-	MetricType      string
-	SourceCurrency  string
-	DestCurrency    string
-	Provider        string
-	TransferCount   int64
-	CompletedCount  int64
-	FailedCount     int64
-	VolumeUSD       decimal.Decimal
-	FeesUSD         decimal.Decimal
-	OnRampFeesUSD   decimal.Decimal
-	OffRampFeesUSD  decimal.Decimal
-	NetworkFeesUSD  decimal.Decimal
-	AvgLatencyMs    int32
-	P50LatencyMs    int32
-	P90LatencyMs    int32
-	P95LatencyMs    int32
-	SuccessRate     decimal.Decimal
-	CreatedAt       time.Time
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	SnapshotDate   time.Time
+	MetricType     string
+	SourceCurrency Currency
+	DestCurrency   Currency
+	Provider       string
+	TransferCount  int64
+	CompletedCount int64
+	FailedCount    int64
+	VolumeUSD      decimal.Decimal
+	FeesUSD        decimal.Decimal
+	OnRampFeesUSD  decimal.Decimal
+	OffRampFeesUSD decimal.Decimal
+	NetworkFeesUSD decimal.Decimal
+	AvgLatencyMs   int32
+	P50LatencyMs   int32
+	P90LatencyMs   int32
+	P95LatencyMs   int32
+	SuccessRate    decimal.Decimal
+	CreatedAt      time.Time
 }
 
 // ExportJob tracks an async analytics export.

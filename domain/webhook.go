@@ -45,7 +45,35 @@ type WebhookEventSubscription struct {
 	CreatedAt time.Time
 }
 
-// Available webhook event types that tenants can subscribe to.
+// ProviderWebhookLog records an inbound webhook from a payment provider.
+// Stored before normalization so raw payloads survive normalizer failures.
+// Used for deduplication, debugging, issue resolution, and replay.
+type ProviderWebhookLog struct {
+	ID              uuid.UUID
+	ProviderSlug    string
+	IdempotencyKey  string
+	TransferID      *uuid.UUID        // set after normalization
+	TenantID        *uuid.UUID        // set after normalization
+	RawBody         []byte
+	Normalized      []byte            // JSON of ProviderWebhookPayload, null before normalization
+	Status          string            // received, processed, skipped, failed, duplicate
+	ErrorMessage    string
+	HTTPHeaders     map[string]string
+	SourceIP        string
+	CreatedAt       time.Time
+	ProcessedAt     *time.Time
+}
+
+// Webhook log statuses.
+const (
+	WebhookLogReceived  = "received"
+	WebhookLogProcessed = "processed"
+	WebhookLogSkipped   = "skipped"  // non-terminal status (e.g., "pending")
+	WebhookLogFailed    = "failed"   // normalization or processing error
+	WebhookLogDuplicate = "duplicate"
+)
+
+// WebhookEventTypes Available webhook event types that tenants can subscribe to.
 var WebhookEventTypes = []string{
 	"transfer.created",
 	"transfer.funded",
