@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -9,7 +10,7 @@ import (
 
 // RouteInfo describes the settlement route selected for a quote.
 type RouteInfo struct {
-	Chain             string             `json:"chain"`
+	Chain             CryptoChain        `json:"chain"`
 	StableCoin        Currency           `json:"stablecoin"`
 	EstimatedTimeMin  int                `json:"estimated_time_min,omitempty"`
 	OnRampProvider    string             `json:"on_ramp_provider"`
@@ -38,4 +39,28 @@ type Quote struct {
 // IsExpired returns true if the quote has passed its expiry time.
 func (q *Quote) IsExpired() bool {
 	return time.Now().UTC().After(q.ExpiresAt)
+}
+
+func (q *Quote) Validate() error {
+	if !q.DestAmount.IsPositive() {
+		return fmt.Errorf("settla-core: create transfer: quote dest amount must be positive, got %s", q.DestAmount.String())
+	}
+	if !q.StableAmount.IsPositive() {
+		return fmt.Errorf("settla-core: create transfer: quote stable amount must be positive, got %s", q.StableAmount.String())
+	}
+
+	if q.Route.OnRampProvider == "" {
+		return fmt.Errorf("settla-core: create transfer: quote route on_ramp_provider is required")
+	}
+	if q.Route.OffRampProvider == "" {
+		return fmt.Errorf("settla-core: create transfer: quote route off_ramp_provider is required")
+	}
+	if q.Route.Chain == "" {
+		return fmt.Errorf("settla-core: create transfer: quote route chain is required")
+	}
+	if q.Route.StableCoin == "" {
+		return fmt.Errorf("settla-core: create transfer: quote route stablecoin is required")
+	}
+
+	return nil
 }

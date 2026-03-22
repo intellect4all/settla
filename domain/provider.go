@@ -31,6 +31,29 @@ type ProviderQuote struct {
 	EstimatedSeconds int
 }
 
+// ProviderTxType identifies the direction of a provider transaction.
+type ProviderTxType string
+
+const (
+	ProviderTxTypeOnRamp  ProviderTxType = "onramp"
+	ProviderTxTypeOffRamp ProviderTxType = "offramp"
+)
+
+// ProviderTxStatus represents the lifecycle status of a provider transaction.
+type ProviderTxStatus string
+
+const (
+	ProviderTxStatusPending   ProviderTxStatus = "pending"
+	ProviderTxStatusCompleted ProviderTxStatus = "completed"
+	ProviderTxStatusConfirmed ProviderTxStatus = "confirmed"
+	ProviderTxStatusFailed    ProviderTxStatus = "failed"
+)
+
+// IsTerminal returns true if the status is a final state (completed, confirmed, or failed).
+func (s ProviderTxStatus) IsTerminal() bool {
+	return s == ProviderTxStatusCompleted || s == ProviderTxStatusConfirmed || s == ProviderTxStatusFailed
+}
+
 // ProviderTx represents a transaction executed by a provider.
 type ProviderTx struct {
 	ID         string
@@ -48,7 +71,7 @@ type OnRampRequest struct {
 	FromCurrency   Currency
 	ToCurrency     Currency
 	Reference      string
-	IdempotencyKey string // prevents double-execution on retry; scoped per provider+tenant
+	IdempotencyKey IdempotencyKey // prevents double-execution on retry; scoped per provider+tenant
 	// QuotedRate is the FX rate presented to the user at quote time. When set,
 	// the provider must reject execution if the live rate has moved more than
 	// the configured slippage tolerance (default 2%).
@@ -62,11 +85,15 @@ type OffRampRequest struct {
 	ToCurrency     Currency
 	Recipient      Recipient
 	Reference      string
-	IdempotencyKey string // prevents double-execution on retry; scoped per provider+tenant
+	IdempotencyKey IdempotencyKey // prevents double-execution on retry; scoped per provider+tenant
 	// QuotedRate is the FX rate presented to the user at quote time. When set,
 	// the provider must reject execution if the live rate has moved more than
 	// the configured slippage tolerance (default 2%).
 	QuotedRate decimal.Decimal
+	// SourceTxHash is the blockchain transaction hash from the upstream settlement
+	// send. When provided, the off-ramp provider can verify on-chain receipt of
+	// the specific transaction instead of relying on balance checks.
+	SourceTxHash string
 }
 
 // OnRampProvider is a provider that converts fiat to stablecoin.
@@ -97,6 +124,36 @@ type OffRampProvider interface {
 	GetStatus(ctx context.Context, txID string) (*ProviderTx, error)
 }
 
+// WebhookNormalizer converts a provider-specific raw webhook payload into the
+// canonical ProviderWebhookPayload. Each provider has its own payload format
+// (e.g., Paystack sends { event: "charge.success", data: { reference: "..." } },
+// Flutterwave sends { event: "charge.completed", data: { tx_ref: "..." } }).
+//
+// Implementing this interface is REQUIRED when registering a provider via the
+// factory. Without a normalizer, Settla cannot process the provider's webhooks.
+type WebhookNormalizer interface {
+	// NormalizeWebhook converts a raw JSON webhook body from this provider into
+	// the canonical ProviderWebhookPayload. Returns nil if the payload is not a
+	// terminal status update (e.g., "pending" events are skipped).
+	// Returns an error if the payload is malformed or missing required fields.
+	NormalizeWebhook(providerSlug string, rawBody []byte) (*ProviderWebhookPayload, error)
+}
+
+// ProviderListener is an optional interface for providers that communicate
+// status updates via non-HTTP channels (e.g., WebSocket, gRPC streaming,
+// polling). When implemented, the listener is started alongside the workers
+// and publishes normalized status updates to the NATS provider webhook stream.
+//
+// Providers that use HTTP webhooks do NOT need to implement this — the
+// webhook HTTP receiver handles those.
+type ProviderListener interface {
+	// Listen connects to the provider's async notification channel and calls
+	// publish for each status update. Blocks until ctx is cancelled.
+	// The publish function handles NATS routing — the listener only needs to
+	// produce ProviderWebhookPayload values.
+	Listen(ctx context.Context, publish func(ProviderWebhookPayload) error) error
+}
+
 // TxRequest is the input for a blockchain transaction.
 type TxRequest struct {
 	From   string
@@ -117,8 +174,8 @@ type ChainTx struct {
 
 // BlockchainClient interacts with a specific blockchain for on-chain settlements.
 type BlockchainClient interface {
-	// Chain returns the blockchain identifier (e.g., "tron", "ethereum").
-	Chain() string
+	// Chain returns the blockchain identifier (e.g., ChainTron, ChainEthereum).
+	Chain() CryptoChain
 	// GetBalance returns the token balance for an address.
 	GetBalance(ctx context.Context, address string, token string) (decimal.Decimal, error)
 	// EstimateGas returns the estimated gas fee for a transaction.
@@ -137,8 +194,12 @@ type ProviderRegistry interface {
 	ListOffRampIDs(ctx context.Context) []string
 	GetOnRamp(id string) (OnRampProvider, error)
 	GetOffRamp(id string) (OffRampProvider, error)
-	GetBlockchain(chain string) (BlockchainClient, error)
-	ListBlockchainChains() []string
+	GetBlockchain(chain CryptoChain) (BlockchainClient, error)
+	ListBlockchainChains() []CryptoChain
+	// StablecoinsFromProviders returns the set of stablecoin currencies that
+	// registered providers can handle. Discovered from on-ramp output currencies
+	// and off-ramp input currencies that are stablecoins.
+	StablecoinsFromProviders(ctx context.Context) []Currency
 }
 
 // Corridor represents a source → stablecoin → destination currency path.
@@ -200,7 +261,7 @@ type ScoreBreakdown struct {
 type RouteAlternative struct {
 	OnRampProvider  string          `json:"on_ramp_provider"`
 	OffRampProvider string          `json:"off_ramp_provider"`
-	Chain           string          `json:"chain"`
+	Chain           CryptoChain     `json:"chain"`
 	StableCoin      Currency        `json:"stablecoin"`
 	Fee             Money           `json:"fee"`
 	Rate            decimal.Decimal `json:"rate"`
@@ -213,14 +274,14 @@ type RouteAlternative struct {
 type RouteResult struct {
 	ProviderID       string // on-ramp provider ID
 	OffRampProvider  string // off-ramp provider ID
-	BlockchainChain  string // blockchain chain (e.g., "tron")
+	BlockchainChain  CryptoChain // blockchain chain (e.g., ChainTron)
 	Corridor         string
 	Fee              Money
 	Rate             decimal.Decimal
-	StableAmount     decimal.Decimal        // intermediate stablecoin amount (e.g., USDT on-chain)
-	ExplorerURL      string                 // block explorer base URL for the chain (testnet)
-	EstimatedSeconds int                    // total estimated settlement time (on-ramp + off-ramp)
-	Score            decimal.Decimal        // composite score of the primary route
-	ScoreBreakdown   ScoreBreakdown         // individual score components of the primary route
-	Alternatives     []RouteAlternative     // fallback routes, ordered by score descending
+	StableAmount     decimal.Decimal    // intermediate stablecoin amount (e.g., USDT on-chain)
+	ExplorerURL      string             // block explorer base URL for the chain (testnet)
+	EstimatedSeconds int                // total estimated settlement time (on-ramp + off-ramp)
+	Score            decimal.Decimal    // composite score of the primary route
+	ScoreBreakdown   ScoreBreakdown     // individual score components of the primary route
+	Alternatives     []RouteAlternative // fallback routes, ordered by score descending
 }
