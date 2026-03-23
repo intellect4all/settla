@@ -25,6 +25,11 @@ ORDER BY currency, location;
 SELECT * FROM positions
 ORDER BY tenant_id, currency, location;
 
+-- name: ListPositionsPaginated :many
+SELECT * FROM positions
+ORDER BY tenant_id, currency, location
+LIMIT $1 OFFSET $2;
+
 -- name: UpdatePositionBalances :exec
 UPDATE positions
 SET balance = $2, locked = $3, updated_at = now()

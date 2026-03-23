@@ -73,6 +73,17 @@ SELECT * FROM entry_lines
 WHERE journal_entry_id = $1
 ORDER BY created_at;
 
+-- name: ListEntryLinesWithAccountByJournal :many
+SELECT el.id, el.journal_entry_id, el.account_id, el.entry_type,
+       el.amount, el.currency, el.created_at,
+       a.code AS account_code, a.name AS account_name,
+       a.type AS account_type, a.currency AS account_currency,
+       a.normal_balance AS account_normal_balance
+FROM entry_lines el
+JOIN accounts a ON a.id = el.account_id
+WHERE el.journal_entry_id = $1
+ORDER BY el.created_at;
+
 -- name: ListEntryLinesByAccount :many
 SELECT * FROM entry_lines
 WHERE account_id = $1
