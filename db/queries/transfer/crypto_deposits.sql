@@ -149,3 +149,28 @@ SELECT id, tenant_id, status, chain, token, deposit_address, expected_amount,
        received_amount, currency, expires_at, created_at, updated_at
 FROM crypto_deposit_sessions
 WHERE id = $1;
+
+-- name: TransitionDepositSession :execresult
+-- Atomically transitions a crypto deposit session with optimistic lock, updating
+-- amounts, settlement link, failure details, and status-specific timestamps.
+UPDATE crypto_deposit_sessions
+SET status = @new_status::deposit_session_status_enum,
+    version = @new_version,
+    updated_at = now(),
+    received_amount = @received_amount,
+    fee_amount = @fee_amount,
+    net_amount = @net_amount,
+    settlement_transfer_id = @settlement_transfer_id,
+    detected_at    = CASE WHEN @status_text::text = 'DETECTED'    AND detected_at IS NULL THEN now() ELSE detected_at END,
+    confirmed_at   = CASE WHEN @status_text::text = 'CONFIRMED'   AND confirmed_at IS NULL THEN now() ELSE confirmed_at END,
+    credited_at    = CASE WHEN @status_text::text = 'CREDITED'    AND credited_at IS NULL THEN now() ELSE credited_at END,
+    settled_at     = CASE WHEN @status_text::text = 'SETTLED'     AND settled_at IS NULL THEN now() ELSE settled_at END,
+    expired_at     = CASE WHEN @status_text::text = 'EXPIRED'     AND expired_at IS NULL THEN now() ELSE expired_at END,
+    failed_at      = CASE WHEN @status_text::text = 'FAILED'      AND failed_at IS NULL THEN now() ELSE failed_at END,
+    failure_reason = COALESCE(NULLIF(@failure_reason, ''), failure_reason),
+    failure_code   = COALESCE(NULLIF(@failure_code, ''), failure_code)
+WHERE id = @id AND version = @expected_version;
+
+-- name: CountPendingDepositSessions :one
+SELECT COUNT(*)::int FROM crypto_deposit_sessions
+WHERE tenant_id = $1 AND status NOT IN ('SETTLED', 'EXPIRED', 'FAILED', 'CANCELLED');

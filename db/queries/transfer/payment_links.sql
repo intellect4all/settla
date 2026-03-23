@@ -11,6 +11,10 @@ SELECT * FROM payment_links
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: GetPaymentLinkByShortCode :one
+-- SECURITY NOTE: This query intentionally omits tenant_id because it serves the
+-- public payment link resolution flow (/v1/payment-links/resolve/:code).
+-- The caller MUST only return public-safe fields (short_code, description, amount,
+-- currency, status, expires_at) — never tenant internal data.
 SELECT * FROM payment_links
 WHERE short_code = $1;
 

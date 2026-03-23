@@ -11,6 +11,9 @@ WHERE id = (
 RETURNING *;
 
 -- name: RecycleVirtualAccount :exec
+-- SECURITY NOTE: Intentionally omits tenant_id — virtual accounts are recycled by
+-- the worker after a session completes, using the account number from the session.
+-- The tenant context is validated by the caller (BankDepositWorker) before recycling.
 UPDATE virtual_account_pool
 SET available = true, session_id = NULL, updated_at = now()
 WHERE account_number = $1;
@@ -28,6 +31,26 @@ SELECT * FROM virtual_account_pool
 WHERE tenant_id = $1
 ORDER BY created_at ASC;
 
+-- name: ListVirtualAccountsByTenantPaginated :many
+SELECT * FROM virtual_account_pool
+WHERE tenant_id = @tenant_id
+  AND (@currency::text = '' OR currency = @currency)
+  AND (@account_type::text = '' OR account_type = @account_type::virtual_account_type_enum)
+ORDER BY created_at ASC
+LIMIT @page_limit OFFSET @page_offset;
+
+-- name: CountVirtualAccountsByTenant :one
+SELECT count(*) FROM virtual_account_pool
+WHERE tenant_id = @tenant_id
+  AND (@currency::text = '' OR currency = @currency)
+  AND (@account_type::text = '' OR account_type = @account_type::virtual_account_type_enum);
+
+-- name: CountAvailableVirtualAccountsByCurrency :many
+SELECT currency, count(*) AS available_count
+FROM virtual_account_pool
+WHERE tenant_id = $1 AND available = true
+GROUP BY currency;
+
 -- name: InsertVirtualAccountIndex :one
 INSERT INTO virtual_account_index (
     account_number, tenant_id, session_id, account_type
@@ -40,3 +63,11 @@ SELECT * FROM virtual_account_index
 WHERE account_number = $1
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: UpsertVirtualAccountIndex :exec
+-- Inserts or updates the virtual account index entry. On conflict (duplicate
+-- account_number), updates session_id and account_type to point to the new session.
+INSERT INTO virtual_account_index (account_number, tenant_id, session_id, account_type)
+VALUES (@account_number, @tenant_id, @session_id, @account_type)
+ON CONFLICT (account_number) DO UPDATE
+    SET session_id = @session_id, account_type = @account_type;
