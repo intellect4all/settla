@@ -425,9 +425,14 @@ var SettlementService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	TreasuryService_GetPositions_FullMethodName       = "/settla.v1.TreasuryService/GetPositions"
-	TreasuryService_GetPosition_FullMethodName        = "/settla.v1.TreasuryService/GetPosition"
-	TreasuryService_GetLiquidityReport_FullMethodName = "/settla.v1.TreasuryService/GetLiquidityReport"
+	TreasuryService_GetPositions_FullMethodName             = "/settla.v1.TreasuryService/GetPositions"
+	TreasuryService_GetPosition_FullMethodName              = "/settla.v1.TreasuryService/GetPosition"
+	TreasuryService_GetLiquidityReport_FullMethodName       = "/settla.v1.TreasuryService/GetLiquidityReport"
+	TreasuryService_RequestTopUp_FullMethodName             = "/settla.v1.TreasuryService/RequestTopUp"
+	TreasuryService_RequestWithdrawal_FullMethodName        = "/settla.v1.TreasuryService/RequestWithdrawal"
+	TreasuryService_GetPositionTransaction_FullMethodName   = "/settla.v1.TreasuryService/GetPositionTransaction"
+	TreasuryService_ListPositionTransactions_FullMethodName = "/settla.v1.TreasuryService/ListPositionTransactions"
+	TreasuryService_GetPositionEventHistory_FullMethodName  = "/settla.v1.TreasuryService/GetPositionEventHistory"
 )
 
 // TreasuryServiceClient is the client API for TreasuryService service.
@@ -437,6 +442,11 @@ type TreasuryServiceClient interface {
 	GetPositions(ctx context.Context, in *GetPositionsRequest, opts ...grpc.CallOption) (*GetPositionsResponse, error)
 	GetPosition(ctx context.Context, in *GetPositionRequest, opts ...grpc.CallOption) (*GetPositionResponse, error)
 	GetLiquidityReport(ctx context.Context, in *GetLiquidityReportRequest, opts ...grpc.CallOption) (*GetLiquidityReportResponse, error)
+	RequestTopUp(ctx context.Context, in *RequestTopUpRequest, opts ...grpc.CallOption) (*RequestTopUpResponse, error)
+	RequestWithdrawal(ctx context.Context, in *RequestWithdrawalRequest, opts ...grpc.CallOption) (*RequestWithdrawalResponse, error)
+	GetPositionTransaction(ctx context.Context, in *GetPositionTransactionRequest, opts ...grpc.CallOption) (*GetPositionTransactionResponse, error)
+	ListPositionTransactions(ctx context.Context, in *ListPositionTransactionsRequest, opts ...grpc.CallOption) (*ListPositionTransactionsResponse, error)
+	GetPositionEventHistory(ctx context.Context, in *GetPositionEventHistoryRequest, opts ...grpc.CallOption) (*GetPositionEventHistoryResponse, error)
 }
 
 type treasuryServiceClient struct {
@@ -477,6 +487,56 @@ func (c *treasuryServiceClient) GetLiquidityReport(ctx context.Context, in *GetL
 	return out, nil
 }
 
+func (c *treasuryServiceClient) RequestTopUp(ctx context.Context, in *RequestTopUpRequest, opts ...grpc.CallOption) (*RequestTopUpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestTopUpResponse)
+	err := c.cc.Invoke(ctx, TreasuryService_RequestTopUp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *treasuryServiceClient) RequestWithdrawal(ctx context.Context, in *RequestWithdrawalRequest, opts ...grpc.CallOption) (*RequestWithdrawalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestWithdrawalResponse)
+	err := c.cc.Invoke(ctx, TreasuryService_RequestWithdrawal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *treasuryServiceClient) GetPositionTransaction(ctx context.Context, in *GetPositionTransactionRequest, opts ...grpc.CallOption) (*GetPositionTransactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPositionTransactionResponse)
+	err := c.cc.Invoke(ctx, TreasuryService_GetPositionTransaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *treasuryServiceClient) ListPositionTransactions(ctx context.Context, in *ListPositionTransactionsRequest, opts ...grpc.CallOption) (*ListPositionTransactionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPositionTransactionsResponse)
+	err := c.cc.Invoke(ctx, TreasuryService_ListPositionTransactions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *treasuryServiceClient) GetPositionEventHistory(ctx context.Context, in *GetPositionEventHistoryRequest, opts ...grpc.CallOption) (*GetPositionEventHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPositionEventHistoryResponse)
+	err := c.cc.Invoke(ctx, TreasuryService_GetPositionEventHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TreasuryServiceServer is the server API for TreasuryService service.
 // All implementations must embed UnimplementedTreasuryServiceServer
 // for forward compatibility.
@@ -484,6 +544,11 @@ type TreasuryServiceServer interface {
 	GetPositions(context.Context, *GetPositionsRequest) (*GetPositionsResponse, error)
 	GetPosition(context.Context, *GetPositionRequest) (*GetPositionResponse, error)
 	GetLiquidityReport(context.Context, *GetLiquidityReportRequest) (*GetLiquidityReportResponse, error)
+	RequestTopUp(context.Context, *RequestTopUpRequest) (*RequestTopUpResponse, error)
+	RequestWithdrawal(context.Context, *RequestWithdrawalRequest) (*RequestWithdrawalResponse, error)
+	GetPositionTransaction(context.Context, *GetPositionTransactionRequest) (*GetPositionTransactionResponse, error)
+	ListPositionTransactions(context.Context, *ListPositionTransactionsRequest) (*ListPositionTransactionsResponse, error)
+	GetPositionEventHistory(context.Context, *GetPositionEventHistoryRequest) (*GetPositionEventHistoryResponse, error)
 	mustEmbedUnimplementedTreasuryServiceServer()
 }
 
@@ -502,6 +567,21 @@ func (UnimplementedTreasuryServiceServer) GetPosition(context.Context, *GetPosit
 }
 func (UnimplementedTreasuryServiceServer) GetLiquidityReport(context.Context, *GetLiquidityReportRequest) (*GetLiquidityReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetLiquidityReport not implemented")
+}
+func (UnimplementedTreasuryServiceServer) RequestTopUp(context.Context, *RequestTopUpRequest) (*RequestTopUpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestTopUp not implemented")
+}
+func (UnimplementedTreasuryServiceServer) RequestWithdrawal(context.Context, *RequestWithdrawalRequest) (*RequestWithdrawalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RequestWithdrawal not implemented")
+}
+func (UnimplementedTreasuryServiceServer) GetPositionTransaction(context.Context, *GetPositionTransactionRequest) (*GetPositionTransactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPositionTransaction not implemented")
+}
+func (UnimplementedTreasuryServiceServer) ListPositionTransactions(context.Context, *ListPositionTransactionsRequest) (*ListPositionTransactionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPositionTransactions not implemented")
+}
+func (UnimplementedTreasuryServiceServer) GetPositionEventHistory(context.Context, *GetPositionEventHistoryRequest) (*GetPositionEventHistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPositionEventHistory not implemented")
 }
 func (UnimplementedTreasuryServiceServer) mustEmbedUnimplementedTreasuryServiceServer() {}
 func (UnimplementedTreasuryServiceServer) testEmbeddedByValue()                         {}
@@ -578,6 +658,96 @@ func _TreasuryService_GetLiquidityReport_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TreasuryService_RequestTopUp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestTopUpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TreasuryServiceServer).RequestTopUp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TreasuryService_RequestTopUp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TreasuryServiceServer).RequestTopUp(ctx, req.(*RequestTopUpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TreasuryService_RequestWithdrawal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestWithdrawalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TreasuryServiceServer).RequestWithdrawal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TreasuryService_RequestWithdrawal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TreasuryServiceServer).RequestWithdrawal(ctx, req.(*RequestWithdrawalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TreasuryService_GetPositionTransaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPositionTransactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TreasuryServiceServer).GetPositionTransaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TreasuryService_GetPositionTransaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TreasuryServiceServer).GetPositionTransaction(ctx, req.(*GetPositionTransactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TreasuryService_ListPositionTransactions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPositionTransactionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TreasuryServiceServer).ListPositionTransactions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TreasuryService_ListPositionTransactions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TreasuryServiceServer).ListPositionTransactions(ctx, req.(*ListPositionTransactionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TreasuryService_GetPositionEventHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPositionEventHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TreasuryServiceServer).GetPositionEventHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TreasuryService_GetPositionEventHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TreasuryServiceServer).GetPositionEventHistory(ctx, req.(*GetPositionEventHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TreasuryService_ServiceDesc is the grpc.ServiceDesc for TreasuryService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -596,6 +766,26 @@ var TreasuryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLiquidityReport",
 			Handler:    _TreasuryService_GetLiquidityReport_Handler,
+		},
+		{
+			MethodName: "RequestTopUp",
+			Handler:    _TreasuryService_RequestTopUp_Handler,
+		},
+		{
+			MethodName: "RequestWithdrawal",
+			Handler:    _TreasuryService_RequestWithdrawal_Handler,
+		},
+		{
+			MethodName: "GetPositionTransaction",
+			Handler:    _TreasuryService_GetPositionTransaction_Handler,
+		},
+		{
+			MethodName: "ListPositionTransactions",
+			Handler:    _TreasuryService_ListPositionTransactions_Handler,
+		},
+		{
+			MethodName: "GetPositionEventHistory",
+			Handler:    _TreasuryService_GetPositionEventHistory_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

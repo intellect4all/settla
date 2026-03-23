@@ -2114,6 +2114,862 @@ func (x *GetLiquidityReportResponse) GetGeneratedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type PositionTransaction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                             // UUID
+	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // UUID — tenant scope
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`                         // TOP_UP, WITHDRAWAL, DEPOSIT_CREDIT, INTERNAL_REBALANCE
+	Currency      string                 `protobuf:"bytes,4,opt,name=currency,proto3" json:"currency,omitempty"`
+	Location      string                 `protobuf:"bytes,5,opt,name=location,proto3" json:"location,omitempty"`
+	Amount        string                 `protobuf:"bytes,6,opt,name=amount,proto3" json:"amount,omitempty"`           // Decimal string
+	Status        string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`           // PENDING, PROCESSING, COMPLETED, FAILED
+	Method        string                 `protobuf:"bytes,8,opt,name=method,proto3" json:"method,omitempty"`           // bank_transfer, crypto, internal
+	Destination   string                 `protobuf:"bytes,9,opt,name=destination,proto3" json:"destination,omitempty"` // bank account ref or crypto address (withdrawals)
+	Reference     string                 `protobuf:"bytes,10,opt,name=reference,proto3" json:"reference,omitempty"`    // external reference
+	FailureReason string                 `protobuf:"bytes,11,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PositionTransaction) Reset() {
+	*x = PositionTransaction{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PositionTransaction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PositionTransaction) ProtoMessage() {}
+
+func (x *PositionTransaction) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PositionTransaction.ProtoReflect.Descriptor instead.
+func (*PositionTransaction) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *PositionTransaction) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetLocation() string {
+	if x != nil {
+		return x.Location
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetReference() string {
+	if x != nil {
+		return x.Reference
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *PositionTransaction) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *PositionTransaction) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+type RequestTopUpRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // UUID — required, tenant scope
+	Currency      string                 `protobuf:"bytes,2,opt,name=currency,proto3" json:"currency,omitempty"`
+	Location      string                 `protobuf:"bytes,3,opt,name=location,proto3" json:"location,omitempty"`
+	Amount        string                 `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"` // Decimal string — positive
+	Method        string                 `protobuf:"bytes,5,opt,name=method,proto3" json:"method,omitempty"` // bank_transfer, crypto, internal
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestTopUpRequest) Reset() {
+	*x = RequestTopUpRequest{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestTopUpRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestTopUpRequest) ProtoMessage() {}
+
+func (x *RequestTopUpRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestTopUpRequest.ProtoReflect.Descriptor instead.
+func (*RequestTopUpRequest) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *RequestTopUpRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RequestTopUpRequest) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *RequestTopUpRequest) GetLocation() string {
+	if x != nil {
+		return x.Location
+	}
+	return ""
+}
+
+func (x *RequestTopUpRequest) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *RequestTopUpRequest) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+type RequestWithdrawalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // UUID — required, tenant scope
+	Currency      string                 `protobuf:"bytes,2,opt,name=currency,proto3" json:"currency,omitempty"`
+	Location      string                 `protobuf:"bytes,3,opt,name=location,proto3" json:"location,omitempty"`
+	Amount        string                 `protobuf:"bytes,4,opt,name=amount,proto3" json:"amount,omitempty"`           // Decimal string — positive
+	Method        string                 `protobuf:"bytes,5,opt,name=method,proto3" json:"method,omitempty"`           // bank_transfer, crypto
+	Destination   string                 `protobuf:"bytes,6,opt,name=destination,proto3" json:"destination,omitempty"` // bank account ref or crypto address
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestWithdrawalRequest) Reset() {
+	*x = RequestWithdrawalRequest{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestWithdrawalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestWithdrawalRequest) ProtoMessage() {}
+
+func (x *RequestWithdrawalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestWithdrawalRequest.ProtoReflect.Descriptor instead.
+func (*RequestWithdrawalRequest) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *RequestWithdrawalRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *RequestWithdrawalRequest) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *RequestWithdrawalRequest) GetLocation() string {
+	if x != nil {
+		return x.Location
+	}
+	return ""
+}
+
+func (x *RequestWithdrawalRequest) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *RequestWithdrawalRequest) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *RequestWithdrawalRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+type RequestTopUpResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transaction   *PositionTransaction   `protobuf:"bytes,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestTopUpResponse) Reset() {
+	*x = RequestTopUpResponse{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestTopUpResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestTopUpResponse) ProtoMessage() {}
+
+func (x *RequestTopUpResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestTopUpResponse.ProtoReflect.Descriptor instead.
+func (*RequestTopUpResponse) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *RequestTopUpResponse) GetTransaction() *PositionTransaction {
+	if x != nil {
+		return x.Transaction
+	}
+	return nil
+}
+
+type RequestWithdrawalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transaction   *PositionTransaction   `protobuf:"bytes,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestWithdrawalResponse) Reset() {
+	*x = RequestWithdrawalResponse{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestWithdrawalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestWithdrawalResponse) ProtoMessage() {}
+
+func (x *RequestWithdrawalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestWithdrawalResponse.ProtoReflect.Descriptor instead.
+func (*RequestWithdrawalResponse) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *RequestWithdrawalResponse) GetTransaction() *PositionTransaction {
+	if x != nil {
+		return x.Transaction
+	}
+	return nil
+}
+
+type GetPositionTransactionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transaction   *PositionTransaction   `protobuf:"bytes,1,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPositionTransactionResponse) Reset() {
+	*x = GetPositionTransactionResponse{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPositionTransactionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPositionTransactionResponse) ProtoMessage() {}
+
+func (x *GetPositionTransactionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPositionTransactionResponse.ProtoReflect.Descriptor instead.
+func (*GetPositionTransactionResponse) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *GetPositionTransactionResponse) GetTransaction() *PositionTransaction {
+	if x != nil {
+		return x.Transaction
+	}
+	return nil
+}
+
+type GetPositionTransactionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                // UUID — required, tenant scope
+	TransactionId string                 `protobuf:"bytes,2,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"` // UUID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPositionTransactionRequest) Reset() {
+	*x = GetPositionTransactionRequest{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPositionTransactionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPositionTransactionRequest) ProtoMessage() {}
+
+func (x *GetPositionTransactionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPositionTransactionRequest.ProtoReflect.Descriptor instead.
+func (*GetPositionTransactionRequest) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *GetPositionTransactionRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *GetPositionTransactionRequest) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+type ListPositionTransactionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // UUID — required, tenant scope
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	Offset        int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPositionTransactionsRequest) Reset() {
+	*x = ListPositionTransactionsRequest{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPositionTransactionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPositionTransactionsRequest) ProtoMessage() {}
+
+func (x *ListPositionTransactionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPositionTransactionsRequest.ProtoReflect.Descriptor instead.
+func (*ListPositionTransactionsRequest) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ListPositionTransactionsRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ListPositionTransactionsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListPositionTransactionsRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type ListPositionTransactionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Transactions  []*PositionTransaction `protobuf:"bytes,1,rep,name=transactions,proto3" json:"transactions,omitempty"`
+	TotalCount    int32                  `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPositionTransactionsResponse) Reset() {
+	*x = ListPositionTransactionsResponse{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPositionTransactionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPositionTransactionsResponse) ProtoMessage() {}
+
+func (x *ListPositionTransactionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPositionTransactionsResponse.ProtoReflect.Descriptor instead.
+func (*ListPositionTransactionsResponse) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ListPositionTransactionsResponse) GetTransactions() []*PositionTransaction {
+	if x != nil {
+		return x.Transactions
+	}
+	return nil
+}
+
+func (x *ListPositionTransactionsResponse) GetTotalCount() int32 {
+	if x != nil {
+		return x.TotalCount
+	}
+	return 0
+}
+
+type PositionEventEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                            // UUID
+	PositionId    string                 `protobuf:"bytes,2,opt,name=position_id,json=positionId,proto3" json:"position_id,omitempty"`          // UUID
+	TenantId      string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                // UUID
+	EventType     string                 `protobuf:"bytes,4,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`             // CREDIT, DEBIT, RESERVE, RELEASE, COMMIT, CONSUME
+	Amount        string                 `protobuf:"bytes,5,opt,name=amount,proto3" json:"amount,omitempty"`                                    // Decimal string
+	BalanceAfter  string                 `protobuf:"bytes,6,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`    // Decimal string
+	LockedAfter   string                 `protobuf:"bytes,7,opt,name=locked_after,json=lockedAfter,proto3" json:"locked_after,omitempty"`       // Decimal string
+	ReferenceId   string                 `protobuf:"bytes,8,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`       // UUID
+	ReferenceType string                 `protobuf:"bytes,9,opt,name=reference_type,json=referenceType,proto3" json:"reference_type,omitempty"` // deposit_session, bank_deposit, position_transaction, transfer
+	RecordedAt    *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=recorded_at,json=recordedAt,proto3" json:"recorded_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PositionEventEntry) Reset() {
+	*x = PositionEventEntry{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PositionEventEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PositionEventEntry) ProtoMessage() {}
+
+func (x *PositionEventEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PositionEventEntry.ProtoReflect.Descriptor instead.
+func (*PositionEventEntry) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *PositionEventEntry) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetPositionId() string {
+	if x != nil {
+		return x.PositionId
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetEventType() string {
+	if x != nil {
+		return x.EventType
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetBalanceAfter() string {
+	if x != nil {
+		return x.BalanceAfter
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetLockedAfter() string {
+	if x != nil {
+		return x.LockedAfter
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetReferenceId() string {
+	if x != nil {
+		return x.ReferenceId
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetReferenceType() string {
+	if x != nil {
+		return x.ReferenceType
+	}
+	return ""
+}
+
+func (x *PositionEventEntry) GetRecordedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RecordedAt
+	}
+	return nil
+}
+
+type GetPositionEventHistoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // UUID — required, tenant scope
+	Currency      string                 `protobuf:"bytes,2,opt,name=currency,proto3" json:"currency,omitempty"`
+	Location      string                 `protobuf:"bytes,3,opt,name=location,proto3" json:"location,omitempty"`
+	From          *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=from,proto3" json:"from,omitempty"`
+	To            *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=to,proto3" json:"to,omitempty"`
+	Limit         int32                  `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
+	Offset        int32                  `protobuf:"varint,7,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPositionEventHistoryRequest) Reset() {
+	*x = GetPositionEventHistoryRequest{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPositionEventHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPositionEventHistoryRequest) ProtoMessage() {}
+
+func (x *GetPositionEventHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPositionEventHistoryRequest.ProtoReflect.Descriptor instead.
+func (*GetPositionEventHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *GetPositionEventHistoryRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *GetPositionEventHistoryRequest) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *GetPositionEventHistoryRequest) GetLocation() string {
+	if x != nil {
+		return x.Location
+	}
+	return ""
+}
+
+func (x *GetPositionEventHistoryRequest) GetFrom() *timestamppb.Timestamp {
+	if x != nil {
+		return x.From
+	}
+	return nil
+}
+
+func (x *GetPositionEventHistoryRequest) GetTo() *timestamppb.Timestamp {
+	if x != nil {
+		return x.To
+	}
+	return nil
+}
+
+func (x *GetPositionEventHistoryRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *GetPositionEventHistoryRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type GetPositionEventHistoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Events        []*PositionEventEntry  `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	TotalCount    int32                  `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPositionEventHistoryResponse) Reset() {
+	*x = GetPositionEventHistoryResponse{}
+	mi := &file_settla_v1_settlement_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPositionEventHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPositionEventHistoryResponse) ProtoMessage() {}
+
+func (x *GetPositionEventHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_settla_v1_settlement_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPositionEventHistoryResponse.ProtoReflect.Descriptor instead.
+func (*GetPositionEventHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *GetPositionEventHistoryResponse) GetEvents() []*PositionEventEntry {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *GetPositionEventHistoryResponse) GetTotalCount() int32 {
+	if x != nil {
+		return x.TotalCount
+	}
+	return 0
+}
+
 type Account struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                             // UUID
@@ -2131,7 +2987,7 @@ type Account struct {
 
 func (x *Account) Reset() {
 	*x = Account{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[28]
+	mi := &file_settla_v1_settlement_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2143,7 +2999,7 @@ func (x *Account) String() string {
 func (*Account) ProtoMessage() {}
 
 func (x *Account) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[28]
+	mi := &file_settla_v1_settlement_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2156,7 +3012,7 @@ func (x *Account) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Account.ProtoReflect.Descriptor instead.
 func (*Account) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{28}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Account) GetId() string {
@@ -2233,7 +3089,7 @@ type AccountBalance struct {
 
 func (x *AccountBalance) Reset() {
 	*x = AccountBalance{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[29]
+	mi := &file_settla_v1_settlement_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2245,7 +3101,7 @@ func (x *AccountBalance) String() string {
 func (*AccountBalance) ProtoMessage() {}
 
 func (x *AccountBalance) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[29]
+	mi := &file_settla_v1_settlement_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2258,7 +3114,7 @@ func (x *AccountBalance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountBalance.ProtoReflect.Descriptor instead.
 func (*AccountBalance) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{29}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *AccountBalance) GetAccountCode() string {
@@ -2297,7 +3153,7 @@ type EntryLine struct {
 
 func (x *EntryLine) Reset() {
 	*x = EntryLine{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[30]
+	mi := &file_settla_v1_settlement_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2309,7 +3165,7 @@ func (x *EntryLine) String() string {
 func (*EntryLine) ProtoMessage() {}
 
 func (x *EntryLine) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[30]
+	mi := &file_settla_v1_settlement_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2322,7 +3178,7 @@ func (x *EntryLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntryLine.ProtoReflect.Descriptor instead.
 func (*EntryLine) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{30}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *EntryLine) GetId() string {
@@ -2392,7 +3248,7 @@ type JournalEntry struct {
 
 func (x *JournalEntry) Reset() {
 	*x = JournalEntry{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[31]
+	mi := &file_settla_v1_settlement_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +3260,7 @@ func (x *JournalEntry) String() string {
 func (*JournalEntry) ProtoMessage() {}
 
 func (x *JournalEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[31]
+	mi := &file_settla_v1_settlement_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +3273,7 @@ func (x *JournalEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JournalEntry.ProtoReflect.Descriptor instead.
 func (*JournalEntry) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{31}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *JournalEntry) GetId() string {
@@ -2501,7 +3357,7 @@ type GetAccountsRequest struct {
 
 func (x *GetAccountsRequest) Reset() {
 	*x = GetAccountsRequest{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[32]
+	mi := &file_settla_v1_settlement_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2513,7 +3369,7 @@ func (x *GetAccountsRequest) String() string {
 func (*GetAccountsRequest) ProtoMessage() {}
 
 func (x *GetAccountsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[32]
+	mi := &file_settla_v1_settlement_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2526,7 +3382,7 @@ func (x *GetAccountsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAccountsRequest.ProtoReflect.Descriptor instead.
 func (*GetAccountsRequest) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{32}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *GetAccountsRequest) GetTenantId() string {
@@ -2561,7 +3417,7 @@ type GetAccountsResponse struct {
 
 func (x *GetAccountsResponse) Reset() {
 	*x = GetAccountsResponse{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[33]
+	mi := &file_settla_v1_settlement_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2573,7 +3429,7 @@ func (x *GetAccountsResponse) String() string {
 func (*GetAccountsResponse) ProtoMessage() {}
 
 func (x *GetAccountsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[33]
+	mi := &file_settla_v1_settlement_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2586,7 +3442,7 @@ func (x *GetAccountsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAccountsResponse.ProtoReflect.Descriptor instead.
 func (*GetAccountsResponse) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{33}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetAccountsResponse) GetAccounts() []*Account {
@@ -2620,7 +3476,7 @@ type GetAccountBalanceRequest struct {
 
 func (x *GetAccountBalanceRequest) Reset() {
 	*x = GetAccountBalanceRequest{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[34]
+	mi := &file_settla_v1_settlement_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2632,7 +3488,7 @@ func (x *GetAccountBalanceRequest) String() string {
 func (*GetAccountBalanceRequest) ProtoMessage() {}
 
 func (x *GetAccountBalanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[34]
+	mi := &file_settla_v1_settlement_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2645,7 +3501,7 @@ func (x *GetAccountBalanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAccountBalanceRequest.ProtoReflect.Descriptor instead.
 func (*GetAccountBalanceRequest) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{34}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *GetAccountBalanceRequest) GetTenantId() string {
@@ -2671,7 +3527,7 @@ type GetAccountBalanceResponse struct {
 
 func (x *GetAccountBalanceResponse) Reset() {
 	*x = GetAccountBalanceResponse{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[35]
+	mi := &file_settla_v1_settlement_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2683,7 +3539,7 @@ func (x *GetAccountBalanceResponse) String() string {
 func (*GetAccountBalanceResponse) ProtoMessage() {}
 
 func (x *GetAccountBalanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[35]
+	mi := &file_settla_v1_settlement_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2696,7 +3552,7 @@ func (x *GetAccountBalanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAccountBalanceResponse.ProtoReflect.Descriptor instead.
 func (*GetAccountBalanceResponse) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{35}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetAccountBalanceResponse) GetAccountBalance() *AccountBalance {
@@ -2720,7 +3576,7 @@ type GetTransactionsRequest struct {
 
 func (x *GetTransactionsRequest) Reset() {
 	*x = GetTransactionsRequest{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[36]
+	mi := &file_settla_v1_settlement_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2732,7 +3588,7 @@ func (x *GetTransactionsRequest) String() string {
 func (*GetTransactionsRequest) ProtoMessage() {}
 
 func (x *GetTransactionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[36]
+	mi := &file_settla_v1_settlement_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2745,7 +3601,7 @@ func (x *GetTransactionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTransactionsRequest.ProtoReflect.Descriptor instead.
 func (*GetTransactionsRequest) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{36}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *GetTransactionsRequest) GetTenantId() string {
@@ -2801,7 +3657,7 @@ type GetTransactionsResponse struct {
 
 func (x *GetTransactionsResponse) Reset() {
 	*x = GetTransactionsResponse{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[37]
+	mi := &file_settla_v1_settlement_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2813,7 +3669,7 @@ func (x *GetTransactionsResponse) String() string {
 func (*GetTransactionsResponse) ProtoMessage() {}
 
 func (x *GetTransactionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[37]
+	mi := &file_settla_v1_settlement_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2826,7 +3682,7 @@ func (x *GetTransactionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTransactionsResponse.ProtoReflect.Descriptor instead.
 func (*GetTransactionsResponse) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{37}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetTransactionsResponse) GetEntries() []*EntryLine {
@@ -2862,7 +3718,7 @@ type ScoreBreakdown struct {
 
 func (x *ScoreBreakdown) Reset() {
 	*x = ScoreBreakdown{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[38]
+	mi := &file_settla_v1_settlement_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2874,7 +3730,7 @@ func (x *ScoreBreakdown) String() string {
 func (*ScoreBreakdown) ProtoMessage() {}
 
 func (x *ScoreBreakdown) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[38]
+	mi := &file_settla_v1_settlement_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2887,7 +3743,7 @@ func (x *ScoreBreakdown) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoreBreakdown.ProtoReflect.Descriptor instead.
 func (*ScoreBreakdown) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{38}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ScoreBreakdown) GetCost() string {
@@ -2934,7 +3790,7 @@ type RoutingOption struct {
 
 func (x *RoutingOption) Reset() {
 	*x = RoutingOption{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[39]
+	mi := &file_settla_v1_settlement_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2946,7 +3802,7 @@ func (x *RoutingOption) String() string {
 func (*RoutingOption) ProtoMessage() {}
 
 func (x *RoutingOption) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[39]
+	mi := &file_settla_v1_settlement_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2959,7 +3815,7 @@ func (x *RoutingOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoutingOption.ProtoReflect.Descriptor instead.
 func (*RoutingOption) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{39}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *RoutingOption) GetProvider() string {
@@ -3030,7 +3886,7 @@ type GetRoutingOptionsRequest struct {
 
 func (x *GetRoutingOptionsRequest) Reset() {
 	*x = GetRoutingOptionsRequest{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[40]
+	mi := &file_settla_v1_settlement_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3042,7 +3898,7 @@ func (x *GetRoutingOptionsRequest) String() string {
 func (*GetRoutingOptionsRequest) ProtoMessage() {}
 
 func (x *GetRoutingOptionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[40]
+	mi := &file_settla_v1_settlement_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3055,7 +3911,7 @@ func (x *GetRoutingOptionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoutingOptionsRequest.ProtoReflect.Descriptor instead.
 func (*GetRoutingOptionsRequest) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{40}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *GetRoutingOptionsRequest) GetTenantId() string {
@@ -3097,7 +3953,7 @@ type GetRoutingOptionsResponse struct {
 
 func (x *GetRoutingOptionsResponse) Reset() {
 	*x = GetRoutingOptionsResponse{}
-	mi := &file_settla_v1_settlement_proto_msgTypes[41]
+	mi := &file_settla_v1_settlement_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3109,7 +3965,7 @@ func (x *GetRoutingOptionsResponse) String() string {
 func (*GetRoutingOptionsResponse) ProtoMessage() {}
 
 func (x *GetRoutingOptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_settla_v1_settlement_proto_msgTypes[41]
+	mi := &file_settla_v1_settlement_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3122,7 +3978,7 @@ func (x *GetRoutingOptionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoutingOptionsResponse.ProtoReflect.Descriptor instead.
 func (*GetRoutingOptionsResponse) Descriptor() ([]byte, []int) {
-	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{41}
+	return file_settla_v1_settlement_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *GetRoutingOptionsResponse) GetRoutes() []*RoutingOption {
@@ -3317,7 +4173,81 @@ const file_settla_v1_settlement_proto_rawDesc = "" +
 	"\fgenerated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt\x1aA\n" +
 	"\x13TotalAvailableEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb3\x03\n" +
+	"\x13PositionTransaction\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x1a\n" +
+	"\bcurrency\x18\x04 \x01(\tR\bcurrency\x12\x1a\n" +
+	"\blocation\x18\x05 \x01(\tR\blocation\x12\x16\n" +
+	"\x06amount\x18\x06 \x01(\tR\x06amount\x12\x16\n" +
+	"\x06status\x18\a \x01(\tR\x06status\x12\x16\n" +
+	"\x06method\x18\b \x01(\tR\x06method\x12 \n" +
+	"\vdestination\x18\t \x01(\tR\vdestination\x12\x1c\n" +
+	"\treference\x18\n" +
+	" \x01(\tR\treference\x12%\n" +
+	"\x0efailure_reason\x18\v \x01(\tR\rfailureReason\x129\n" +
+	"\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x9a\x01\n" +
+	"\x13RequestTopUpRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
+	"\bcurrency\x18\x02 \x01(\tR\bcurrency\x12\x1a\n" +
+	"\blocation\x18\x03 \x01(\tR\blocation\x12\x16\n" +
+	"\x06amount\x18\x04 \x01(\tR\x06amount\x12\x16\n" +
+	"\x06method\x18\x05 \x01(\tR\x06method\"\xc1\x01\n" +
+	"\x18RequestWithdrawalRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
+	"\bcurrency\x18\x02 \x01(\tR\bcurrency\x12\x1a\n" +
+	"\blocation\x18\x03 \x01(\tR\blocation\x12\x16\n" +
+	"\x06amount\x18\x04 \x01(\tR\x06amount\x12\x16\n" +
+	"\x06method\x18\x05 \x01(\tR\x06method\x12 \n" +
+	"\vdestination\x18\x06 \x01(\tR\vdestination\"X\n" +
+	"\x14RequestTopUpResponse\x12@\n" +
+	"\vtransaction\x18\x01 \x01(\v2\x1e.settla.v1.PositionTransactionR\vtransaction\"]\n" +
+	"\x19RequestWithdrawalResponse\x12@\n" +
+	"\vtransaction\x18\x01 \x01(\v2\x1e.settla.v1.PositionTransactionR\vtransaction\"b\n" +
+	"\x1eGetPositionTransactionResponse\x12@\n" +
+	"\vtransaction\x18\x01 \x01(\v2\x1e.settla.v1.PositionTransactionR\vtransaction\"c\n" +
+	"\x1dGetPositionTransactionRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12%\n" +
+	"\x0etransaction_id\x18\x02 \x01(\tR\rtransactionId\"l\n" +
+	"\x1fListPositionTransactionsRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x05R\x06offset\"\x87\x01\n" +
+	" ListPositionTransactionsResponse\x12B\n" +
+	"\ftransactions\x18\x01 \x03(\v2\x1e.settla.v1.PositionTransactionR\ftransactions\x12\x1f\n" +
+	"\vtotal_count\x18\x02 \x01(\x05R\n" +
+	"totalCount\"\xe8\x02\n" +
+	"\x12PositionEventEntry\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
+	"\vposition_id\x18\x02 \x01(\tR\n" +
+	"positionId\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x1d\n" +
+	"\n" +
+	"event_type\x18\x04 \x01(\tR\teventType\x12\x16\n" +
+	"\x06amount\x18\x05 \x01(\tR\x06amount\x12#\n" +
+	"\rbalance_after\x18\x06 \x01(\tR\fbalanceAfter\x12!\n" +
+	"\flocked_after\x18\a \x01(\tR\vlockedAfter\x12!\n" +
+	"\freference_id\x18\b \x01(\tR\vreferenceId\x12%\n" +
+	"\x0ereference_type\x18\t \x01(\tR\rreferenceType\x12;\n" +
+	"\vrecorded_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"recordedAt\"\xff\x01\n" +
+	"\x1eGetPositionEventHistoryRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
+	"\bcurrency\x18\x02 \x01(\tR\bcurrency\x12\x1a\n" +
+	"\blocation\x18\x03 \x01(\tR\blocation\x12.\n" +
+	"\x04from\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x04from\x12*\n" +
+	"\x02to\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x02to\x12\x14\n" +
+	"\x05limit\x18\x06 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\a \x01(\x05R\x06offset\"y\n" +
+	"\x1fGetPositionEventHistoryResponse\x125\n" +
+	"\x06events\x18\x01 \x03(\v2\x1d.settla.v1.PositionEventEntryR\x06events\x12\x1f\n" +
+	"\vtotal_count\x18\x02 \x01(\x05R\n" +
+	"totalCount\"\xb9\x02\n" +
 	"\aAccount\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -3445,11 +4375,16 @@ const file_settla_v1_settlement_proto_rawDesc = "" +
 	"\rListTransfers\x12\x1f.settla.v1.ListTransfersRequest\x1a .settla.v1.ListTransfersResponse\x12U\n" +
 	"\x0eCancelTransfer\x12 .settla.v1.CancelTransferRequest\x1a!.settla.v1.CancelTransferResponse\x12a\n" +
 	"\x12ListTransferEvents\x12$.settla.v1.ListTransferEventsRequest\x1a%.settla.v1.ListTransferEventsResponse\x12^\n" +
-	"\x11GetRoutingOptions\x12#.settla.v1.GetRoutingOptionsRequest\x1a$.settla.v1.GetRoutingOptionsResponse2\x93\x02\n" +
+	"\x11GetRoutingOptions\x12#.settla.v1.GetRoutingOptionsRequest\x1a$.settla.v1.GetRoutingOptionsResponse2\x9a\x06\n" +
 	"\x0fTreasuryService\x12O\n" +
 	"\fGetPositions\x12\x1e.settla.v1.GetPositionsRequest\x1a\x1f.settla.v1.GetPositionsResponse\x12L\n" +
 	"\vGetPosition\x12\x1d.settla.v1.GetPositionRequest\x1a\x1e.settla.v1.GetPositionResponse\x12a\n" +
-	"\x12GetLiquidityReport\x12$.settla.v1.GetLiquidityReportRequest\x1a%.settla.v1.GetLiquidityReportResponse2\x97\x02\n" +
+	"\x12GetLiquidityReport\x12$.settla.v1.GetLiquidityReportRequest\x1a%.settla.v1.GetLiquidityReportResponse\x12O\n" +
+	"\fRequestTopUp\x12\x1e.settla.v1.RequestTopUpRequest\x1a\x1f.settla.v1.RequestTopUpResponse\x12^\n" +
+	"\x11RequestWithdrawal\x12#.settla.v1.RequestWithdrawalRequest\x1a$.settla.v1.RequestWithdrawalResponse\x12m\n" +
+	"\x16GetPositionTransaction\x12(.settla.v1.GetPositionTransactionRequest\x1a).settla.v1.GetPositionTransactionResponse\x12s\n" +
+	"\x18ListPositionTransactions\x12*.settla.v1.ListPositionTransactionsRequest\x1a+.settla.v1.ListPositionTransactionsResponse\x12p\n" +
+	"\x17GetPositionEventHistory\x12).settla.v1.GetPositionEventHistoryRequest\x1a*.settla.v1.GetPositionEventHistoryResponse2\x97\x02\n" +
 	"\rLedgerService\x12L\n" +
 	"\vGetAccounts\x12\x1d.settla.v1.GetAccountsRequest\x1a\x1e.settla.v1.GetAccountsResponse\x12^\n" +
 	"\x11GetAccountBalance\x12#.settla.v1.GetAccountBalanceRequest\x1a$.settla.v1.GetAccountBalanceResponse\x12X\n" +
@@ -3472,7 +4407,7 @@ func file_settla_v1_settlement_proto_rawDescGZIP() []byte {
 }
 
 var file_settla_v1_settlement_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_settla_v1_settlement_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_settla_v1_settlement_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
 var file_settla_v1_settlement_proto_goTypes = []any{
 	(TransferStatus)(0),                      // 0: settla.v1.TransferStatus
 	(AccountType)(0),                         // 1: settla.v1.AccountType
@@ -3505,115 +4440,147 @@ var file_settla_v1_settlement_proto_goTypes = []any{
 	(*GetPositionResponse)(nil),              // 28: settla.v1.GetPositionResponse
 	(*GetLiquidityReportRequest)(nil),        // 29: settla.v1.GetLiquidityReportRequest
 	(*GetLiquidityReportResponse)(nil),       // 30: settla.v1.GetLiquidityReportResponse
-	(*Account)(nil),                          // 31: settla.v1.Account
-	(*AccountBalance)(nil),                   // 32: settla.v1.AccountBalance
-	(*EntryLine)(nil),                        // 33: settla.v1.EntryLine
-	(*JournalEntry)(nil),                     // 34: settla.v1.JournalEntry
-	(*GetAccountsRequest)(nil),               // 35: settla.v1.GetAccountsRequest
-	(*GetAccountsResponse)(nil),              // 36: settla.v1.GetAccountsResponse
-	(*GetAccountBalanceRequest)(nil),         // 37: settla.v1.GetAccountBalanceRequest
-	(*GetAccountBalanceResponse)(nil),        // 38: settla.v1.GetAccountBalanceResponse
-	(*GetTransactionsRequest)(nil),           // 39: settla.v1.GetTransactionsRequest
-	(*GetTransactionsResponse)(nil),          // 40: settla.v1.GetTransactionsResponse
-	(*ScoreBreakdown)(nil),                   // 41: settla.v1.ScoreBreakdown
-	(*RoutingOption)(nil),                    // 42: settla.v1.RoutingOption
-	(*GetRoutingOptionsRequest)(nil),         // 43: settla.v1.GetRoutingOptionsRequest
-	(*GetRoutingOptionsResponse)(nil),        // 44: settla.v1.GetRoutingOptionsResponse
-	nil,                                      // 45: settla.v1.TransferEvent.MetadataEntry
-	nil,                                      // 46: settla.v1.GetLiquidityReportResponse.TotalAvailableEntry
-	nil,                                      // 47: settla.v1.JournalEntry.MetadataEntry
-	(*FeeBreakdown)(nil),                     // 48: settla.v1.FeeBreakdown
-	(*RouteInfo)(nil),                        // 49: settla.v1.RouteInfo
-	(*timestamppb.Timestamp)(nil),            // 50: google.protobuf.Timestamp
-	(*Sender)(nil),                           // 51: settla.v1.Sender
-	(*Recipient)(nil),                        // 52: settla.v1.Recipient
+	(*PositionTransaction)(nil),              // 31: settla.v1.PositionTransaction
+	(*RequestTopUpRequest)(nil),              // 32: settla.v1.RequestTopUpRequest
+	(*RequestWithdrawalRequest)(nil),         // 33: settla.v1.RequestWithdrawalRequest
+	(*RequestTopUpResponse)(nil),             // 34: settla.v1.RequestTopUpResponse
+	(*RequestWithdrawalResponse)(nil),        // 35: settla.v1.RequestWithdrawalResponse
+	(*GetPositionTransactionResponse)(nil),   // 36: settla.v1.GetPositionTransactionResponse
+	(*GetPositionTransactionRequest)(nil),    // 37: settla.v1.GetPositionTransactionRequest
+	(*ListPositionTransactionsRequest)(nil),  // 38: settla.v1.ListPositionTransactionsRequest
+	(*ListPositionTransactionsResponse)(nil), // 39: settla.v1.ListPositionTransactionsResponse
+	(*PositionEventEntry)(nil),               // 40: settla.v1.PositionEventEntry
+	(*GetPositionEventHistoryRequest)(nil),   // 41: settla.v1.GetPositionEventHistoryRequest
+	(*GetPositionEventHistoryResponse)(nil),  // 42: settla.v1.GetPositionEventHistoryResponse
+	(*Account)(nil),                          // 43: settla.v1.Account
+	(*AccountBalance)(nil),                   // 44: settla.v1.AccountBalance
+	(*EntryLine)(nil),                        // 45: settla.v1.EntryLine
+	(*JournalEntry)(nil),                     // 46: settla.v1.JournalEntry
+	(*GetAccountsRequest)(nil),               // 47: settla.v1.GetAccountsRequest
+	(*GetAccountsResponse)(nil),              // 48: settla.v1.GetAccountsResponse
+	(*GetAccountBalanceRequest)(nil),         // 49: settla.v1.GetAccountBalanceRequest
+	(*GetAccountBalanceResponse)(nil),        // 50: settla.v1.GetAccountBalanceResponse
+	(*GetTransactionsRequest)(nil),           // 51: settla.v1.GetTransactionsRequest
+	(*GetTransactionsResponse)(nil),          // 52: settla.v1.GetTransactionsResponse
+	(*ScoreBreakdown)(nil),                   // 53: settla.v1.ScoreBreakdown
+	(*RoutingOption)(nil),                    // 54: settla.v1.RoutingOption
+	(*GetRoutingOptionsRequest)(nil),         // 55: settla.v1.GetRoutingOptionsRequest
+	(*GetRoutingOptionsResponse)(nil),        // 56: settla.v1.GetRoutingOptionsResponse
+	nil,                                      // 57: settla.v1.TransferEvent.MetadataEntry
+	nil,                                      // 58: settla.v1.GetLiquidityReportResponse.TotalAvailableEntry
+	nil,                                      // 59: settla.v1.JournalEntry.MetadataEntry
+	(*FeeBreakdown)(nil),                     // 60: settla.v1.FeeBreakdown
+	(*RouteInfo)(nil),                        // 61: settla.v1.RouteInfo
+	(*timestamppb.Timestamp)(nil),            // 62: google.protobuf.Timestamp
+	(*Sender)(nil),                           // 63: settla.v1.Sender
+	(*Recipient)(nil),                        // 64: settla.v1.Recipient
 }
 var file_settla_v1_settlement_proto_depIdxs = []int32{
-	48, // 0: settla.v1.Quote.fees:type_name -> settla.v1.FeeBreakdown
-	49, // 1: settla.v1.Quote.route:type_name -> settla.v1.RouteInfo
-	50, // 2: settla.v1.Quote.expires_at:type_name -> google.protobuf.Timestamp
-	50, // 3: settla.v1.Quote.created_at:type_name -> google.protobuf.Timestamp
+	60, // 0: settla.v1.Quote.fees:type_name -> settla.v1.FeeBreakdown
+	61, // 1: settla.v1.Quote.route:type_name -> settla.v1.RouteInfo
+	62, // 2: settla.v1.Quote.expires_at:type_name -> google.protobuf.Timestamp
+	62, // 3: settla.v1.Quote.created_at:type_name -> google.protobuf.Timestamp
 	5,  // 4: settla.v1.CreateQuoteResponse.quote:type_name -> settla.v1.Quote
 	5,  // 5: settla.v1.GetQuoteResponse.quote:type_name -> settla.v1.Quote
 	0,  // 6: settla.v1.Transfer.status:type_name -> settla.v1.TransferStatus
-	48, // 7: settla.v1.Transfer.fees:type_name -> settla.v1.FeeBreakdown
-	51, // 8: settla.v1.Transfer.sender:type_name -> settla.v1.Sender
-	52, // 9: settla.v1.Transfer.recipient:type_name -> settla.v1.Recipient
-	50, // 10: settla.v1.Transfer.created_at:type_name -> google.protobuf.Timestamp
-	50, // 11: settla.v1.Transfer.updated_at:type_name -> google.protobuf.Timestamp
-	50, // 12: settla.v1.Transfer.funded_at:type_name -> google.protobuf.Timestamp
-	50, // 13: settla.v1.Transfer.completed_at:type_name -> google.protobuf.Timestamp
-	50, // 14: settla.v1.Transfer.failed_at:type_name -> google.protobuf.Timestamp
-	51, // 15: settla.v1.CreateTransferRequest.sender:type_name -> settla.v1.Sender
-	52, // 16: settla.v1.CreateTransferRequest.recipient:type_name -> settla.v1.Recipient
+	60, // 7: settla.v1.Transfer.fees:type_name -> settla.v1.FeeBreakdown
+	63, // 8: settla.v1.Transfer.sender:type_name -> settla.v1.Sender
+	64, // 9: settla.v1.Transfer.recipient:type_name -> settla.v1.Recipient
+	62, // 10: settla.v1.Transfer.created_at:type_name -> google.protobuf.Timestamp
+	62, // 11: settla.v1.Transfer.updated_at:type_name -> google.protobuf.Timestamp
+	62, // 12: settla.v1.Transfer.funded_at:type_name -> google.protobuf.Timestamp
+	62, // 13: settla.v1.Transfer.completed_at:type_name -> google.protobuf.Timestamp
+	62, // 14: settla.v1.Transfer.failed_at:type_name -> google.protobuf.Timestamp
+	63, // 15: settla.v1.CreateTransferRequest.sender:type_name -> settla.v1.Sender
+	64, // 16: settla.v1.CreateTransferRequest.recipient:type_name -> settla.v1.Recipient
 	10, // 17: settla.v1.CreateTransferResponse.transfer:type_name -> settla.v1.Transfer
 	10, // 18: settla.v1.GetTransferResponse.transfer:type_name -> settla.v1.Transfer
 	10, // 19: settla.v1.GetTransferByExternalRefResponse.transfer:type_name -> settla.v1.Transfer
 	10, // 20: settla.v1.ListTransfersResponse.transfers:type_name -> settla.v1.Transfer
 	10, // 21: settla.v1.CancelTransferResponse.transfer:type_name -> settla.v1.Transfer
-	50, // 22: settla.v1.TransferEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	45, // 23: settla.v1.TransferEvent.metadata:type_name -> settla.v1.TransferEvent.MetadataEntry
+	62, // 22: settla.v1.TransferEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	57, // 23: settla.v1.TransferEvent.metadata:type_name -> settla.v1.TransferEvent.MetadataEntry
 	21, // 24: settla.v1.ListTransferEventsResponse.events:type_name -> settla.v1.TransferEvent
-	50, // 25: settla.v1.Position.updated_at:type_name -> google.protobuf.Timestamp
+	62, // 25: settla.v1.Position.updated_at:type_name -> google.protobuf.Timestamp
 	24, // 26: settla.v1.GetPositionsResponse.positions:type_name -> settla.v1.Position
 	24, // 27: settla.v1.GetPositionResponse.position:type_name -> settla.v1.Position
 	24, // 28: settla.v1.GetLiquidityReportResponse.positions:type_name -> settla.v1.Position
-	46, // 29: settla.v1.GetLiquidityReportResponse.total_available:type_name -> settla.v1.GetLiquidityReportResponse.TotalAvailableEntry
+	58, // 29: settla.v1.GetLiquidityReportResponse.total_available:type_name -> settla.v1.GetLiquidityReportResponse.TotalAvailableEntry
 	24, // 30: settla.v1.GetLiquidityReportResponse.alert_positions:type_name -> settla.v1.Position
-	50, // 31: settla.v1.GetLiquidityReportResponse.generated_at:type_name -> google.protobuf.Timestamp
-	1,  // 32: settla.v1.Account.type:type_name -> settla.v1.AccountType
-	50, // 33: settla.v1.Account.created_at:type_name -> google.protobuf.Timestamp
-	50, // 34: settla.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
-	2,  // 35: settla.v1.EntryLine.entry_type:type_name -> settla.v1.EntryType
-	50, // 36: settla.v1.JournalEntry.posted_at:type_name -> google.protobuf.Timestamp
-	50, // 37: settla.v1.JournalEntry.effective_date:type_name -> google.protobuf.Timestamp
-	33, // 38: settla.v1.JournalEntry.lines:type_name -> settla.v1.EntryLine
-	47, // 39: settla.v1.JournalEntry.metadata:type_name -> settla.v1.JournalEntry.MetadataEntry
-	31, // 40: settla.v1.GetAccountsResponse.accounts:type_name -> settla.v1.Account
-	32, // 41: settla.v1.GetAccountBalanceResponse.account_balance:type_name -> settla.v1.AccountBalance
-	50, // 42: settla.v1.GetTransactionsRequest.from:type_name -> google.protobuf.Timestamp
-	50, // 43: settla.v1.GetTransactionsRequest.to:type_name -> google.protobuf.Timestamp
-	33, // 44: settla.v1.GetTransactionsResponse.entries:type_name -> settla.v1.EntryLine
-	41, // 45: settla.v1.RoutingOption.score_breakdown:type_name -> settla.v1.ScoreBreakdown
-	42, // 46: settla.v1.GetRoutingOptionsResponse.routes:type_name -> settla.v1.RoutingOption
-	50, // 47: settla.v1.GetRoutingOptionsResponse.quoted_at:type_name -> google.protobuf.Timestamp
-	6,  // 48: settla.v1.SettlementService.CreateQuote:input_type -> settla.v1.CreateQuoteRequest
-	8,  // 49: settla.v1.SettlementService.GetQuote:input_type -> settla.v1.GetQuoteRequest
-	11, // 50: settla.v1.SettlementService.CreateTransfer:input_type -> settla.v1.CreateTransferRequest
-	13, // 51: settla.v1.SettlementService.GetTransfer:input_type -> settla.v1.GetTransferRequest
-	15, // 52: settla.v1.SettlementService.GetTransferByExternalRef:input_type -> settla.v1.GetTransferByExternalRefRequest
-	17, // 53: settla.v1.SettlementService.ListTransfers:input_type -> settla.v1.ListTransfersRequest
-	19, // 54: settla.v1.SettlementService.CancelTransfer:input_type -> settla.v1.CancelTransferRequest
-	22, // 55: settla.v1.SettlementService.ListTransferEvents:input_type -> settla.v1.ListTransferEventsRequest
-	43, // 56: settla.v1.SettlementService.GetRoutingOptions:input_type -> settla.v1.GetRoutingOptionsRequest
-	25, // 57: settla.v1.TreasuryService.GetPositions:input_type -> settla.v1.GetPositionsRequest
-	27, // 58: settla.v1.TreasuryService.GetPosition:input_type -> settla.v1.GetPositionRequest
-	29, // 59: settla.v1.TreasuryService.GetLiquidityReport:input_type -> settla.v1.GetLiquidityReportRequest
-	35, // 60: settla.v1.LedgerService.GetAccounts:input_type -> settla.v1.GetAccountsRequest
-	37, // 61: settla.v1.LedgerService.GetAccountBalance:input_type -> settla.v1.GetAccountBalanceRequest
-	39, // 62: settla.v1.LedgerService.GetTransactions:input_type -> settla.v1.GetTransactionsRequest
-	3,  // 63: settla.v1.AuthService.ValidateAPIKey:input_type -> settla.v1.ValidateAPIKeyRequest
-	7,  // 64: settla.v1.SettlementService.CreateQuote:output_type -> settla.v1.CreateQuoteResponse
-	9,  // 65: settla.v1.SettlementService.GetQuote:output_type -> settla.v1.GetQuoteResponse
-	12, // 66: settla.v1.SettlementService.CreateTransfer:output_type -> settla.v1.CreateTransferResponse
-	14, // 67: settla.v1.SettlementService.GetTransfer:output_type -> settla.v1.GetTransferResponse
-	16, // 68: settla.v1.SettlementService.GetTransferByExternalRef:output_type -> settla.v1.GetTransferByExternalRefResponse
-	18, // 69: settla.v1.SettlementService.ListTransfers:output_type -> settla.v1.ListTransfersResponse
-	20, // 70: settla.v1.SettlementService.CancelTransfer:output_type -> settla.v1.CancelTransferResponse
-	23, // 71: settla.v1.SettlementService.ListTransferEvents:output_type -> settla.v1.ListTransferEventsResponse
-	44, // 72: settla.v1.SettlementService.GetRoutingOptions:output_type -> settla.v1.GetRoutingOptionsResponse
-	26, // 73: settla.v1.TreasuryService.GetPositions:output_type -> settla.v1.GetPositionsResponse
-	28, // 74: settla.v1.TreasuryService.GetPosition:output_type -> settla.v1.GetPositionResponse
-	30, // 75: settla.v1.TreasuryService.GetLiquidityReport:output_type -> settla.v1.GetLiquidityReportResponse
-	36, // 76: settla.v1.LedgerService.GetAccounts:output_type -> settla.v1.GetAccountsResponse
-	38, // 77: settla.v1.LedgerService.GetAccountBalance:output_type -> settla.v1.GetAccountBalanceResponse
-	40, // 78: settla.v1.LedgerService.GetTransactions:output_type -> settla.v1.GetTransactionsResponse
-	4,  // 79: settla.v1.AuthService.ValidateAPIKey:output_type -> settla.v1.ValidateAPIKeyResponse
-	64, // [64:80] is the sub-list for method output_type
-	48, // [48:64] is the sub-list for method input_type
-	48, // [48:48] is the sub-list for extension type_name
-	48, // [48:48] is the sub-list for extension extendee
-	0,  // [0:48] is the sub-list for field type_name
+	62, // 31: settla.v1.GetLiquidityReportResponse.generated_at:type_name -> google.protobuf.Timestamp
+	62, // 32: settla.v1.PositionTransaction.created_at:type_name -> google.protobuf.Timestamp
+	62, // 33: settla.v1.PositionTransaction.updated_at:type_name -> google.protobuf.Timestamp
+	31, // 34: settla.v1.RequestTopUpResponse.transaction:type_name -> settla.v1.PositionTransaction
+	31, // 35: settla.v1.RequestWithdrawalResponse.transaction:type_name -> settla.v1.PositionTransaction
+	31, // 36: settla.v1.GetPositionTransactionResponse.transaction:type_name -> settla.v1.PositionTransaction
+	31, // 37: settla.v1.ListPositionTransactionsResponse.transactions:type_name -> settla.v1.PositionTransaction
+	62, // 38: settla.v1.PositionEventEntry.recorded_at:type_name -> google.protobuf.Timestamp
+	62, // 39: settla.v1.GetPositionEventHistoryRequest.from:type_name -> google.protobuf.Timestamp
+	62, // 40: settla.v1.GetPositionEventHistoryRequest.to:type_name -> google.protobuf.Timestamp
+	40, // 41: settla.v1.GetPositionEventHistoryResponse.events:type_name -> settla.v1.PositionEventEntry
+	1,  // 42: settla.v1.Account.type:type_name -> settla.v1.AccountType
+	62, // 43: settla.v1.Account.created_at:type_name -> google.protobuf.Timestamp
+	62, // 44: settla.v1.Account.updated_at:type_name -> google.protobuf.Timestamp
+	2,  // 45: settla.v1.EntryLine.entry_type:type_name -> settla.v1.EntryType
+	62, // 46: settla.v1.JournalEntry.posted_at:type_name -> google.protobuf.Timestamp
+	62, // 47: settla.v1.JournalEntry.effective_date:type_name -> google.protobuf.Timestamp
+	45, // 48: settla.v1.JournalEntry.lines:type_name -> settla.v1.EntryLine
+	59, // 49: settla.v1.JournalEntry.metadata:type_name -> settla.v1.JournalEntry.MetadataEntry
+	43, // 50: settla.v1.GetAccountsResponse.accounts:type_name -> settla.v1.Account
+	44, // 51: settla.v1.GetAccountBalanceResponse.account_balance:type_name -> settla.v1.AccountBalance
+	62, // 52: settla.v1.GetTransactionsRequest.from:type_name -> google.protobuf.Timestamp
+	62, // 53: settla.v1.GetTransactionsRequest.to:type_name -> google.protobuf.Timestamp
+	45, // 54: settla.v1.GetTransactionsResponse.entries:type_name -> settla.v1.EntryLine
+	53, // 55: settla.v1.RoutingOption.score_breakdown:type_name -> settla.v1.ScoreBreakdown
+	54, // 56: settla.v1.GetRoutingOptionsResponse.routes:type_name -> settla.v1.RoutingOption
+	62, // 57: settla.v1.GetRoutingOptionsResponse.quoted_at:type_name -> google.protobuf.Timestamp
+	6,  // 58: settla.v1.SettlementService.CreateQuote:input_type -> settla.v1.CreateQuoteRequest
+	8,  // 59: settla.v1.SettlementService.GetQuote:input_type -> settla.v1.GetQuoteRequest
+	11, // 60: settla.v1.SettlementService.CreateTransfer:input_type -> settla.v1.CreateTransferRequest
+	13, // 61: settla.v1.SettlementService.GetTransfer:input_type -> settla.v1.GetTransferRequest
+	15, // 62: settla.v1.SettlementService.GetTransferByExternalRef:input_type -> settla.v1.GetTransferByExternalRefRequest
+	17, // 63: settla.v1.SettlementService.ListTransfers:input_type -> settla.v1.ListTransfersRequest
+	19, // 64: settla.v1.SettlementService.CancelTransfer:input_type -> settla.v1.CancelTransferRequest
+	22, // 65: settla.v1.SettlementService.ListTransferEvents:input_type -> settla.v1.ListTransferEventsRequest
+	55, // 66: settla.v1.SettlementService.GetRoutingOptions:input_type -> settla.v1.GetRoutingOptionsRequest
+	25, // 67: settla.v1.TreasuryService.GetPositions:input_type -> settla.v1.GetPositionsRequest
+	27, // 68: settla.v1.TreasuryService.GetPosition:input_type -> settla.v1.GetPositionRequest
+	29, // 69: settla.v1.TreasuryService.GetLiquidityReport:input_type -> settla.v1.GetLiquidityReportRequest
+	32, // 70: settla.v1.TreasuryService.RequestTopUp:input_type -> settla.v1.RequestTopUpRequest
+	33, // 71: settla.v1.TreasuryService.RequestWithdrawal:input_type -> settla.v1.RequestWithdrawalRequest
+	37, // 72: settla.v1.TreasuryService.GetPositionTransaction:input_type -> settla.v1.GetPositionTransactionRequest
+	38, // 73: settla.v1.TreasuryService.ListPositionTransactions:input_type -> settla.v1.ListPositionTransactionsRequest
+	41, // 74: settla.v1.TreasuryService.GetPositionEventHistory:input_type -> settla.v1.GetPositionEventHistoryRequest
+	47, // 75: settla.v1.LedgerService.GetAccounts:input_type -> settla.v1.GetAccountsRequest
+	49, // 76: settla.v1.LedgerService.GetAccountBalance:input_type -> settla.v1.GetAccountBalanceRequest
+	51, // 77: settla.v1.LedgerService.GetTransactions:input_type -> settla.v1.GetTransactionsRequest
+	3,  // 78: settla.v1.AuthService.ValidateAPIKey:input_type -> settla.v1.ValidateAPIKeyRequest
+	7,  // 79: settla.v1.SettlementService.CreateQuote:output_type -> settla.v1.CreateQuoteResponse
+	9,  // 80: settla.v1.SettlementService.GetQuote:output_type -> settla.v1.GetQuoteResponse
+	12, // 81: settla.v1.SettlementService.CreateTransfer:output_type -> settla.v1.CreateTransferResponse
+	14, // 82: settla.v1.SettlementService.GetTransfer:output_type -> settla.v1.GetTransferResponse
+	16, // 83: settla.v1.SettlementService.GetTransferByExternalRef:output_type -> settla.v1.GetTransferByExternalRefResponse
+	18, // 84: settla.v1.SettlementService.ListTransfers:output_type -> settla.v1.ListTransfersResponse
+	20, // 85: settla.v1.SettlementService.CancelTransfer:output_type -> settla.v1.CancelTransferResponse
+	23, // 86: settla.v1.SettlementService.ListTransferEvents:output_type -> settla.v1.ListTransferEventsResponse
+	56, // 87: settla.v1.SettlementService.GetRoutingOptions:output_type -> settla.v1.GetRoutingOptionsResponse
+	26, // 88: settla.v1.TreasuryService.GetPositions:output_type -> settla.v1.GetPositionsResponse
+	28, // 89: settla.v1.TreasuryService.GetPosition:output_type -> settla.v1.GetPositionResponse
+	30, // 90: settla.v1.TreasuryService.GetLiquidityReport:output_type -> settla.v1.GetLiquidityReportResponse
+	34, // 91: settla.v1.TreasuryService.RequestTopUp:output_type -> settla.v1.RequestTopUpResponse
+	35, // 92: settla.v1.TreasuryService.RequestWithdrawal:output_type -> settla.v1.RequestWithdrawalResponse
+	36, // 93: settla.v1.TreasuryService.GetPositionTransaction:output_type -> settla.v1.GetPositionTransactionResponse
+	39, // 94: settla.v1.TreasuryService.ListPositionTransactions:output_type -> settla.v1.ListPositionTransactionsResponse
+	42, // 95: settla.v1.TreasuryService.GetPositionEventHistory:output_type -> settla.v1.GetPositionEventHistoryResponse
+	48, // 96: settla.v1.LedgerService.GetAccounts:output_type -> settla.v1.GetAccountsResponse
+	50, // 97: settla.v1.LedgerService.GetAccountBalance:output_type -> settla.v1.GetAccountBalanceResponse
+	52, // 98: settla.v1.LedgerService.GetTransactions:output_type -> settla.v1.GetTransactionsResponse
+	4,  // 99: settla.v1.AuthService.ValidateAPIKey:output_type -> settla.v1.ValidateAPIKeyResponse
+	79, // [79:100] is the sub-list for method output_type
+	58, // [58:79] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_settla_v1_settlement_proto_init() }
@@ -3628,7 +4595,7 @@ func file_settla_v1_settlement_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_settla_v1_settlement_proto_rawDesc), len(file_settla_v1_settlement_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   45,
+			NumMessages:   57,
 			NumExtensions: 0,
 			NumServices:   4,
 		},
