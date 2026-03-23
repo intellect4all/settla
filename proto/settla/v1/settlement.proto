@@ -31,6 +31,11 @@ service TreasuryService {
   rpc GetPositions(GetPositionsRequest) returns (GetPositionsResponse);
   rpc GetPosition(GetPositionRequest) returns (GetPositionResponse);
   rpc GetLiquidityReport(GetLiquidityReportRequest) returns (GetLiquidityReportResponse);
+  rpc RequestTopUp(RequestTopUpRequest) returns (RequestTopUpResponse);
+  rpc RequestWithdrawal(RequestWithdrawalRequest) returns (RequestWithdrawalResponse);
+  rpc GetPositionTransaction(GetPositionTransactionRequest) returns (GetPositionTransactionResponse);
+  rpc ListPositionTransactions(ListPositionTransactionsRequest) returns (ListPositionTransactionsResponse);
+  rpc GetPositionEventHistory(GetPositionEventHistoryRequest) returns (GetPositionEventHistoryResponse);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -280,6 +285,99 @@ message GetLiquidityReportResponse {
   map<string, string> total_available = 3;    // Currency → decimal string
   repeated Position alert_positions = 4;      // Positions below min_balance
   google.protobuf.Timestamp generated_at = 5;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Position transaction messages (Treasury self-service)
+// ──────────────────────────────────────────────────────────────────────────────
+
+message PositionTransaction {
+  string id = 1;                              // UUID
+  string tenant_id = 2;                       // UUID — tenant scope
+  string type = 3;                            // TOP_UP, WITHDRAWAL, DEPOSIT_CREDIT, INTERNAL_REBALANCE
+  string currency = 4;
+  string location = 5;
+  string amount = 6;                          // Decimal string
+  string status = 7;                          // PENDING, PROCESSING, COMPLETED, FAILED
+  string method = 8;                          // bank_transfer, crypto, internal
+  string destination = 9;                     // bank account ref or crypto address (withdrawals)
+  string reference = 10;                      // external reference
+  string failure_reason = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message RequestTopUpRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string currency = 2;
+  string location = 3;
+  string amount = 4;                          // Decimal string — positive
+  string method = 5;                          // bank_transfer, crypto, internal
+}
+
+message RequestWithdrawalRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string currency = 2;
+  string location = 3;
+  string amount = 4;                          // Decimal string — positive
+  string method = 5;                          // bank_transfer, crypto
+  string destination = 6;                     // bank account ref or crypto address
+}
+
+message RequestTopUpResponse {
+  PositionTransaction transaction = 1;
+}
+
+message RequestWithdrawalResponse {
+  PositionTransaction transaction = 1;
+}
+
+message GetPositionTransactionResponse {
+  PositionTransaction transaction = 1;
+}
+
+message GetPositionTransactionRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string transaction_id = 2;                  // UUID
+}
+
+message ListPositionTransactionsRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListPositionTransactionsResponse {
+  repeated PositionTransaction transactions = 1;
+  int32 total_count = 2;
+}
+
+message PositionEventEntry {
+  string id = 1;                              // UUID
+  string position_id = 2;                     // UUID
+  string tenant_id = 3;                       // UUID
+  string event_type = 4;                      // CREDIT, DEBIT, RESERVE, RELEASE, COMMIT, CONSUME
+  string amount = 5;                          // Decimal string
+  string balance_after = 6;                   // Decimal string
+  string locked_after = 7;                    // Decimal string
+  string reference_id = 8;                    // UUID
+  string reference_type = 9;                  // deposit_session, bank_deposit, position_transaction, transfer
+  google.protobuf.Timestamp recorded_at = 10;
+}
+
+message GetPositionEventHistoryRequest {
+  string tenant_id = 1;                       // UUID — required, tenant scope
+  string currency = 2;
+  string location = 3;
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to = 5;
+  int32 limit = 6;
+  int32 offset = 7;
+}
+
+message GetPositionEventHistoryResponse {
+  repeated PositionEventEntry events = 1;
+  int32 total_count = 2;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
