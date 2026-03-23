@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetQuoteRequest, GetQuoteResponse, GetRoutingOptionsRequest, GetRoutingOptionsResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferByExternalRefRequest, GetTransferByExternalRefResponse, GetTransferRequest, GetTransferResponse, ListTransferEventsRequest, ListTransferEventsResponse, ListTransfersRequest, ListTransfersResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
+import { CancelTransferRequest, CancelTransferResponse, CreateQuoteRequest, CreateQuoteResponse, CreateTransferRequest, CreateTransferResponse, GetAccountBalanceRequest, GetAccountBalanceResponse, GetAccountsRequest, GetAccountsResponse, GetLiquidityReportRequest, GetLiquidityReportResponse, GetPositionEventHistoryRequest, GetPositionEventHistoryResponse, GetPositionRequest, GetPositionResponse, GetPositionsRequest, GetPositionsResponse, GetPositionTransactionRequest, GetPositionTransactionResponse, GetQuoteRequest, GetQuoteResponse, GetRoutingOptionsRequest, GetRoutingOptionsResponse, GetTransactionsRequest, GetTransactionsResponse, GetTransferByExternalRefRequest, GetTransferByExternalRefResponse, GetTransferRequest, GetTransferResponse, ListPositionTransactionsRequest, ListPositionTransactionsResponse, ListTransferEventsRequest, ListTransferEventsResponse, ListTransfersRequest, ListTransfersResponse, RequestTopUpRequest, RequestTopUpResponse, RequestWithdrawalRequest, RequestWithdrawalResponse, ValidateAPIKeyRequest, ValidateAPIKeyResponse } from "./settlement_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -127,6 +127,51 @@ export declare const TreasuryService: {
       readonly name: "GetLiquidityReport",
       readonly I: typeof GetLiquidityReportRequest,
       readonly O: typeof GetLiquidityReportResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.TreasuryService.RequestTopUp
+     */
+    readonly requestTopUp: {
+      readonly name: "RequestTopUp",
+      readonly I: typeof RequestTopUpRequest,
+      readonly O: typeof RequestTopUpResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.TreasuryService.RequestWithdrawal
+     */
+    readonly requestWithdrawal: {
+      readonly name: "RequestWithdrawal",
+      readonly I: typeof RequestWithdrawalRequest,
+      readonly O: typeof RequestWithdrawalResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.TreasuryService.GetPositionTransaction
+     */
+    readonly getPositionTransaction: {
+      readonly name: "GetPositionTransaction",
+      readonly I: typeof GetPositionTransactionRequest,
+      readonly O: typeof GetPositionTransactionResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.TreasuryService.ListPositionTransactions
+     */
+    readonly listPositionTransactions: {
+      readonly name: "ListPositionTransactions",
+      readonly I: typeof ListPositionTransactionsRequest,
+      readonly O: typeof ListPositionTransactionsResponse,
+      readonly kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc settla.v1.TreasuryService.GetPositionEventHistory
+     */
+    readonly getPositionEventHistory: {
+      readonly name: "GetPositionEventHistory",
+      readonly I: typeof GetPositionEventHistoryRequest,
+      readonly O: typeof GetPositionEventHistoryResponse,
       readonly kind: MethodKind.Unary,
     },
   }

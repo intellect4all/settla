@@ -1012,6 +1012,459 @@ export declare type GetLiquidityReportResponse = Message<"settla.v1.GetLiquidity
 export declare const GetLiquidityReportResponseSchema: GenMessage<GetLiquidityReportResponse>;
 
 /**
+ * @generated from message settla.v1.PositionTransaction
+ */
+export declare type PositionTransaction = Message<"settla.v1.PositionTransaction"> & {
+  /**
+   * UUID
+   *
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * UUID — tenant scope
+   *
+   * @generated from field: string tenant_id = 2;
+   */
+  tenantId: string;
+
+  /**
+   * TOP_UP, WITHDRAWAL, DEPOSIT_CREDIT, INTERNAL_REBALANCE
+   *
+   * @generated from field: string type = 3;
+   */
+  type: string;
+
+  /**
+   * @generated from field: string currency = 4;
+   */
+  currency: string;
+
+  /**
+   * @generated from field: string location = 5;
+   */
+  location: string;
+
+  /**
+   * Decimal string
+   *
+   * @generated from field: string amount = 6;
+   */
+  amount: string;
+
+  /**
+   * PENDING, PROCESSING, COMPLETED, FAILED
+   *
+   * @generated from field: string status = 7;
+   */
+  status: string;
+
+  /**
+   * bank_transfer, crypto, internal
+   *
+   * @generated from field: string method = 8;
+   */
+  method: string;
+
+  /**
+   * bank account ref or crypto address (withdrawals)
+   *
+   * @generated from field: string destination = 9;
+   */
+  destination: string;
+
+  /**
+   * external reference
+   *
+   * @generated from field: string reference = 10;
+   */
+  reference: string;
+
+  /**
+   * @generated from field: string failure_reason = 11;
+   */
+  failureReason: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 12;
+   */
+  createdAt?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp updated_at = 13;
+   */
+  updatedAt?: Timestamp;
+};
+
+/**
+ * Describes the message settla.v1.PositionTransaction.
+ * Use `create(PositionTransactionSchema)` to create a new message.
+ */
+export declare const PositionTransactionSchema: GenMessage<PositionTransaction>;
+
+/**
+ * @generated from message settla.v1.RequestTopUpRequest
+ */
+export declare type RequestTopUpRequest = Message<"settla.v1.RequestTopUpRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string currency = 2;
+   */
+  currency: string;
+
+  /**
+   * @generated from field: string location = 3;
+   */
+  location: string;
+
+  /**
+   * Decimal string — positive
+   *
+   * @generated from field: string amount = 4;
+   */
+  amount: string;
+
+  /**
+   * bank_transfer, crypto, internal
+   *
+   * @generated from field: string method = 5;
+   */
+  method: string;
+};
+
+/**
+ * Describes the message settla.v1.RequestTopUpRequest.
+ * Use `create(RequestTopUpRequestSchema)` to create a new message.
+ */
+export declare const RequestTopUpRequestSchema: GenMessage<RequestTopUpRequest>;
+
+/**
+ * @generated from message settla.v1.RequestWithdrawalRequest
+ */
+export declare type RequestWithdrawalRequest = Message<"settla.v1.RequestWithdrawalRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string currency = 2;
+   */
+  currency: string;
+
+  /**
+   * @generated from field: string location = 3;
+   */
+  location: string;
+
+  /**
+   * Decimal string — positive
+   *
+   * @generated from field: string amount = 4;
+   */
+  amount: string;
+
+  /**
+   * bank_transfer, crypto
+   *
+   * @generated from field: string method = 5;
+   */
+  method: string;
+
+  /**
+   * bank account ref or crypto address
+   *
+   * @generated from field: string destination = 6;
+   */
+  destination: string;
+};
+
+/**
+ * Describes the message settla.v1.RequestWithdrawalRequest.
+ * Use `create(RequestWithdrawalRequestSchema)` to create a new message.
+ */
+export declare const RequestWithdrawalRequestSchema: GenMessage<RequestWithdrawalRequest>;
+
+/**
+ * @generated from message settla.v1.RequestTopUpResponse
+ */
+export declare type RequestTopUpResponse = Message<"settla.v1.RequestTopUpResponse"> & {
+  /**
+   * @generated from field: settla.v1.PositionTransaction transaction = 1;
+   */
+  transaction?: PositionTransaction;
+};
+
+/**
+ * Describes the message settla.v1.RequestTopUpResponse.
+ * Use `create(RequestTopUpResponseSchema)` to create a new message.
+ */
+export declare const RequestTopUpResponseSchema: GenMessage<RequestTopUpResponse>;
+
+/**
+ * @generated from message settla.v1.RequestWithdrawalResponse
+ */
+export declare type RequestWithdrawalResponse = Message<"settla.v1.RequestWithdrawalResponse"> & {
+  /**
+   * @generated from field: settla.v1.PositionTransaction transaction = 1;
+   */
+  transaction?: PositionTransaction;
+};
+
+/**
+ * Describes the message settla.v1.RequestWithdrawalResponse.
+ * Use `create(RequestWithdrawalResponseSchema)` to create a new message.
+ */
+export declare const RequestWithdrawalResponseSchema: GenMessage<RequestWithdrawalResponse>;
+
+/**
+ * @generated from message settla.v1.GetPositionTransactionResponse
+ */
+export declare type GetPositionTransactionResponse = Message<"settla.v1.GetPositionTransactionResponse"> & {
+  /**
+   * @generated from field: settla.v1.PositionTransaction transaction = 1;
+   */
+  transaction?: PositionTransaction;
+};
+
+/**
+ * Describes the message settla.v1.GetPositionTransactionResponse.
+ * Use `create(GetPositionTransactionResponseSchema)` to create a new message.
+ */
+export declare const GetPositionTransactionResponseSchema: GenMessage<GetPositionTransactionResponse>;
+
+/**
+ * @generated from message settla.v1.GetPositionTransactionRequest
+ */
+export declare type GetPositionTransactionRequest = Message<"settla.v1.GetPositionTransactionRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * UUID
+   *
+   * @generated from field: string transaction_id = 2;
+   */
+  transactionId: string;
+};
+
+/**
+ * Describes the message settla.v1.GetPositionTransactionRequest.
+ * Use `create(GetPositionTransactionRequestSchema)` to create a new message.
+ */
+export declare const GetPositionTransactionRequestSchema: GenMessage<GetPositionTransactionRequest>;
+
+/**
+ * @generated from message settla.v1.ListPositionTransactionsRequest
+ */
+export declare type ListPositionTransactionsRequest = Message<"settla.v1.ListPositionTransactionsRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: int32 limit = 2;
+   */
+  limit: number;
+
+  /**
+   * @generated from field: int32 offset = 3;
+   */
+  offset: number;
+};
+
+/**
+ * Describes the message settla.v1.ListPositionTransactionsRequest.
+ * Use `create(ListPositionTransactionsRequestSchema)` to create a new message.
+ */
+export declare const ListPositionTransactionsRequestSchema: GenMessage<ListPositionTransactionsRequest>;
+
+/**
+ * @generated from message settla.v1.ListPositionTransactionsResponse
+ */
+export declare type ListPositionTransactionsResponse = Message<"settla.v1.ListPositionTransactionsResponse"> & {
+  /**
+   * @generated from field: repeated settla.v1.PositionTransaction transactions = 1;
+   */
+  transactions: PositionTransaction[];
+
+  /**
+   * @generated from field: int32 total_count = 2;
+   */
+  totalCount: number;
+};
+
+/**
+ * Describes the message settla.v1.ListPositionTransactionsResponse.
+ * Use `create(ListPositionTransactionsResponseSchema)` to create a new message.
+ */
+export declare const ListPositionTransactionsResponseSchema: GenMessage<ListPositionTransactionsResponse>;
+
+/**
+ * @generated from message settla.v1.PositionEventEntry
+ */
+export declare type PositionEventEntry = Message<"settla.v1.PositionEventEntry"> & {
+  /**
+   * UUID
+   *
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * UUID
+   *
+   * @generated from field: string position_id = 2;
+   */
+  positionId: string;
+
+  /**
+   * UUID
+   *
+   * @generated from field: string tenant_id = 3;
+   */
+  tenantId: string;
+
+  /**
+   * CREDIT, DEBIT, RESERVE, RELEASE, COMMIT, CONSUME
+   *
+   * @generated from field: string event_type = 4;
+   */
+  eventType: string;
+
+  /**
+   * Decimal string
+   *
+   * @generated from field: string amount = 5;
+   */
+  amount: string;
+
+  /**
+   * Decimal string
+   *
+   * @generated from field: string balance_after = 6;
+   */
+  balanceAfter: string;
+
+  /**
+   * Decimal string
+   *
+   * @generated from field: string locked_after = 7;
+   */
+  lockedAfter: string;
+
+  /**
+   * UUID
+   *
+   * @generated from field: string reference_id = 8;
+   */
+  referenceId: string;
+
+  /**
+   * deposit_session, bank_deposit, position_transaction, transfer
+   *
+   * @generated from field: string reference_type = 9;
+   */
+  referenceType: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp recorded_at = 10;
+   */
+  recordedAt?: Timestamp;
+};
+
+/**
+ * Describes the message settla.v1.PositionEventEntry.
+ * Use `create(PositionEventEntrySchema)` to create a new message.
+ */
+export declare const PositionEventEntrySchema: GenMessage<PositionEventEntry>;
+
+/**
+ * @generated from message settla.v1.GetPositionEventHistoryRequest
+ */
+export declare type GetPositionEventHistoryRequest = Message<"settla.v1.GetPositionEventHistoryRequest"> & {
+  /**
+   * UUID — required, tenant scope
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId: string;
+
+  /**
+   * @generated from field: string currency = 2;
+   */
+  currency: string;
+
+  /**
+   * @generated from field: string location = 3;
+   */
+  location: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp from = 4;
+   */
+  from?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp to = 5;
+   */
+  to?: Timestamp;
+
+  /**
+   * @generated from field: int32 limit = 6;
+   */
+  limit: number;
+
+  /**
+   * @generated from field: int32 offset = 7;
+   */
+  offset: number;
+};
+
+/**
+ * Describes the message settla.v1.GetPositionEventHistoryRequest.
+ * Use `create(GetPositionEventHistoryRequestSchema)` to create a new message.
+ */
+export declare const GetPositionEventHistoryRequestSchema: GenMessage<GetPositionEventHistoryRequest>;
+
+/**
+ * @generated from message settla.v1.GetPositionEventHistoryResponse
+ */
+export declare type GetPositionEventHistoryResponse = Message<"settla.v1.GetPositionEventHistoryResponse"> & {
+  /**
+   * @generated from field: repeated settla.v1.PositionEventEntry events = 1;
+   */
+  events: PositionEventEntry[];
+
+  /**
+   * @generated from field: int32 total_count = 2;
+   */
+  totalCount: number;
+};
+
+/**
+ * Describes the message settla.v1.GetPositionEventHistoryResponse.
+ * Use `create(GetPositionEventHistoryResponseSchema)` to create a new message.
+ */
+export declare const GetPositionEventHistoryResponseSchema: GenMessage<GetPositionEventHistoryResponse>;
+
+/**
  * @generated from message settla.v1.Account
  */
 export declare type Account = Message<"settla.v1.Account"> & {
@@ -1783,6 +2236,46 @@ export declare const TreasuryService: GenService<{
     methodKind: "unary";
     input: typeof GetLiquidityReportRequestSchema;
     output: typeof GetLiquidityReportResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.TreasuryService.RequestTopUp
+   */
+  requestTopUp: {
+    methodKind: "unary";
+    input: typeof RequestTopUpRequestSchema;
+    output: typeof RequestTopUpResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.TreasuryService.RequestWithdrawal
+   */
+  requestWithdrawal: {
+    methodKind: "unary";
+    input: typeof RequestWithdrawalRequestSchema;
+    output: typeof RequestWithdrawalResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.TreasuryService.GetPositionTransaction
+   */
+  getPositionTransaction: {
+    methodKind: "unary";
+    input: typeof GetPositionTransactionRequestSchema;
+    output: typeof GetPositionTransactionResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.TreasuryService.ListPositionTransactions
+   */
+  listPositionTransactions: {
+    methodKind: "unary";
+    input: typeof ListPositionTransactionsRequestSchema;
+    output: typeof ListPositionTransactionsResponseSchema;
+  },
+  /**
+   * @generated from rpc settla.v1.TreasuryService.GetPositionEventHistory
+   */
+  getPositionEventHistory: {
+    methodKind: "unary";
+    input: typeof GetPositionEventHistoryRequestSchema;
+    output: typeof GetPositionEventHistoryResponseSchema;
   },
 }>;
 
