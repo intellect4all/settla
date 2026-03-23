@@ -1,6 +1,6 @@
 -- ============================================================================
 -- Migration 000014: Scale-critical indexes for 50M transactions/day
--- All indexes use CONCURRENTLY to avoid table locks during creation.
+-- Note: CONCURRENTLY removed because golang-migrate runs migrations in transactions.
 -- ============================================================================
 
 -- 1. Provider transaction external_id lookup (webhook idempotency checks)
