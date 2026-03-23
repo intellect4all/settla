@@ -311,6 +311,6 @@ WHERE status = 'pending'
 ORDER BY created_at ASC
 LIMIT @batch_size;
 
--- name: ListActiveTenantIDs :many
--- List all active tenant IDs for the snapshot scheduler.
-SELECT id FROM tenants WHERE status = 'ACTIVE';
+-- name: ListActiveTenantIDsPaginated :many
+-- List active tenant IDs with pagination for batch processing.
+SELECT id FROM tenants WHERE status = 'ACTIVE' ORDER BY id LIMIT $1 OFFSET $2;

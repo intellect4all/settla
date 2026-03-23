@@ -44,4 +44,30 @@ WHERE id = $1;
 
 -- name: ListTenantsBySettlementModel :many
 SELECT * FROM tenants
-WHERE settlement_model = $1;
+WHERE settlement_model = $1
+ORDER BY id
+LIMIT $2 OFFSET $3;
+
+-- name: ListActiveTenantIDsBySettlementModel :many
+-- Cursor-based pagination: pass uuid.Nil for the first page.
+SELECT id FROM tenants
+WHERE settlement_model = $1 AND status = 'ACTIVE' AND id > $2
+ORDER BY id
+LIMIT $3;
+
+-- name: CountActiveTenantsBySettlementModel :one
+SELECT count(*) FROM tenants
+WHERE settlement_model = $1 AND status = 'ACTIVE';
+
+-- name: AggregateCompletedTransfersByPeriod :many
+SELECT source_currency, dest_currency,
+       SUM(source_amount)::NUMERIC(28,8) AS total_source,
+       SUM(dest_amount)::NUMERIC(28,8) AS total_dest,
+       COUNT(*) AS transfer_count,
+       SUM(COALESCE((fees->>'total_usd')::NUMERIC(28,8), 0))::NUMERIC(28,8) AS total_fees_usd
+FROM transfers
+WHERE tenant_id = $1
+  AND status = 'COMPLETED'
+  AND completed_at >= $2
+  AND completed_at < $3
+GROUP BY source_currency, dest_currency;

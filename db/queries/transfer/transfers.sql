@@ -15,6 +15,10 @@ SELECT * FROM transfers
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: GetTransferByID :one
+-- SECURITY NOTE: This query intentionally omits tenant_id for use by internal
+-- worker pipelines where the tenant_id comes from the trusted event payload.
+-- Never expose this query path to tenant-facing API endpoints. All API endpoints
+-- must use GetTransfer (which includes tenant_id) instead.
 SELECT * FROM transfers
 WHERE id = $1;
 
@@ -113,7 +117,10 @@ SET dest_amount = $3, fx_rate = $4, stable_coin = $5, stable_amount = $6, update
 WHERE id = $1 AND tenant_id = $2;
 
 -- name: SumDailyVolumeByTenant :one
-SELECT COALESCE(SUM(source_amount), 0)::NUMERIC(28,8) AS total_volume
+-- Sums the USD-equivalent volume (stable_amount) for daily limit enforcement.
+-- stable_amount is the intermediate stablecoin amount (USDT, pegged 1:1 to USD),
+-- set from the quote at transfer creation time.
+SELECT COALESCE(SUM(stable_amount), 0)::NUMERIC(28,8) AS total_volume
 FROM transfers
 WHERE tenant_id = $1
   AND created_at >= $2
@@ -231,3 +238,20 @@ WHERE tenant_id = @tenant_id
        COALESCE(idempotency_key, '') ILIKE '%' || @search_query || '%')
 ORDER BY updated_at DESC
 LIMIT @page_size;
+
+-- name: TransitionTransferStatus :execresult
+-- Atomically updates transfer status with optimistic lock (version check) and
+-- sets status-specific timestamps. Used by outbox TransitionWithOutbox.
+UPDATE transfers
+SET status = @new_status::transfer_status_enum,
+    version = version + 1,
+    updated_at = now(),
+    funded_at    = CASE WHEN @new_status::text = 'FUNDED'    THEN now() ELSE funded_at    END,
+    completed_at = CASE WHEN @new_status::text = 'COMPLETED' THEN now() ELSE completed_at END,
+    failed_at    = CASE WHEN @new_status::text = 'FAILED'    THEN now() ELSE failed_at    END
+WHERE id = @id AND version = @expected_version;
+
+-- name: CountPendingTransfers :one
+-- Counts non-terminal transfers for a tenant (used for per-tenant resource limits).
+SELECT COUNT(*)::int FROM transfers
+WHERE tenant_id = $1 AND status NOT IN ('COMPLETED', 'FAILED', 'REFUNDED');
