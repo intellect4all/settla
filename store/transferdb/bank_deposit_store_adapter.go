@@ -32,7 +32,7 @@ type BankDepositStoreAdapter struct {
 // NewBankDepositStoreAdapter creates a new BankDepositStoreAdapter.
 func NewBankDepositStoreAdapter(q *Queries, pool TxBeginner) *BankDepositStoreAdapter {
 	a := &BankDepositStoreAdapter{q: q, pool: pool}
-	a.rlsEnabled = (a.appPool != nil)
+	a.rlsEnabled = a.appPool != nil
 	if !a.rlsEnabled {
 		slog.Warn("settla-store: BankDepositStoreAdapter RLS pool not configured, tenant isolation relies on application-layer filters only")
 	}
@@ -42,7 +42,7 @@ func NewBankDepositStoreAdapter(q *Queries, pool TxBeginner) *BankDepositStoreAd
 // WithBankDepositAppPool configures the RLS-enforced pool for tenant-scoped reads.
 func (s *BankDepositStoreAdapter) WithBankDepositAppPool(pool *pgxpool.Pool) *BankDepositStoreAdapter {
 	s.appPool = pool
-	s.rlsEnabled = (pool != nil)
+	s.rlsEnabled = pool != nil
 	return s
 }
 
@@ -53,7 +53,7 @@ func bankDepositSessionFromRow(row BankDepositSession) domain.BankDepositSession
 	sess := domain.BankDepositSession{
 		ID:               row.ID,
 		TenantID:         row.TenantID,
-		IdempotencyKey:   row.IdempotencyKey.String,
+		IdempotencyKey:   domain.IdempotencyKey(row.IdempotencyKey.String),
 		Status:           domain.BankDepositSessionStatus(string(row.Status)),
 		Version:          row.Version,
 		BankingPartnerID: row.BankingPartnerID,
@@ -154,7 +154,7 @@ func bankDepositTxFromRow(row BankDepositTransaction) domain.BankDepositTransact
 	}
 }
 
-// ── Composite transactional writes (raw SQL) ─────────────────────────────────
+// ── Composite transactional writes ────────────────────────────────────────────
 
 // CreateSessionWithOutbox atomically creates a bank deposit session, registers the
 // virtual account in the account index, and inserts outbox entries.
@@ -181,44 +181,45 @@ func (s *BankDepositStoreAdapter) CreateSessionWithOutbox(ctx context.Context, s
 		metadataJSON = []byte("{}")
 	}
 
-	err = tx.QueryRow(ctx,
-		`INSERT INTO bank_deposit_sessions (
-			id, tenant_id, idempotency_key, status, version,
-			banking_partner_id, account_number, account_name, sort_code, iban, account_type,
-			currency, expected_amount, min_amount, max_amount, received_amount,
-			fee_amount, net_amount, mismatch_policy, collection_fee_bps,
-			settlement_pref, expires_at, metadata
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16,
-			$17, $18, $19, $20,
-			$21, $22, $23
-		) RETURNING created_at, updated_at`,
-		session.ID, session.TenantID, textFromString(session.IdempotencyKey),
-		string(session.Status), session.Version,
-		session.BankingPartnerID, session.AccountNumber, session.AccountName,
-		session.SortCode, session.IBAN, string(session.AccountType),
-		string(session.Currency), numericFromDecimal(session.ExpectedAmount),
-		numericFromDecimal(session.MinAmount), numericFromDecimal(session.MaxAmount),
-		numericFromDecimal(session.ReceivedAmount),
-		numericFromDecimal(session.FeeAmount), numericFromDecimal(session.NetAmount),
-		string(session.MismatchPolicy), int32(session.CollectionFeeBPS),
-		string(session.SettlementPref), session.ExpiresAt, metadataJSON,
-	).Scan(&session.CreatedAt, &session.UpdatedAt)
+	qtx := s.q.WithTx(tx)
+	row, err := qtx.CreateBankDepositSessionFull(ctx, CreateBankDepositSessionFullParams{
+		ID:               session.ID,
+		TenantID:         session.TenantID,
+		IdempotencyKey:   textFromString(string(session.IdempotencyKey)),
+		Status:           BankDepositSessionStatusEnum(session.Status),
+		Version:          session.Version,
+		BankingPartnerID: session.BankingPartnerID,
+		AccountNumber:    session.AccountNumber,
+		AccountName:      session.AccountName,
+		SortCode:         session.SortCode,
+		Iban:             session.IBAN,
+		AccountType:      VirtualAccountTypeEnum(session.AccountType),
+		Currency:         string(session.Currency),
+		ExpectedAmount:   numericFromDecimal(session.ExpectedAmount),
+		MinAmount:        numericFromDecimal(session.MinAmount),
+		MaxAmount:        numericFromDecimal(session.MaxAmount),
+		ReceivedAmount:   numericFromDecimal(session.ReceivedAmount),
+		FeeAmount:        numericFromDecimal(session.FeeAmount),
+		NetAmount:        numericFromDecimal(session.NetAmount),
+		MismatchPolicy:   PaymentMismatchPolicyEnum(session.MismatchPolicy),
+		CollectionFeeBps: int32(session.CollectionFeeBPS),
+		SettlementPref:   SettlementPreferenceEnum(session.SettlementPref),
+		ExpiresAt:        session.ExpiresAt,
+		Metadata:         metadataJSON,
+	})
 	if err != nil {
 		return fmt.Errorf("settla-bank-deposit-store: creating session: %w", err)
 	}
+	session.CreatedAt = row.CreatedAt
+	session.UpdatedAt = row.UpdatedAt
 
-	// 2. INSERT virtual account index entry
-	_, err = tx.Exec(ctx,
-		`INSERT INTO virtual_account_index (account_number, tenant_id, session_id, account_type)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (account_number) DO UPDATE SET session_id = $3, account_type = $4`,
-		session.AccountNumber, session.TenantID,
-		pgtype.UUID{Bytes: session.ID, Valid: true},
-		string(session.AccountType),
-	)
+	// 2. INSERT virtual account index entry (upsert)
+	err = qtx.UpsertVirtualAccountIndex(ctx, UpsertVirtualAccountIndexParams{
+		AccountNumber: session.AccountNumber,
+		TenantID:      session.TenantID,
+		SessionID:     pgtype.UUID{Bytes: session.ID, Valid: true},
+		AccountType:   VirtualAccountTypeEnum(session.AccountType),
+	})
 	if err != nil {
 		return fmt.Errorf("settla-bank-deposit-store: inserting virtual account index: %w", err)
 	}
@@ -230,7 +231,6 @@ func (s *BankDepositStoreAdapter) CreateSessionWithOutbox(ctx context.Context, s
 				entries[i].AggregateID = session.ID
 			}
 		}
-		qtx := s.q.WithTx(tx)
 		params := outboxEntriesToParams(entries)
 		if _, err := qtx.InsertOutboxEntries(ctx, params); err != nil {
 			return fmt.Errorf("settla-bank-deposit-store: insert outbox entries: %w", err)
@@ -262,42 +262,24 @@ func (s *BankDepositStoreAdapter) TransitionWithOutbox(ctx context.Context, sess
 	}
 
 	// 1. UPDATE session with optimistic lock + status-specific timestamps
+	qtx := s.q.WithTx(tx)
 	statusStr := string(session.Status)
-	tag, err := tx.Exec(ctx,
-		`UPDATE bank_deposit_sessions
-		 SET status = $1::bank_deposit_session_status_enum,
-		     version = $3,
-		     updated_at = now(),
-		     received_amount = $4,
-		     fee_amount = $5,
-		     net_amount = $6,
-		     settlement_transfer_id = $7,
-		     payer_name = COALESCE(NULLIF($8, ''), payer_name),
-		     payer_reference = COALESCE(NULLIF($9, ''), payer_reference),
-		     bank_reference = COALESCE(NULLIF($10, ''), bank_reference),
-		     payment_received_at = CASE WHEN $14 = 'PAYMENT_RECEIVED' AND payment_received_at IS NULL THEN now() ELSE payment_received_at END,
-		     credited_at  = CASE WHEN $14 = 'CREDITED'  AND credited_at IS NULL THEN now() ELSE credited_at END,
-		     settled_at   = CASE WHEN $14 = 'SETTLED'   AND settled_at IS NULL THEN now() ELSE settled_at END,
-		     expired_at   = CASE WHEN $14 = 'EXPIRED'   AND expired_at IS NULL THEN now() ELSE expired_at END,
-		     failed_at    = CASE WHEN $14 = 'FAILED'    AND failed_at IS NULL THEN now() ELSE failed_at END,
-		     failure_reason = COALESCE(NULLIF($11, ''), failure_reason),
-		     failure_code   = COALESCE(NULLIF($12, ''), failure_code)
-		 WHERE id = $2 AND version = $13`,
-		statusStr,
-		session.ID,
-		session.Version,
-		numericFromDecimal(session.ReceivedAmount),
-		numericFromDecimal(session.FeeAmount),
-		numericFromDecimal(session.NetAmount),
-		uuidFromPtr(session.SettlementTransferID),
-		session.PayerName,
-		session.PayerReference,
-		session.BankReference,
-		session.FailureReason,
-		session.FailureCode,
-		session.Version-1, // expected version is pre-increment
-		statusStr,         // $14: duplicate as plain text for CASE comparisons
-	)
+	tag, err := qtx.TransitionBankDepositSession(ctx, TransitionBankDepositSessionParams{
+		NewStatus:            BankDepositSessionStatusEnum(session.Status),
+		ID:                   session.ID,
+		NewVersion:           session.Version,
+		ReceivedAmount:       numericFromDecimal(session.ReceivedAmount),
+		FeeAmount:            numericFromDecimal(session.FeeAmount),
+		NetAmount:            numericFromDecimal(session.NetAmount),
+		SettlementTransferID: uuidFromPtr(session.SettlementTransferID),
+		PayerName:            session.PayerName,
+		PayerReference:       session.PayerReference,
+		BankReferenceVal:     session.BankReference,
+		StatusText:           statusStr,
+		FailureReason:        session.FailureReason,
+		FailureCode:          session.FailureCode,
+		ExpectedVersion:      session.Version - 1,
+	})
 	if err != nil {
 		return fmt.Errorf("settla-bank-deposit-store: update session %s: %w", session.ID, err)
 	}
@@ -307,7 +289,6 @@ func (s *BankDepositStoreAdapter) TransitionWithOutbox(ctx context.Context, sess
 
 	// 2. Batch INSERT outbox entries
 	if len(entries) > 0 {
-		qtx := s.q.WithTx(tx)
 		params := outboxEntriesToParams(entries)
 		if _, err := qtx.InsertOutboxEntries(ctx, params); err != nil {
 			return fmt.Errorf("settla-bank-deposit-store: insert outbox entries for session %s: %w", session.ID, err)
@@ -324,6 +305,27 @@ func (s *BankDepositStoreAdapter) TransitionWithOutbox(ctx context.Context, sess
 
 // GetSession retrieves a bank deposit session by tenant and ID.
 func (s *BankDepositStoreAdapter) GetSession(ctx context.Context, tenantID, sessionID uuid.UUID) (*domain.BankDepositSession, error) {
+	if s.appPool != nil {
+		var result *domain.BankDepositSession
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetBankDepositSession(ctx, GetBankDepositSessionParams{
+				ID:       sessionID,
+				TenantID: tenantID,
+			})
+			if err != nil {
+				return err
+			}
+			sess := bankDepositSessionFromRow(row)
+			result = &sess
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: getting session %s: %w", sessionID, err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetSession", "tenant_id", tenantID)
 	row, err := s.q.GetBankDepositSession(ctx, GetBankDepositSessionParams{
 		ID:       sessionID,
 		TenantID: tenantID,
@@ -339,10 +341,31 @@ func (s *BankDepositStoreAdapter) GetSession(ctx context.Context, tenantID, sess
 }
 
 // GetSessionByIdempotencyKey retrieves a session by tenant and idempotency key.
-func (s *BankDepositStoreAdapter) GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.BankDepositSession, error) {
+func (s *BankDepositStoreAdapter) GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key domain.IdempotencyKey) (*domain.BankDepositSession, error) {
+	if s.appPool != nil {
+		var result *domain.BankDepositSession
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetBankDepositSessionByIdempotencyKey(ctx, GetBankDepositSessionByIdempotencyKeyParams{
+				TenantID:       tenantID,
+				IdempotencyKey: textFromString(string(key)),
+			})
+			if err != nil {
+				return err
+			}
+			sess := bankDepositSessionFromRow(row)
+			result = &sess
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: getting session by idempotency key: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetSessionByIdempotencyKey", "tenant_id", tenantID)
 	row, err := s.q.GetBankDepositSessionByIdempotencyKey(ctx, GetBankDepositSessionByIdempotencyKeyParams{
 		TenantID:       tenantID,
-		IdempotencyKey: textFromString(key),
+		IdempotencyKey: textFromString(string(key)),
 	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -369,6 +392,30 @@ func (s *BankDepositStoreAdapter) GetSessionByAccountNumber(ctx context.Context,
 
 // ListSessions retrieves bank deposit sessions for a tenant with pagination.
 func (s *BankDepositStoreAdapter) ListSessions(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.BankDepositSession, error) {
+	if s.appPool != nil {
+		var sessions []domain.BankDepositSession
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).ListBankDepositSessionsByTenant(ctx, ListBankDepositSessionsByTenantParams{
+				TenantID: tenantID,
+				Limit:    int32(limit),
+				Offset:   int32(offset),
+			})
+			if err != nil {
+				return err
+			}
+			sessions = make([]domain.BankDepositSession, 0, len(rows))
+			for _, row := range rows {
+				sessions = append(sessions, bankDepositSessionFromRow(row))
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: listing sessions: %w", err)
+		}
+		return sessions, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListSessions", "tenant_id", tenantID)
 	rows, err := s.q.ListBankDepositSessionsByTenant(ctx, ListBankDepositSessionsByTenantParams{
 		TenantID: tenantID,
 		Limit:    int32(limit),
@@ -386,10 +433,35 @@ func (s *BankDepositStoreAdapter) ListSessions(ctx context.Context, tenantID uui
 
 // DispenseVirtualAccount obtains a virtual account from the pre-provisioned pool.
 func (s *BankDepositStoreAdapter) DispenseVirtualAccount(ctx context.Context, tenantID uuid.UUID, currency string) (*domain.VirtualAccountPool, error) {
+	if s.appPool != nil {
+		var result *domain.VirtualAccountPool
+		err := rls.WithTenantTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).DispenseVirtualAccount(ctx, DispenseVirtualAccountParams{
+				TenantID:  tenantID,
+				Currency:  currency,
+				SessionID: pgtype.UUID{Valid: false},
+			})
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					return nil // no available accounts
+				}
+				return err
+			}
+			va := virtualAccountPoolFromRow(row)
+			result = &va
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: dispensing virtual account: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "DispenseVirtualAccount", "tenant_id", tenantID)
 	row, err := s.q.DispenseVirtualAccount(ctx, DispenseVirtualAccountParams{
-		TenantID: tenantID,
-		Currency: currency,
-		SessionID: pgtype.UUID{Valid: false}, // no session yet
+		TenantID:  tenantID,
+		Currency:  currency,
+		SessionID: pgtype.UUID{Valid: false},
 	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -411,7 +483,7 @@ func (s *BankDepositStoreAdapter) RecycleVirtualAccount(ctx context.Context, acc
 
 // CreateBankDepositTx records a bank credit transaction linked to a session.
 func (s *BankDepositStoreAdapter) CreateBankDepositTx(ctx context.Context, dtx *domain.BankDepositTransaction) error {
-	result, err := s.q.CreateBankDepositTransaction(ctx, CreateBankDepositTransactionParams{
+	params := CreateBankDepositTransactionParams{
 		SessionID:          dtx.SessionID,
 		TenantID:           dtx.TenantID,
 		BankReference:      dtx.BankReference,
@@ -420,7 +492,22 @@ func (s *BankDepositStoreAdapter) CreateBankDepositTx(ctx context.Context, dtx *
 		Amount:             numericFromDecimal(dtx.Amount),
 		Currency:           string(dtx.Currency),
 		ReceivedAt:         dtx.ReceivedAt,
-	})
+	}
+
+	if s.appPool != nil {
+		return rls.WithTenantTx(ctx, s.appPool, dtx.TenantID, func(tx pgx.Tx) error {
+			result, err := s.q.WithTx(tx).CreateBankDepositTransaction(ctx, params)
+			if err != nil {
+				return fmt.Errorf("settla-bank-deposit-store: creating bank deposit tx: %w", err)
+			}
+			dtx.ID = result.ID
+			dtx.CreatedAt = result.CreatedAt
+			return nil
+		})
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "CreateBankDepositTx", "tenant_id", dtx.TenantID)
+	result, err := s.q.CreateBankDepositTransaction(ctx, params)
 	if err != nil {
 		return fmt.Errorf("settla-bank-deposit-store: creating bank deposit tx: %w", err)
 	}
@@ -457,14 +544,75 @@ func (s *BankDepositStoreAdapter) ListSessionTxs(ctx context.Context, sessionID 
 
 // AccumulateReceived adds an amount to the session's received_amount.
 func (s *BankDepositStoreAdapter) AccumulateReceived(ctx context.Context, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error {
-	if err := s.q.AccumulateBankReceivedAmount(ctx, AccumulateBankReceivedAmountParams{
+	params := AccumulateBankReceivedAmountParams{
 		ID:             sessionID,
 		TenantID:       tenantID,
 		ReceivedAmount: numericFromDecimal(amount),
-	}); err != nil {
-		return fmt.Errorf("settla-bank-deposit-store: accumulating received: %w", err)
 	}
-	return nil
+
+	if s.appPool != nil {
+		return rls.WithTenantTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			return s.q.WithTx(tx).AccumulateBankReceivedAmount(ctx, params)
+		})
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "AccumulateReceived", "tenant_id", tenantID)
+	return s.q.AccumulateBankReceivedAmount(ctx, params)
+}
+
+// RecordBankDepositTx atomically creates a bank deposit transaction and accumulates
+// the received amount on the session in a single database transaction.
+func (s *BankDepositStoreAdapter) RecordBankDepositTx(ctx context.Context, dtx *domain.BankDepositTransaction, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error {
+	createParams := CreateBankDepositTransactionParams{
+		SessionID:          dtx.SessionID,
+		TenantID:           dtx.TenantID,
+		BankReference:      dtx.BankReference,
+		PayerName:          dtx.PayerName,
+		PayerAccountNumber: dtx.PayerAccountNumber,
+		Amount:             numericFromDecimal(dtx.Amount),
+		Currency:           string(dtx.Currency),
+		ReceivedAt:         dtx.ReceivedAt,
+	}
+	accumParams := AccumulateBankReceivedAmountParams{
+		ID:             sessionID,
+		TenantID:       tenantID,
+		ReceivedAmount: numericFromDecimal(amount),
+	}
+
+	if s.appPool != nil {
+		return rls.WithTenantTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			qtx := s.q.WithTx(tx)
+			result, err := qtx.CreateBankDepositTransaction(ctx, createParams)
+			if err != nil {
+				return fmt.Errorf("settla-bank-deposit-store: record bank deposit tx: create: %w", err)
+			}
+			dtx.ID = result.ID
+			dtx.CreatedAt = result.CreatedAt
+			if err := qtx.AccumulateBankReceivedAmount(ctx, accumParams); err != nil {
+				return fmt.Errorf("settla-bank-deposit-store: record bank deposit tx: accumulate: %w", err)
+			}
+			return nil
+		})
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "RecordBankDepositTx", "tenant_id", tenantID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("settla-bank-deposit-store: begin record-bank-deposit-tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := s.q.WithTx(tx)
+	result, err := qtx.CreateBankDepositTransaction(ctx, createParams)
+	if err != nil {
+		return fmt.Errorf("settla-bank-deposit-store: record bank deposit tx: create: %w", err)
+	}
+	dtx.ID = result.ID
+	dtx.CreatedAt = result.CreatedAt
+	if err := qtx.AccumulateBankReceivedAmount(ctx, accumParams); err != nil {
+		return fmt.Errorf("settla-bank-deposit-store: record bank deposit tx: accumulate: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // GetExpiredPendingSessions returns sessions in PENDING_PAYMENT with expires_at < now().
@@ -482,6 +630,26 @@ func (s *BankDepositStoreAdapter) GetExpiredPendingSessions(ctx context.Context,
 
 // ListVirtualAccountsByTenant returns all virtual accounts for a tenant.
 func (s *BankDepositStoreAdapter) ListVirtualAccountsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.VirtualAccountPool, error) {
+	if s.appPool != nil {
+		var accounts []domain.VirtualAccountPool
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).ListVirtualAccountsByTenant(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			accounts = make([]domain.VirtualAccountPool, 0, len(rows))
+			for _, row := range rows {
+				accounts = append(accounts, virtualAccountPoolFromRow(row))
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: listing virtual accounts: %w", err)
+		}
+		return accounts, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListVirtualAccountsByTenant", "tenant_id", tenantID)
 	rows, err := s.q.ListVirtualAccountsByTenant(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("settla-bank-deposit-store: listing virtual accounts: %w", err)
@@ -491,6 +659,101 @@ func (s *BankDepositStoreAdapter) ListVirtualAccountsByTenant(ctx context.Contex
 		accounts = append(accounts, virtualAccountPoolFromRow(row))
 	}
 	return accounts, nil
+}
+
+// ListVirtualAccountsPaginated returns a paginated, filtered list of virtual accounts plus total count.
+func (s *BankDepositStoreAdapter) ListVirtualAccountsPaginated(ctx context.Context, params bankdeposit.VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error) {
+	if s.appPool != nil {
+		var accounts []domain.VirtualAccountPool
+		var total int64
+		err := rls.WithTenantReadTx(ctx, s.appPool, params.TenantID, func(tx pgx.Tx) error {
+			qtx := s.q.WithTx(tx)
+			rows, err := qtx.ListVirtualAccountsByTenantPaginated(ctx, ListVirtualAccountsByTenantPaginatedParams{
+				TenantID:    params.TenantID,
+				Currency:    params.Currency,
+				AccountType: params.AccountType,
+				PageLimit:   params.Limit,
+				PageOffset:  params.Offset,
+			})
+			if err != nil {
+				return err
+			}
+			accounts = make([]domain.VirtualAccountPool, 0, len(rows))
+			for _, row := range rows {
+				accounts = append(accounts, virtualAccountPoolFromRow(row))
+			}
+			total, err = qtx.CountVirtualAccountsByTenant(ctx, CountVirtualAccountsByTenantParams{
+				TenantID:    params.TenantID,
+				Currency:    params.Currency,
+				AccountType: params.AccountType,
+			})
+			return err
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("settla-bank-deposit-store: listing virtual accounts paginated: %w", err)
+		}
+		return accounts, total, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListVirtualAccountsPaginated", "tenant_id", params.TenantID)
+	rows, err := s.q.ListVirtualAccountsByTenantPaginated(ctx, ListVirtualAccountsByTenantPaginatedParams{
+		TenantID:    params.TenantID,
+		Currency:    params.Currency,
+		AccountType: params.AccountType,
+		PageLimit:   params.Limit,
+		PageOffset:  params.Offset,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("settla-bank-deposit-store: listing virtual accounts paginated: %w", err)
+	}
+	accounts := make([]domain.VirtualAccountPool, 0, len(rows))
+	for _, row := range rows {
+		accounts = append(accounts, virtualAccountPoolFromRow(row))
+	}
+
+	total, err := s.q.CountVirtualAccountsByTenant(ctx, CountVirtualAccountsByTenantParams{
+		TenantID:    params.TenantID,
+		Currency:    params.Currency,
+		AccountType: params.AccountType,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("settla-bank-deposit-store: counting virtual accounts: %w", err)
+	}
+
+	return accounts, total, nil
+}
+
+// CountAvailableVirtualAccountsByCurrency returns available account counts grouped by currency.
+func (s *BankDepositStoreAdapter) CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) (map[string]int64, error) {
+	if s.appPool != nil {
+		var result map[string]int64
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).CountAvailableVirtualAccountsByCurrency(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			result = make(map[string]int64, len(rows))
+			for _, row := range rows {
+				result[row.Currency] = row.AvailableCount
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-bank-deposit-store: counting available virtual accounts: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "CountAvailableVirtualAccountsByCurrency", "tenant_id", tenantID)
+	rows, err := s.q.CountAvailableVirtualAccountsByCurrency(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("settla-bank-deposit-store: counting available virtual accounts: %w", err)
+	}
+	result := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		result[row.Currency] = row.AvailableCount
+	}
+	return result, nil
 }
 
 // GetVirtualAccountIndexByNumber retrieves the account index entry by account number.
