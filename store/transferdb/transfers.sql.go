@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -46,6 +47,19 @@ func (q *Queries) ClaimProviderTransaction(ctx context.Context, arg ClaimProvide
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const countPendingTransfers = `-- name: CountPendingTransfers :one
+SELECT COUNT(*)::int FROM transfers
+WHERE tenant_id = $1 AND status NOT IN ('COMPLETED', 'FAILED', 'REFUNDED')
+`
+
+// Counts non-terminal transfers for a tenant (used for per-tenant resource limits).
+func (q *Queries) CountPendingTransfers(ctx context.Context, tenantID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countPendingTransfers, tenantID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const countTransfersByTenant = `-- name: CountTransfersByTenant :one
@@ -1224,7 +1238,7 @@ func (q *Queries) ListTransfersInDateRangeCursor(ctx context.Context, arg ListTr
 }
 
 const sumDailyVolumeByTenant = `-- name: SumDailyVolumeByTenant :one
-SELECT COALESCE(SUM(source_amount), 0)::NUMERIC(28,8) AS total_volume
+SELECT COALESCE(SUM(stable_amount), 0)::NUMERIC(28,8) AS total_volume
 FROM transfers
 WHERE tenant_id = $1
   AND created_at >= $2
@@ -1238,11 +1252,37 @@ type SumDailyVolumeByTenantParams struct {
 	CreatedAt_2 time.Time `json:"created_at_2"`
 }
 
+// Sums the USD-equivalent volume (stable_amount) for daily limit enforcement.
+// stable_amount is the intermediate stablecoin amount (USDT, pegged 1:1 to USD),
+// set from the quote at transfer creation time.
 func (q *Queries) SumDailyVolumeByTenant(ctx context.Context, arg SumDailyVolumeByTenantParams) (pgtype.Numeric, error) {
 	row := q.db.QueryRow(ctx, sumDailyVolumeByTenant, arg.TenantID, arg.CreatedAt, arg.CreatedAt_2)
 	var total_volume pgtype.Numeric
 	err := row.Scan(&total_volume)
 	return total_volume, err
+}
+
+const transitionTransferStatus = `-- name: TransitionTransferStatus :execresult
+UPDATE transfers
+SET status = $1::transfer_status_enum,
+    version = version + 1,
+    updated_at = now(),
+    funded_at    = CASE WHEN $1::text = 'FUNDED'    THEN now() ELSE funded_at    END,
+    completed_at = CASE WHEN $1::text = 'COMPLETED' THEN now() ELSE completed_at END,
+    failed_at    = CASE WHEN $1::text = 'FAILED'    THEN now() ELSE failed_at    END
+WHERE id = $2 AND version = $3
+`
+
+type TransitionTransferStatusParams struct {
+	NewStatus       TransferStatusEnum `json:"new_status"`
+	ID              uuid.UUID          `json:"id"`
+	ExpectedVersion int64              `json:"expected_version"`
+}
+
+// Atomically updates transfer status with optimistic lock (version check) and
+// sets status-specific timestamps. Used by outbox TransitionWithOutbox.
+func (q *Queries) TransitionTransferStatus(ctx context.Context, arg TransitionTransferStatusParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, transitionTransferStatus, arg.NewStatus, arg.ID, arg.ExpectedVersion)
 }
 
 const updateProviderTransactionFull = `-- name: UpdateProviderTransactionFull :exec
