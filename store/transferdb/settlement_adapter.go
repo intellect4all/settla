@@ -34,7 +34,7 @@ func NewSettlementAdapter(q *Queries) *SettlementAdapter {
 }
 
 // ListCompletedTransfersByPeriod returns summaries of completed transfers for a tenant
-// within the given time range [start, end).
+// within the given time range [start, end].
 func (a *SettlementAdapter) ListCompletedTransfersByPeriod(
 	ctx context.Context,
 	tenantID uuid.UUID,
@@ -175,9 +175,58 @@ func (a *SettlementAdapter) GetTenant(ctx context.Context, tenantID uuid.UUID) (
 	return tenantFromRow(row)
 }
 
-// ListTenantsBySettlementModel returns all tenants using the given settlement model.
-func (a *SettlementAdapter) ListTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel) ([]domain.Tenant, error) {
-	rows, err := a.q.ListTenantsBySettlementModel(ctx, string(model))
+// ListActiveTenantIDsBySettlementModel returns a cursor-paginated batch of active
+// tenant IDs. Pass uuid.Nil for afterID to start from the beginning.
+func (a *SettlementAdapter) ListActiveTenantIDsBySettlementModel(ctx context.Context, model domain.SettlementModel, limit int32, afterID uuid.UUID) ([]uuid.UUID, error) {
+	return a.q.ListActiveTenantIDsBySettlementModel(ctx, ListActiveTenantIDsBySettlementModelParams{
+		SettlementModel: string(model),
+		ID:              afterID,
+		Limit:           limit,
+	})
+}
+
+// CountActiveTenantsBySettlementModel returns the number of active tenants for a settlement model.
+func (a *SettlementAdapter) CountActiveTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel) (int64, error) {
+	return a.q.CountActiveTenantsBySettlementModel(ctx, string(model))
+}
+
+// AggregateCompletedTransfersByPeriod returns pre-aggregated corridor summaries.
+func (a *SettlementAdapter) AggregateCompletedTransfersByPeriod(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	start, end time.Time,
+) ([]settlement.CorridorAggregate, error) {
+	rows, err := a.q.AggregateCompletedTransfersByPeriod(ctx, AggregateCompletedTransfersByPeriodParams{
+		TenantID:      tenantID,
+		CompletedAt:   pgtype.Timestamptz{Time: start, Valid: true},
+		CompletedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-settlement: aggregating completed transfers: %w", err)
+	}
+
+	aggregates := make([]settlement.CorridorAggregate, 0, len(rows))
+	for _, r := range rows {
+		agg := settlement.CorridorAggregate{
+			SourceCurrency: r.SourceCurrency,
+			DestCurrency:   r.DestCurrency,
+			TotalSource:    decimalFromNumeric(r.TotalSource),
+			TotalDest:      decimalFromNumeric(r.TotalDest),
+			TransferCount:  r.TransferCount,
+			TotalFeesUSD:   decimalFromNumeric(r.TotalFeesUsd),
+		}
+		aggregates = append(aggregates, agg)
+	}
+	return aggregates, nil
+}
+
+// ListTenantsBySettlementModel returns tenants using the given settlement model, paginated.
+func (a *SettlementAdapter) ListTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel, limit, offset int32) ([]domain.Tenant, error) {
+	rows, err := a.q.ListTenantsBySettlementModel(ctx, ListTenantsBySettlementModelParams{
+		SettlementModel: string(model),
+		Limit:           limit,
+		Offset:          offset,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-settlement: listing tenants by settlement model: %w", err)
 	}

@@ -26,12 +26,28 @@ import (
 //   - reconciliation.SettlementFeeStore
 //   - reconciliation.ReportStore
 type ReconciliationAdapter struct {
-	q *Queries
+	q             *Queries
+	tenantForEach func(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 }
 
 // NewReconciliationAdapter creates a new ReconciliationAdapter backed by the given queries.
 func NewReconciliationAdapter(q *Queries) *ReconciliationAdapter {
-	return &ReconciliationAdapter{q: q}
+	a := &ReconciliationAdapter{q: q}
+	// Default: paginated Postgres fallback
+	a.tenantForEach = func(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error {
+		fetcher := func(ctx context.Context, limit, offset int32) ([]uuid.UUID, error) {
+			return q.ListActiveTenantIDsPaginated(ctx, ListActiveTenantIDsPaginatedParams{
+				Limit: limit, Offset: offset,
+			})
+		}
+		return domain.ForEachTenantBatch(ctx, fetcher, batchSize, fn)
+	}
+	return a
+}
+
+// WithTenantForEach overrides the default Postgres-based tenant iteration.
+func (a *ReconciliationAdapter) WithTenantForEach(fn func(ctx context.Context, batchSize int32, fnInner func(ids []uuid.UUID) error) error) {
+	a.tenantForEach = fn
 }
 
 // Compile-time interface checks.
@@ -128,13 +144,9 @@ func (a *ReconciliationAdapter) GetTenantSlug(ctx context.Context, tenantID uuid
 	return slug, nil
 }
 
-// ListActiveTenantIDs returns the UUIDs of all tenants with status 'active'.
-func (a *ReconciliationAdapter) ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
-	ids, err := a.q.ListActiveTenantIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("settla-reconciliation-store: listing active tenants: %w", err)
-	}
-	return ids, nil
+// ForEachActiveTenant iterates over active tenants in batches.
+func (a *ReconciliationAdapter) ForEachActiveTenant(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error {
+	return a.tenantForEach(ctx, batchSize, fn)
 }
 
 // GetLatestNetSettlement returns the most recently created net settlement across

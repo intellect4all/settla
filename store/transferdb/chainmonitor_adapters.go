@@ -2,6 +2,7 @@ package transferdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,14 +32,14 @@ func NewCheckpointStoreAdapter(q *Queries) *CheckpointStoreAdapter {
 func (s *CheckpointStoreAdapter) GetCheckpoint(ctx context.Context, chain string) (*domain.BlockCheckpoint, error) {
 	row, err := s.q.GetBlockCheckpoint(ctx, chain)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("settla-checkpoint-store: getting checkpoint for %s: %w", chain, err)
 	}
 	return &domain.BlockCheckpoint{
 		ID:          row.ID,
-		Chain:       row.Chain,
+		Chain:       domain.CryptoChain(row.Chain),
 		BlockNumber: row.BlockNumber,
 		BlockHash:   row.BlockHash,
 		UpdatedAt:   row.UpdatedAt,
@@ -127,7 +128,7 @@ func (s *TokenStoreAdapter) ListTokensByChain(ctx context.Context, chain string)
 	for i, row := range rows {
 		tokens[i] = domain.Token{
 			ID:              row.ID,
-			Chain:           row.Chain,
+			Chain:           domain.CryptoChain(row.Chain),
 			Symbol:          row.Symbol,
 			ContractAddress: row.ContractAddress,
 			Decimals:        row.Decimals,
@@ -169,7 +170,7 @@ func (s *OutboxWriterAdapter) WriteDetectedTx(ctx context.Context, dtx *domain.D
 	row, err := qtx.CreateDepositTransaction(ctx, CreateDepositTransactionParams{
 		SessionID:       dtx.SessionID,
 		TenantID:        dtx.TenantID,
-		Chain:           dtx.Chain,
+		Chain:           string(dtx.Chain),
 		TxHash:          dtx.TxHash,
 		FromAddress:     dtx.FromAddress,
 		ToAddress:       dtx.ToAddress,
