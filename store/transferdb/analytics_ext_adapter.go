@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/intellect4all/settla/domain"
+	"github.com/intellect4all/settla/store/rls"
 )
 
 // ExtendedAnalyticsStore provides the new analytics data access methods.
@@ -35,83 +38,149 @@ type ExportStore interface {
 // SnapshotStore provides snapshot upsert operations for the nightly job.
 type SnapshotStore interface {
 	UpsertDailySnapshot(ctx context.Context, snap domain.DailySnapshot) error
-	ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error)
+	ForEachActiveTenant(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 }
 
 // ExtendedAnalyticsAdapter implements ExtendedAnalyticsStore.
 type ExtendedAnalyticsAdapter struct {
-	q    *Queries
-	pool *pgxpool.Pool
+	q          *Queries
+	pool       *pgxpool.Pool // owner pool for system-level queries
+	appPool    *pgxpool.Pool // optional: RLS-enforced pool
+	rlsEnabled bool          // true when appPool is configured
 }
 
 // NewExtendedAnalyticsAdapter creates a new ExtendedAnalyticsAdapter.
 func NewExtendedAnalyticsAdapter(q *Queries, pool *pgxpool.Pool) *ExtendedAnalyticsAdapter {
-	return &ExtendedAnalyticsAdapter{q: q, pool: pool}
+	a := &ExtendedAnalyticsAdapter{q: q, pool: pool}
+	a.rlsEnabled = (a.appPool != nil)
+	if !a.rlsEnabled {
+		slog.Warn("settla-store: ExtendedAnalyticsAdapter RLS pool not configured, tenant isolation relies on application-layer filters only")
+	}
+	return a
+}
+
+// WithExtAnalyticsAppPool configures the RLS-enforced pool for tenant-scoped operations.
+func (a *ExtendedAnalyticsAdapter) WithExtAnalyticsAppPool(pool *pgxpool.Pool) *ExtendedAnalyticsAdapter {
+	a.appPool = pool
+	a.rlsEnabled = (pool != nil)
+	return a
 }
 
 func (a *ExtendedAnalyticsAdapter) GetFeeBreakdown(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.FeeBreakdownEntry, error) {
-	rows, err := a.q.GetFeeBreakdown(ctx, GetFeeBreakdownParams{
-		TenantID: tenantID,
-		FromTime: from,
-		ToTime:   to,
-	})
+	params := GetFeeBreakdownParams{TenantID: tenantID, FromTime: from, ToTime: to}
+	toResult := func(rows []GetFeeBreakdownRow) []domain.FeeBreakdownEntry {
+		result := make([]domain.FeeBreakdownEntry, len(rows))
+		for i, row := range rows {
+			result[i] = domain.FeeBreakdownEntry{
+				SourceCurrency: row.SourceCurrency,
+				DestCurrency:   row.DestCurrency,
+				TransferCount:  row.TransferCount,
+				VolumeUSD:      decimalFromNumeric(row.VolumeUsd),
+				OnRampFeesUSD:  decimalFromNumeric(row.OnRampFeesUsd),
+				OffRampFeesUSD: decimalFromNumeric(row.OffRampFeesUsd),
+				NetworkFeesUSD: decimalFromNumeric(row.NetworkFeesUsd),
+				TotalFeesUSD:   decimalFromNumeric(row.TotalFeesUsd),
+			}
+		}
+		return result
+	}
+
+	if a.appPool != nil {
+		var result []domain.FeeBreakdownEntry
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := a.q.WithTx(tx).GetFeeBreakdown(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = toResult(rows)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting fee breakdown: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetFeeBreakdown", "tenant_id", tenantID)
+	rows, err := a.q.GetFeeBreakdown(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting fee breakdown: %w", err)
 	}
-
-	result := make([]domain.FeeBreakdownEntry, len(rows))
-	for i, row := range rows {
-		result[i] = domain.FeeBreakdownEntry{
-			SourceCurrency: row.SourceCurrency,
-			DestCurrency:   row.DestCurrency,
-			TransferCount:  row.TransferCount,
-			VolumeUSD:      decimalFromNumeric(row.VolumeUsd),
-			OnRampFeesUSD:  decimalFromNumeric(row.OnRampFeesUsd),
-			OffRampFeesUSD: decimalFromNumeric(row.OffRampFeesUsd),
-			NetworkFeesUSD: decimalFromNumeric(row.NetworkFeesUsd),
-			TotalFeesUSD:   decimalFromNumeric(row.TotalFeesUsd),
-		}
-	}
-	return result, nil
+	return toResult(rows), nil
 }
 
 func (a *ExtendedAnalyticsAdapter) GetProviderPerformance(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.ProviderPerformance, error) {
-	rows, err := a.q.GetProviderPerformance(ctx, GetProviderPerformanceParams{
-		TenantID: tenantID,
-		FromTime: from,
-		ToTime:   to,
-	})
+	params := GetProviderPerformanceParams{TenantID: tenantID, FromTime: from, ToTime: to}
+	toResult := func(rows []GetProviderPerformanceRow) []domain.ProviderPerformance {
+		result := make([]domain.ProviderPerformance, len(rows))
+		for i, row := range rows {
+			result[i] = domain.ProviderPerformance{
+				Provider:         row.Provider,
+				SourceCurrency:   row.SourceCurrency,
+				DestCurrency:     row.DestCurrency,
+				TransactionCount: row.TransactionCount,
+				Completed:        row.Completed,
+				Failed:           row.Failed,
+				SuccessRate:      decimalFromNumeric(row.SuccessRate),
+				AvgSettlementMs:  row.AvgSettlementMs,
+				TotalVolume:      decimalFromNumeric(row.TotalVolume),
+			}
+		}
+		return result
+	}
+
+	if a.appPool != nil {
+		var result []domain.ProviderPerformance
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := a.q.WithTx(tx).GetProviderPerformance(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = toResult(rows)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting provider performance: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetProviderPerformance", "tenant_id", tenantID)
+	rows, err := a.q.GetProviderPerformance(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting provider performance: %w", err)
 	}
-
-	result := make([]domain.ProviderPerformance, len(rows))
-	for i, row := range rows {
-		result[i] = domain.ProviderPerformance{
-			Provider:         row.Provider,
-			SourceCurrency:   row.SourceCurrency,
-			DestCurrency:     row.DestCurrency,
-			TransactionCount: row.TransactionCount,
-			Completed:        row.Completed,
-			Failed:           row.Failed,
-			SuccessRate:      decimalFromNumeric(row.SuccessRate),
-			AvgSettlementMs:  row.AvgSettlementMs,
-			TotalVolume:      decimalFromNumeric(row.TotalVolume),
-		}
-	}
-	return result, nil
+	return toResult(rows), nil
 }
 
 func (a *ExtendedAnalyticsAdapter) GetCryptoDepositAnalytics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (*domain.DepositAnalytics, error) {
-	row, err := a.q.GetCryptoDepositAnalytics(ctx, GetCryptoDepositAnalyticsParams{
-		TenantID: tenantID,
-		FromTime: from,
-		ToTime:   to,
-	})
+	params := GetCryptoDepositAnalyticsParams{TenantID: tenantID, FromTime: from, ToTime: to}
+
+	if a.appPool != nil {
+		var result *domain.DepositAnalytics
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := a.q.WithTx(tx).GetCryptoDepositAnalytics(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = depositAnalyticsFromCryptoRow(row)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting crypto deposit analytics: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetCryptoDepositAnalytics", "tenant_id", tenantID)
+	row, err := a.q.GetCryptoDepositAnalytics(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting crypto deposit analytics: %w", err)
 	}
+	return depositAnalyticsFromCryptoRow(row), nil
+}
 
+func depositAnalyticsFromCryptoRow(row GetCryptoDepositAnalyticsRow) *domain.DepositAnalytics {
 	return &domain.DepositAnalytics{
 		TotalSessions:     row.TotalSessions,
 		CompletedSessions: row.CompletedSessions,
@@ -121,19 +190,37 @@ func (a *ExtendedAnalyticsAdapter) GetCryptoDepositAnalytics(ctx context.Context
 		TotalReceived:     decimalFromNumeric(row.TotalReceived),
 		TotalFees:         decimalFromNumeric(row.TotalFees),
 		TotalNet:          decimalFromNumeric(row.TotalNet),
-	}, nil
+	}
 }
 
 func (a *ExtendedAnalyticsAdapter) GetBankDepositAnalytics(ctx context.Context, tenantID uuid.UUID, from, to time.Time) (*domain.DepositAnalytics, error) {
-	row, err := a.q.GetBankDepositAnalytics(ctx, GetBankDepositAnalyticsParams{
-		TenantID: tenantID,
-		FromTime: from,
-		ToTime:   to,
-	})
+	params := GetBankDepositAnalyticsParams{TenantID: tenantID, FromTime: from, ToTime: to}
+
+	if a.appPool != nil {
+		var result *domain.DepositAnalytics
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := a.q.WithTx(tx).GetBankDepositAnalytics(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = depositAnalyticsFromBankRow(row)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting bank deposit analytics: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetBankDepositAnalytics", "tenant_id", tenantID)
+	row, err := a.q.GetBankDepositAnalytics(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting bank deposit analytics: %w", err)
 	}
+	return depositAnalyticsFromBankRow(row), nil
+}
 
+func depositAnalyticsFromBankRow(row GetBankDepositAnalyticsRow) *domain.DepositAnalytics {
 	return &domain.DepositAnalytics{
 		TotalSessions:     row.TotalSessions,
 		CompletedSessions: row.CompletedSessions,
@@ -143,7 +230,7 @@ func (a *ExtendedAnalyticsAdapter) GetBankDepositAnalytics(ctx context.Context, 
 		TotalReceived:     decimalFromNumeric(row.TotalReceived),
 		TotalFees:         decimalFromNumeric(row.TotalFees),
 		TotalNet:          decimalFromNumeric(row.TotalNet),
-	}, nil
+	}
 }
 
 func (a *ExtendedAnalyticsAdapter) GetReconciliationSummary(ctx context.Context, from, to time.Time) (*domain.ReconciliationSummary, error) {
@@ -170,16 +257,38 @@ func (a *ExtendedAnalyticsAdapter) GetReconciliationSummary(ctx context.Context,
 }
 
 func (a *ExtendedAnalyticsAdapter) GetDailySnapshots(ctx context.Context, tenantID uuid.UUID, metricType string, fromDate, toDate time.Time) ([]domain.DailySnapshot, error) {
-	rows, err := a.q.GetDailySnapshots(ctx, GetDailySnapshotsParams{
+	params := GetDailySnapshotsParams{
 		TenantID:   tenantID,
 		MetricType: metricType,
 		FromDate:   pgtype.Date{Time: fromDate, Valid: true},
 		ToDate:     pgtype.Date{Time: toDate, Valid: true},
-	})
+	}
+
+	if a.appPool != nil {
+		var result []domain.DailySnapshot
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := a.q.WithTx(tx).GetDailySnapshots(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = dailySnapshotsFromRows(rows)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting daily snapshots: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetDailySnapshots", "tenant_id", tenantID)
+	rows, err := a.q.GetDailySnapshots(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting daily snapshots: %w", err)
 	}
+	return dailySnapshotsFromRows(rows), nil
+}
 
+func dailySnapshotsFromRows(rows []AnalyticsDailySnapshot) []domain.DailySnapshot {
 	result := make([]domain.DailySnapshot, len(rows))
 	for i, row := range rows {
 		result[i] = domain.DailySnapshot{
@@ -187,8 +296,8 @@ func (a *ExtendedAnalyticsAdapter) GetDailySnapshots(ctx context.Context, tenant
 			TenantID:       row.TenantID,
 			SnapshotDate:   row.SnapshotDate.Time,
 			MetricType:     row.MetricType,
-			SourceCurrency: row.SourceCurrency,
-			DestCurrency:   row.DestCurrency,
+			SourceCurrency: domain.Currency(row.SourceCurrency),
+			DestCurrency:   domain.Currency(row.DestCurrency),
 			Provider:       row.Provider,
 			TransferCount:  row.TransferCount,
 			CompletedCount: row.CompletedCount,
@@ -206,18 +315,32 @@ func (a *ExtendedAnalyticsAdapter) GetDailySnapshots(ctx context.Context, tenant
 			CreatedAt:      row.CreatedAt,
 		}
 	}
-	return result, nil
+	return result
 }
 
 // ExportAdapter implements ExportStore.
 type ExportAdapter struct {
-	q    *Queries
-	pool *pgxpool.Pool
+	q          *Queries
+	pool       *pgxpool.Pool // owner pool for system-level queries
+	appPool    *pgxpool.Pool // optional: RLS-enforced pool
+	rlsEnabled bool          // true when appPool is configured
 }
 
 // NewExportAdapter creates a new ExportAdapter.
 func NewExportAdapter(q *Queries, pool *pgxpool.Pool) *ExportAdapter {
-	return &ExportAdapter{q: q, pool: pool}
+	a := &ExportAdapter{q: q, pool: pool}
+	a.rlsEnabled = (a.appPool != nil)
+	if !a.rlsEnabled {
+		slog.Warn("settla-store: ExportAdapter RLS pool not configured, tenant isolation relies on application-layer filters only")
+	}
+	return a
+}
+
+// WithExportAppPool configures the RLS-enforced pool for tenant-scoped operations.
+func (a *ExportAdapter) WithExportAppPool(pool *pgxpool.Pool) *ExportAdapter {
+	a.appPool = pool
+	a.rlsEnabled = (pool != nil)
+	return a
 }
 
 func (a *ExportAdapter) CreateExportJob(ctx context.Context, tenantID uuid.UUID, exportType string, parameters map[string]any) (*domain.ExportJob, error) {
@@ -226,27 +349,60 @@ func (a *ExportAdapter) CreateExportJob(ctx context.Context, tenantID uuid.UUID,
 		return nil, fmt.Errorf("settla-analytics: marshaling export parameters: %w", err)
 	}
 
-	row, err := a.q.CreateExportJob(ctx, CreateExportJobParams{
+	params := CreateExportJobParams{
 		TenantID:   tenantID,
 		ExportType: exportType,
 		Parameters: paramsJSON,
-	})
+	}
+
+	if a.appPool != nil {
+		var result *domain.ExportJob
+		err := rls.WithTenantTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := a.q.WithTx(tx).CreateExportJob(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = mapExportJobRow(row)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: creating export job: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "CreateExportJob", "tenant_id", tenantID)
+	row, err := a.q.CreateExportJob(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: creating export job: %w", err)
 	}
-
 	return mapExportJobRow(row), nil
 }
 
 func (a *ExportAdapter) GetExportJob(ctx context.Context, id, tenantID uuid.UUID) (*domain.ExportJob, error) {
-	row, err := a.q.GetExportJob(ctx, GetExportJobParams{
-		ID:       id,
-		TenantID: tenantID,
-	})
+	params := GetExportJobParams{ID: id, TenantID: tenantID}
+
+	if a.appPool != nil {
+		var result *domain.ExportJob
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := a.q.WithTx(tx).GetExportJob(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = mapExportJobRow(row)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: getting export job: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetExportJob", "tenant_id", tenantID)
+	row, err := a.q.GetExportJob(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: getting export job: %w", err)
 	}
-
 	return mapExportJobRow(row), nil
 }
 
@@ -255,14 +411,32 @@ func (a *ExportAdapter) ListExportJobs(ctx context.Context, tenantID uuid.UUID, 
 		limit = 20
 	}
 
-	rows, err := a.q.ListExportJobs(ctx, ListExportJobsParams{
-		TenantID: tenantID,
-		PageSize: limit,
-	})
+	params := ListExportJobsParams{TenantID: tenantID, PageSize: limit}
+
+	if a.appPool != nil {
+		var result []domain.ExportJob
+		err := rls.WithTenantReadTx(ctx, a.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := a.q.WithTx(tx).ListExportJobs(ctx, params)
+			if err != nil {
+				return err
+			}
+			result = make([]domain.ExportJob, len(rows))
+			for i, row := range rows {
+				result[i] = *mapExportJobRow(row)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-analytics: listing export jobs: %w", err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListExportJobs", "tenant_id", tenantID)
+	rows, err := a.q.ListExportJobs(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("settla-analytics: listing export jobs: %w", err)
 	}
-
 	result := make([]domain.ExportJob, len(rows))
 	for i, row := range rows {
 		result[i] = *mapExportJobRow(row)
@@ -311,13 +485,30 @@ func (a *ExportAdapter) UpdateExportJobStatus(ctx context.Context, id uuid.UUID,
 
 // SnapshotAdapter implements SnapshotStore.
 type SnapshotAdapter struct {
-	q    *Queries
-	pool *pgxpool.Pool
+	q             *Queries
+	pool          *pgxpool.Pool
+	tenantForEach func(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 }
 
 // NewSnapshotAdapter creates a new SnapshotAdapter.
 func NewSnapshotAdapter(q *Queries, pool *pgxpool.Pool) *SnapshotAdapter {
-	return &SnapshotAdapter{q: q, pool: pool}
+	a := &SnapshotAdapter{q: q, pool: pool}
+	// Default: paginated Postgres fallback
+	a.tenantForEach = func(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error {
+		fetcher := func(ctx context.Context, limit, offset int32) ([]uuid.UUID, error) {
+			return q.ListActiveTenantIDsPaginated(ctx, ListActiveTenantIDsPaginatedParams{
+				Limit: limit, Offset: offset,
+			})
+		}
+		return domain.ForEachTenantBatch(ctx, fetcher, batchSize, fn)
+	}
+	return a
+}
+
+// WithTenantForEach overrides the default Postgres-based tenant iteration
+// with a Redis-backed TenantIndex or other implementation.
+func (a *SnapshotAdapter) WithTenantForEach(fn func(ctx context.Context, batchSize int32, fnInner func(ids []uuid.UUID) error) error) {
+	a.tenantForEach = fn
 }
 
 func (a *SnapshotAdapter) UpsertDailySnapshot(ctx context.Context, snap domain.DailySnapshot) error {
@@ -325,8 +516,8 @@ func (a *SnapshotAdapter) UpsertDailySnapshot(ctx context.Context, snap domain.D
 		TenantID:       snap.TenantID,
 		SnapshotDate:   pgtype.Date{Time: snap.SnapshotDate, Valid: true},
 		MetricType:     snap.MetricType,
-		SourceCurrency: snap.SourceCurrency,
-		DestCurrency:   snap.DestCurrency,
+		SourceCurrency: string(snap.SourceCurrency),
+		DestCurrency:   string(snap.DestCurrency),
 		Provider:       snap.Provider,
 		TransferCount:  snap.TransferCount,
 		CompletedCount: snap.CompletedCount,
@@ -344,8 +535,8 @@ func (a *SnapshotAdapter) UpsertDailySnapshot(ctx context.Context, snap domain.D
 	})
 }
 
-func (a *SnapshotAdapter) ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
-	return a.q.ListActiveTenantIDs(ctx)
+func (a *SnapshotAdapter) ForEachActiveTenant(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error {
+	return a.tenantForEach(ctx, batchSize, fn)
 }
 
 // mapExportJobRow converts the SQLC-generated AnalyticsExportJob model to domain.ExportJob.
