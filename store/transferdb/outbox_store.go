@@ -47,19 +47,12 @@ func (s *TransferStoreAdapter) TransitionWithOutbox(ctx context.Context, transfe
 	}
 
 	// 1. UPDATE transfer with optimistic lock + status-specific timestamps.
-	// Cast $1 to TEXT explicitly so PostgreSQL doesn't get confused between
-	// the enum assignment (SET status = $1::transfer_status_enum) and the
-	// string comparisons in the CASE expressions.
-	tag, err := tx.Exec(ctx,
-		`UPDATE transfers
-		 SET status = $1::transfer_status_enum,
-		     version = version + 1,
-		     updated_at = now(),
-		     funded_at    = CASE WHEN $1::text = 'FUNDED'    THEN now() ELSE funded_at    END,
-		     completed_at = CASE WHEN $1::text = 'COMPLETED' THEN now() ELSE completed_at END,
-		     failed_at    = CASE WHEN $1::text = 'FAILED'    THEN now() ELSE failed_at    END
-		 WHERE id = $2 AND version = $3`,
-		string(newStatus), transferID, expectedVersion)
+	qtx := s.q.WithTx(tx)
+	tag, err := qtx.TransitionTransferStatus(ctx, TransitionTransferStatusParams{
+		NewStatus:       TransferStatusEnum(newStatus),
+		ID:              transferID,
+		ExpectedVersion: expectedVersion,
+	})
 	if err != nil {
 		return fmt.Errorf("settla-store: update transfer %s: %w", transferID, err)
 	}
@@ -70,7 +63,6 @@ func (s *TransferStoreAdapter) TransitionWithOutbox(ctx context.Context, transfe
 	// 2. Batch INSERT outbox entries using COPY for throughput.
 	if len(entries) > 0 {
 		params := outboxEntriesToParams(entries)
-		qtx := s.q.WithTx(tx)
 		if _, err := qtx.InsertOutboxEntries(ctx, params); err != nil {
 			return fmt.Errorf("settla-store: insert outbox entries for transfer %s: %w", transferID, err)
 		}
@@ -162,7 +154,7 @@ func (s *TransferStoreAdapter) CreateTransferWithOutbox(ctx context.Context, tra
 		DestAmount:           numericFromDecimal(transfer.DestAmount),
 		StableCoin:           textFromString(string(transfer.StableCoin)),
 		StableAmount:         numericFromDecimal(transfer.StableAmount),
-		Chain:                textFromString(transfer.Chain),
+		Chain:                textFromString(string(transfer.Chain)),
 		FxRate:               numericFromDecimal(transfer.FXRate),
 		Fees:                 feesJSON,
 		Sender:               senderJSON,

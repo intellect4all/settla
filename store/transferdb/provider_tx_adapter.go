@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/intellect4all/settla/domain"
@@ -19,13 +20,13 @@ import (
 // (INSERT ON CONFLICT DO NOTHING) for ClaimProviderTransaction to guarantee
 // exactly-once execution across multiple settla-node instances.
 type ProviderTxAdapter struct {
-	db DBTX
+	db   DBTX
+	pool TxBeginner // used by SwitchRoute for transactional operations
 }
 
 // NewProviderTxAdapter creates a DB-backed provider transaction store.
-// The DBTX is typically a *pgxpool.Pool.
-func NewProviderTxAdapter(db DBTX) *ProviderTxAdapter {
-	return &ProviderTxAdapter{db: db}
+func NewProviderTxAdapter(pool *pgxpool.Pool) *ProviderTxAdapter {
+	return &ProviderTxAdapter{db: pool, pool: pool}
 }
 
 // txTypeToDB maps worker-side lowercase tx types to DB enum values.
@@ -211,6 +212,28 @@ func (a *ProviderTxAdapter) DeleteProviderTransaction(ctx context.Context, trans
 		return fmt.Errorf("settla-provider-tx: delete for transfer %s type %s: %w", transferID, txType, err)
 	}
 	return nil
+}
+
+// SwitchRoute atomically deletes the current provider transaction and updates
+// the transfer's route to use a fallback provider within a single DB transaction.
+func (a *ProviderTxAdapter) SwitchRoute(ctx context.Context, transferID uuid.UUID, txType string,
+	onRampProvider, offRampProvider, chain string, stableCoin domain.Currency) error {
+	tx, err := a.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("settla-provider-tx: begin switch-route tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	scoped := &ProviderTxAdapter{db: tx}
+
+	if err := scoped.DeleteProviderTransaction(ctx, transferID, txType); err != nil {
+		return fmt.Errorf("settla-provider-tx: switch-route delete: %w", err)
+	}
+	if err := scoped.UpdateTransferRoute(ctx, transferID, onRampProvider, offRampProvider, chain, stableCoin); err != nil {
+		return fmt.Errorf("settla-provider-tx: switch-route update: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 func nullText(s string) pgtype.Text {

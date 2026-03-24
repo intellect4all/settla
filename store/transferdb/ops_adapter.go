@@ -104,12 +104,14 @@ var _ OpsStore = (*OpsStoreAdapter)(nil)
 
 // OpsStoreAdapter implements OpsStore using SQLC-generated queries.
 type OpsStoreAdapter struct {
-	q *Queries
+	q           *Queries
+	tenantIndex TenantIndexer
 }
 
 // NewOpsAdapter creates a new OpsStoreAdapter.
-func NewOpsAdapter(q *Queries) *OpsStoreAdapter {
-	return &OpsStoreAdapter{q: q}
+// tenantIndex may be nil if Redis tenant tracking is not configured.
+func NewOpsAdapter(q *Queries, tenantIndex TenantIndexer) *OpsStoreAdapter {
+	return &OpsStoreAdapter{q: q, tenantIndex: tenantIndex}
 }
 
 // ListManualReviews returns up to 100 manual reviews. When tenantID is non-nil,
@@ -244,11 +246,21 @@ func (a *OpsStoreAdapter) GetTenantByID(ctx context.Context, id uuid.UUID) (*Ops
 	return &ot, nil
 }
 
-// UpdateTenantStatus updates a tenant's status (ACTIVE, SUSPENDED, ONBOARDING).
+// UpdateTenantStatus updates a tenant's status (ACTIVE, SUSPENDED, ONBOARDING)
+// and syncs the Redis tenant index.
 func (a *OpsStoreAdapter) UpdateTenantStatus(ctx context.Context, id uuid.UUID, status string) error {
 	err := a.q.UpdateTenantStatus(ctx, UpdateTenantStatusParams{ID: id, Status: status})
 	if err != nil {
 		return fmt.Errorf("settla-ops: updating tenant %s status: %w", id, err)
+	}
+
+	if a.tenantIndex != nil {
+		switch status {
+		case "ACTIVE":
+			_ = a.tenantIndex.Add(ctx, id)
+		case "SUSPENDED":
+			_ = a.tenantIndex.Remove(ctx, id)
+		}
 	}
 	return nil
 }

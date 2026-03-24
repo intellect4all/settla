@@ -16,6 +16,11 @@ var _ domain.AuditLogger = (*AuditAdapter)(nil)
 
 // AuditAdapter implements domain.AuditLogger using SQLC-generated queries
 // against the Transfer DB audit_log table.
+//
+// SECURITY NOTE: The OldValue and NewValue fields may contain sensitive data
+// (recipient bank details, blockchain addresses, fee amounts). Production
+// deployments should enable at-rest encryption (TDE or AWS RDS encryption)
+// on the audit_log table and restrict access to authorized personnel only.
 type AuditAdapter struct {
 	pool *pgxpool.Pool
 	q    *Queries
