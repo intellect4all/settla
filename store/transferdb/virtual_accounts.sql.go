@@ -12,6 +12,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAvailableVirtualAccountsByCurrency = `-- name: CountAvailableVirtualAccountsByCurrency :many
+SELECT currency, count(*) AS available_count
+FROM virtual_account_pool
+WHERE tenant_id = $1 AND available = true
+GROUP BY currency
+`
+
+type CountAvailableVirtualAccountsByCurrencyRow struct {
+	Currency       string `json:"currency"`
+	AvailableCount int64  `json:"available_count"`
+}
+
+func (q *Queries) CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) ([]CountAvailableVirtualAccountsByCurrencyRow, error) {
+	rows, err := q.db.Query(ctx, countAvailableVirtualAccountsByCurrency, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountAvailableVirtualAccountsByCurrencyRow{}
+	for rows.Next() {
+		var i CountAvailableVirtualAccountsByCurrencyRow
+		if err := rows.Scan(&i.Currency, &i.AvailableCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countVirtualAccountsByTenant = `-- name: CountVirtualAccountsByTenant :one
+SELECT count(*) FROM virtual_account_pool
+WHERE tenant_id = $1
+  AND ($2::text = '' OR currency = $2)
+  AND ($3::text = '' OR account_type = $3::virtual_account_type_enum)
+`
+
+type CountVirtualAccountsByTenantParams struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Currency    string    `json:"currency"`
+	AccountType string    `json:"account_type"`
+}
+
+func (q *Queries) CountVirtualAccountsByTenant(ctx context.Context, arg CountVirtualAccountsByTenantParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countVirtualAccountsByTenant, arg.TenantID, arg.Currency, arg.AccountType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const dispenseVirtualAccount = `-- name: DispenseVirtualAccount :one
 UPDATE virtual_account_pool
 SET available = false, session_id = $3, updated_at = now()
@@ -197,6 +249,63 @@ func (q *Queries) ListVirtualAccountsByTenant(ctx context.Context, tenantID uuid
 	return items, nil
 }
 
+const listVirtualAccountsByTenantPaginated = `-- name: ListVirtualAccountsByTenantPaginated :many
+SELECT id, tenant_id, banking_partner_id, account_number, account_name, sort_code, iban, currency, account_type, available, session_id, created_at, updated_at FROM virtual_account_pool
+WHERE tenant_id = $1
+  AND ($2::text = '' OR currency = $2)
+  AND ($3::text = '' OR account_type = $3::virtual_account_type_enum)
+ORDER BY created_at ASC
+LIMIT $5 OFFSET $4
+`
+
+type ListVirtualAccountsByTenantPaginatedParams struct {
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Currency    string    `json:"currency"`
+	AccountType string    `json:"account_type"`
+	PageOffset  int32     `json:"page_offset"`
+	PageLimit   int32     `json:"page_limit"`
+}
+
+func (q *Queries) ListVirtualAccountsByTenantPaginated(ctx context.Context, arg ListVirtualAccountsByTenantPaginatedParams) ([]VirtualAccountPool, error) {
+	rows, err := q.db.Query(ctx, listVirtualAccountsByTenantPaginated,
+		arg.TenantID,
+		arg.Currency,
+		arg.AccountType,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VirtualAccountPool{}
+	for rows.Next() {
+		var i VirtualAccountPool
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.BankingPartnerID,
+			&i.AccountNumber,
+			&i.AccountName,
+			&i.SortCode,
+			&i.Iban,
+			&i.Currency,
+			&i.AccountType,
+			&i.Available,
+			&i.SessionID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recycleVirtualAccount = `-- name: RecycleVirtualAccount :exec
 UPDATE virtual_account_pool
 SET available = true, session_id = NULL, updated_at = now()
@@ -205,5 +314,31 @@ WHERE account_number = $1
 
 func (q *Queries) RecycleVirtualAccount(ctx context.Context, accountNumber string) error {
 	_, err := q.db.Exec(ctx, recycleVirtualAccount, accountNumber)
+	return err
+}
+
+const upsertVirtualAccountIndex = `-- name: UpsertVirtualAccountIndex :exec
+INSERT INTO virtual_account_index (account_number, tenant_id, session_id, account_type)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (account_number) DO UPDATE
+    SET session_id = $3, account_type = $4
+`
+
+type UpsertVirtualAccountIndexParams struct {
+	AccountNumber string                 `json:"account_number"`
+	TenantID      uuid.UUID              `json:"tenant_id"`
+	SessionID     pgtype.UUID            `json:"session_id"`
+	AccountType   VirtualAccountTypeEnum `json:"account_type"`
+}
+
+// Inserts or updates the virtual account index entry. On conflict (duplicate
+// account_number), updates session_id and account_type to point to the new session.
+func (q *Queries) UpsertVirtualAccountIndex(ctx context.Context, arg UpsertVirtualAccountIndexParams) error {
+	_, err := q.db.Exec(ctx, upsertVirtualAccountIndex,
+		arg.AccountNumber,
+		arg.TenantID,
+		arg.SessionID,
+		arg.AccountType,
+	)
 	return err
 }
