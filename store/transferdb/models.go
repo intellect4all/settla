@@ -1410,6 +1410,126 @@ type NetSettlement struct {
 	CreatedAt     time.Time          `json:"created_at"`
 }
 
+type NetSettlementsDefault struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m03 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m04 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m05 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m06 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m07 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m08 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
+type NetSettlementsY2026m09 struct {
+	ID            uuid.UUID          `json:"id"`
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	PeriodStart   time.Time          `json:"period_start"`
+	PeriodEnd     time.Time          `json:"period_end"`
+	Corridors     []byte             `json:"corridors"`
+	NetByCurrency []byte             `json:"net_by_currency"`
+	TotalFeesUsd  pgtype.Numeric     `json:"total_fees_usd"`
+	Instructions  []byte             `json:"instructions"`
+	Status        string             `json:"status"`
+	DueDate       pgtype.Date        `json:"due_date"`
+	SettledAt     pgtype.Timestamptz `json:"settled_at"`
+	CreatedAt     time.Time          `json:"created_at"`
+}
+
 type Outbox struct {
 	ID            uuid.UUID          `json:"id"`
 	AggregateType string             `json:"aggregate_type"`
@@ -1530,6 +1650,142 @@ type PortalUser struct {
 	UpdatedAt           time.Time          `json:"updated_at"`
 }
 
+type PositionTransaction struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202603 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202604 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202605 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202606 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202607 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactions202608 struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type PositionTransactionsDefault struct {
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	Type          string         `json:"type"`
+	Currency      string         `json:"currency"`
+	Location      string         `json:"location"`
+	Amount        pgtype.Numeric `json:"amount"`
+	Status        string         `json:"status"`
+	Method        string         `json:"method"`
+	Destination   string         `json:"destination"`
+	Reference     string         `json:"reference"`
+	FailureReason string         `json:"failure_reason"`
+	Version       int32          `json:"version"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
 type ProviderTransaction struct {
 	ID         uuid.UUID          `json:"id"`
 	TenantID   uuid.UUID          `json:"tenant_id"`
@@ -1579,6 +1835,38 @@ type ProviderTransactionsOld struct {
 	Metadata   []byte             `json:"metadata"`
 	CreatedAt  time.Time          `json:"created_at"`
 	UpdatedAt  time.Time          `json:"updated_at"`
+}
+
+type ProviderWebhookLog struct {
+	ID             uuid.UUID          `json:"id"`
+	ProviderSlug   string             `json:"provider_slug"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	TransferID     pgtype.UUID        `json:"transfer_id"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	RawBody        []byte             `json:"raw_body"`
+	Normalized     []byte             `json:"normalized"`
+	Status         string             `json:"status"`
+	ErrorMessage   pgtype.Text        `json:"error_message"`
+	HttpHeaders    []byte             `json:"http_headers"`
+	SourceIp       pgtype.Text        `json:"source_ip"`
+	CreatedAt      time.Time          `json:"created_at"`
+	ProcessedAt    pgtype.Timestamptz `json:"processed_at"`
+}
+
+type ProviderWebhookLogsDefault struct {
+	ID             uuid.UUID          `json:"id"`
+	ProviderSlug   string             `json:"provider_slug"`
+	IdempotencyKey string             `json:"idempotency_key"`
+	TransferID     pgtype.UUID        `json:"transfer_id"`
+	TenantID       pgtype.UUID        `json:"tenant_id"`
+	RawBody        []byte             `json:"raw_body"`
+	Normalized     []byte             `json:"normalized"`
+	Status         string             `json:"status"`
+	ErrorMessage   pgtype.Text        `json:"error_message"`
+	HttpHeaders    []byte             `json:"http_headers"`
+	SourceIp       pgtype.Text        `json:"source_ip"`
+	CreatedAt      time.Time          `json:"created_at"`
+	ProcessedAt    pgtype.Timestamptz `json:"processed_at"`
 }
 
 type Quote struct {
@@ -1640,6 +1928,7 @@ type Tenant struct {
 	DefaultMismatchPolicy     PaymentMismatchPolicyEnum `json:"default_mismatch_policy"`
 	BankDefaultSessionTtlSecs int32                     `json:"bank_default_session_ttl_secs"`
 	FeeScheduleVersion        int32                     `json:"fee_schedule_version"`
+	MaxPendingTransfers       int32                     `json:"max_pending_transfers"`
 }
 
 type Token struct {
