@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -91,6 +92,86 @@ func (q *Queries) CreateBankDepositSession(ctx context.Context, arg CreateBankDe
 	)
 	var i CreateBankDepositSessionRow
 	err := row.Scan(&i.ID, &i.CreatedAt, &i.UpdatedAt)
+	return i, err
+}
+
+const createBankDepositSessionFull = `-- name: CreateBankDepositSessionFull :one
+INSERT INTO bank_deposit_sessions (
+    id, tenant_id, idempotency_key, status, version,
+    banking_partner_id, account_number, account_name, sort_code, iban, account_type,
+    currency, expected_amount, min_amount, max_amount, received_amount,
+    fee_amount, net_amount, mismatch_policy, collection_fee_bps,
+    settlement_pref, expires_at, metadata
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10, $11,
+    $12, $13, $14, $15, $16,
+    $17, $18, $19, $20,
+    $21, $22, $23
+) RETURNING created_at, updated_at
+`
+
+type CreateBankDepositSessionFullParams struct {
+	ID               uuid.UUID                    `json:"id"`
+	TenantID         uuid.UUID                    `json:"tenant_id"`
+	IdempotencyKey   pgtype.Text                  `json:"idempotency_key"`
+	Status           BankDepositSessionStatusEnum `json:"status"`
+	Version          int64                        `json:"version"`
+	BankingPartnerID string                       `json:"banking_partner_id"`
+	AccountNumber    string                       `json:"account_number"`
+	AccountName      string                       `json:"account_name"`
+	SortCode         string                       `json:"sort_code"`
+	Iban             string                       `json:"iban"`
+	AccountType      VirtualAccountTypeEnum       `json:"account_type"`
+	Currency         string                       `json:"currency"`
+	ExpectedAmount   pgtype.Numeric               `json:"expected_amount"`
+	MinAmount        pgtype.Numeric               `json:"min_amount"`
+	MaxAmount        pgtype.Numeric               `json:"max_amount"`
+	ReceivedAmount   pgtype.Numeric               `json:"received_amount"`
+	FeeAmount        pgtype.Numeric               `json:"fee_amount"`
+	NetAmount        pgtype.Numeric               `json:"net_amount"`
+	MismatchPolicy   PaymentMismatchPolicyEnum    `json:"mismatch_policy"`
+	CollectionFeeBps int32                        `json:"collection_fee_bps"`
+	SettlementPref   SettlementPreferenceEnum     `json:"settlement_pref"`
+	ExpiresAt        time.Time                    `json:"expires_at"`
+	Metadata         []byte                       `json:"metadata"`
+}
+
+type CreateBankDepositSessionFullRow struct {
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Creates a bank deposit session with all fields including pre-generated ID,
+// version, and amount fields. Used by CreateSessionWithOutbox.
+func (q *Queries) CreateBankDepositSessionFull(ctx context.Context, arg CreateBankDepositSessionFullParams) (CreateBankDepositSessionFullRow, error) {
+	row := q.db.QueryRow(ctx, createBankDepositSessionFull,
+		arg.ID,
+		arg.TenantID,
+		arg.IdempotencyKey,
+		arg.Status,
+		arg.Version,
+		arg.BankingPartnerID,
+		arg.AccountNumber,
+		arg.AccountName,
+		arg.SortCode,
+		arg.Iban,
+		arg.AccountType,
+		arg.Currency,
+		arg.ExpectedAmount,
+		arg.MinAmount,
+		arg.MaxAmount,
+		arg.ReceivedAmount,
+		arg.FeeAmount,
+		arg.NetAmount,
+		arg.MismatchPolicy,
+		arg.CollectionFeeBps,
+		arg.SettlementPref,
+		arg.ExpiresAt,
+		arg.Metadata,
+	)
+	var i CreateBankDepositSessionFullRow
+	err := row.Scan(&i.CreatedAt, &i.UpdatedAt)
 	return i, err
 }
 
@@ -386,4 +467,64 @@ func (q *Queries) ListBankDepositSessionsByTenant(ctx context.Context, arg ListB
 		return nil, err
 	}
 	return items, nil
+}
+
+const transitionBankDepositSession = `-- name: TransitionBankDepositSession :execresult
+UPDATE bank_deposit_sessions
+SET status = $1::bank_deposit_session_status_enum,
+    version = $2,
+    updated_at = now(),
+    received_amount = $3,
+    fee_amount = $4,
+    net_amount = $5,
+    settlement_transfer_id = $6,
+    payer_name = COALESCE(NULLIF($7, ''), payer_name),
+    payer_reference = COALESCE(NULLIF($8, ''), payer_reference),
+    bank_reference = COALESCE(NULLIF($9, ''), bank_reference),
+    payment_received_at = CASE WHEN $10::text = 'PAYMENT_RECEIVED' AND payment_received_at IS NULL THEN now() ELSE payment_received_at END,
+    credited_at  = CASE WHEN $10::text = 'CREDITED'  AND credited_at IS NULL THEN now() ELSE credited_at END,
+    settled_at   = CASE WHEN $10::text = 'SETTLED'   AND settled_at IS NULL THEN now() ELSE settled_at END,
+    expired_at   = CASE WHEN $10::text = 'EXPIRED'   AND expired_at IS NULL THEN now() ELSE expired_at END,
+    failed_at    = CASE WHEN $10::text = 'FAILED'    AND failed_at IS NULL THEN now() ELSE failed_at END,
+    failure_reason = COALESCE(NULLIF($11, ''), failure_reason),
+    failure_code   = COALESCE(NULLIF($12, ''), failure_code)
+WHERE id = $13 AND version = $14
+`
+
+type TransitionBankDepositSessionParams struct {
+	NewStatus            BankDepositSessionStatusEnum `json:"new_status"`
+	NewVersion           int64                        `json:"new_version"`
+	ReceivedAmount       pgtype.Numeric               `json:"received_amount"`
+	FeeAmount            pgtype.Numeric               `json:"fee_amount"`
+	NetAmount            pgtype.Numeric               `json:"net_amount"`
+	SettlementTransferID pgtype.UUID                  `json:"settlement_transfer_id"`
+	PayerName            interface{}                  `json:"payer_name"`
+	PayerReference       interface{}                  `json:"payer_reference"`
+	BankReferenceVal     interface{}                  `json:"bank_reference_val"`
+	StatusText           string                       `json:"status_text"`
+	FailureReason        interface{}                  `json:"failure_reason"`
+	FailureCode          interface{}                  `json:"failure_code"`
+	ID                   uuid.UUID                    `json:"id"`
+	ExpectedVersion      int64                        `json:"expected_version"`
+}
+
+// Atomically transitions a bank deposit session with optimistic lock, updating
+// amounts, payer info, failure details, and status-specific timestamps.
+func (q *Queries) TransitionBankDepositSession(ctx context.Context, arg TransitionBankDepositSessionParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, transitionBankDepositSession,
+		arg.NewStatus,
+		arg.NewVersion,
+		arg.ReceivedAmount,
+		arg.FeeAmount,
+		arg.NetAmount,
+		arg.SettlementTransferID,
+		arg.PayerName,
+		arg.PayerReference,
+		arg.BankReferenceVal,
+		arg.StatusText,
+		arg.FailureReason,
+		arg.FailureCode,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
 }

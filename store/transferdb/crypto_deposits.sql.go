@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -779,6 +780,58 @@ func (q *Queries) ListDepositTransactionsBySession(ctx context.Context, sessionI
 		return nil, err
 	}
 	return items, nil
+}
+
+const transitionDepositSession = `-- name: TransitionDepositSession :execresult
+UPDATE crypto_deposit_sessions
+SET status = $1::deposit_session_status_enum,
+    version = $2,
+    updated_at = now(),
+    received_amount = $3,
+    fee_amount = $4,
+    net_amount = $5,
+    settlement_transfer_id = $6,
+    detected_at    = CASE WHEN $7::text = 'DETECTED'    AND detected_at IS NULL THEN now() ELSE detected_at END,
+    confirmed_at   = CASE WHEN $7::text = 'CONFIRMED'   AND confirmed_at IS NULL THEN now() ELSE confirmed_at END,
+    credited_at    = CASE WHEN $7::text = 'CREDITED'    AND credited_at IS NULL THEN now() ELSE credited_at END,
+    settled_at     = CASE WHEN $7::text = 'SETTLED'     AND settled_at IS NULL THEN now() ELSE settled_at END,
+    expired_at     = CASE WHEN $7::text = 'EXPIRED'     AND expired_at IS NULL THEN now() ELSE expired_at END,
+    failed_at      = CASE WHEN $7::text = 'FAILED'      AND failed_at IS NULL THEN now() ELSE failed_at END,
+    failure_reason = COALESCE(NULLIF($8, ''), failure_reason),
+    failure_code   = COALESCE(NULLIF($9, ''), failure_code)
+WHERE id = $10 AND version = $11
+`
+
+type TransitionDepositSessionParams struct {
+	NewStatus            DepositSessionStatusEnum `json:"new_status"`
+	NewVersion           int64                    `json:"new_version"`
+	ReceivedAmount       pgtype.Numeric           `json:"received_amount"`
+	FeeAmount            pgtype.Numeric           `json:"fee_amount"`
+	NetAmount            pgtype.Numeric           `json:"net_amount"`
+	SettlementTransferID pgtype.UUID              `json:"settlement_transfer_id"`
+	StatusText           string                   `json:"status_text"`
+	FailureReason        interface{}              `json:"failure_reason"`
+	FailureCode          interface{}              `json:"failure_code"`
+	ID                   uuid.UUID                `json:"id"`
+	ExpectedVersion      int64                    `json:"expected_version"`
+}
+
+// Atomically transitions a crypto deposit session with optimistic lock, updating
+// amounts, settlement link, failure details, and status-specific timestamps.
+func (q *Queries) TransitionDepositSession(ctx context.Context, arg TransitionDepositSessionParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, transitionDepositSession,
+		arg.NewStatus,
+		arg.NewVersion,
+		arg.ReceivedAmount,
+		arg.FeeAmount,
+		arg.NetAmount,
+		arg.SettlementTransferID,
+		arg.StatusText,
+		arg.FailureReason,
+		arg.FailureCode,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
 }
 
 const updateDepositSessionCancelled = `-- name: UpdateDepositSessionCancelled :exec
