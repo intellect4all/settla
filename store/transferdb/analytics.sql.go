@@ -756,13 +756,18 @@ func (q *Queries) GetVolumeComparison(ctx context.Context, arg GetVolumeComparis
 	return i, err
 }
 
-const listActiveTenantIDs = `-- name: ListActiveTenantIDs :many
-SELECT id FROM tenants WHERE status = 'ACTIVE'
+const listActiveTenantIDsPaginated = `-- name: ListActiveTenantIDsPaginated :many
+SELECT id FROM tenants WHERE status = 'ACTIVE' ORDER BY id LIMIT $1 OFFSET $2
 `
 
-// List all active tenant IDs for the snapshot scheduler.
-func (q *Queries) ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := q.db.Query(ctx, listActiveTenantIDs)
+type ListActiveTenantIDsPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+// List active tenant IDs with pagination for batch processing.
+func (q *Queries) ListActiveTenantIDsPaginated(ctx context.Context, arg ListActiveTenantIDsPaginatedParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listActiveTenantIDsPaginated, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

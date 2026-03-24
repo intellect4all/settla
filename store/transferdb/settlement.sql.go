@@ -13,6 +13,74 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const aggregateCompletedTransfersByPeriod = `-- name: AggregateCompletedTransfersByPeriod :many
+SELECT source_currency, dest_currency,
+       SUM(source_amount)::NUMERIC(28,8) AS total_source,
+       SUM(dest_amount)::NUMERIC(28,8) AS total_dest,
+       COUNT(*) AS transfer_count,
+       SUM(COALESCE((fees->>'total_usd')::NUMERIC(28,8), 0))::NUMERIC(28,8) AS total_fees_usd
+FROM transfers
+WHERE tenant_id = $1
+  AND status = 'COMPLETED'
+  AND completed_at >= $2
+  AND completed_at < $3
+GROUP BY source_currency, dest_currency
+`
+
+type AggregateCompletedTransfersByPeriodParams struct {
+	TenantID      uuid.UUID          `json:"tenant_id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedAt_2 pgtype.Timestamptz `json:"completed_at_2"`
+}
+
+type AggregateCompletedTransfersByPeriodRow struct {
+	SourceCurrency string         `json:"source_currency"`
+	DestCurrency   string         `json:"dest_currency"`
+	TotalSource    pgtype.Numeric `json:"total_source"`
+	TotalDest      pgtype.Numeric `json:"total_dest"`
+	TransferCount  int64          `json:"transfer_count"`
+	TotalFeesUsd   pgtype.Numeric `json:"total_fees_usd"`
+}
+
+func (q *Queries) AggregateCompletedTransfersByPeriod(ctx context.Context, arg AggregateCompletedTransfersByPeriodParams) ([]AggregateCompletedTransfersByPeriodRow, error) {
+	rows, err := q.db.Query(ctx, aggregateCompletedTransfersByPeriod, arg.TenantID, arg.CompletedAt, arg.CompletedAt_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AggregateCompletedTransfersByPeriodRow{}
+	for rows.Next() {
+		var i AggregateCompletedTransfersByPeriodRow
+		if err := rows.Scan(
+			&i.SourceCurrency,
+			&i.DestCurrency,
+			&i.TotalSource,
+			&i.TotalDest,
+			&i.TransferCount,
+			&i.TotalFeesUsd,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countActiveTenantsBySettlementModel = `-- name: CountActiveTenantsBySettlementModel :one
+SELECT count(*) FROM tenants
+WHERE settlement_model = $1 AND status = 'ACTIVE'
+`
+
+func (q *Queries) CountActiveTenantsBySettlementModel(ctx context.Context, settlementModel string) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTenantsBySettlementModel, settlementModel)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createNetSettlement = `-- name: CreateNetSettlement :one
 INSERT INTO net_settlements (
     id, tenant_id, period_start, period_end,
@@ -89,6 +157,40 @@ func (q *Queries) GetNetSettlement(ctx context.Context, id uuid.UUID) (NetSettle
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listActiveTenantIDsBySettlementModel = `-- name: ListActiveTenantIDsBySettlementModel :many
+SELECT id FROM tenants
+WHERE settlement_model = $1 AND status = 'ACTIVE' AND id > $2
+ORDER BY id
+LIMIT $3
+`
+
+type ListActiveTenantIDsBySettlementModelParams struct {
+	SettlementModel string    `json:"settlement_model"`
+	ID              uuid.UUID `json:"id"`
+	Limit           int32     `json:"limit"`
+}
+
+// Cursor-based pagination: pass uuid.Nil for the first page.
+func (q *Queries) ListActiveTenantIDsBySettlementModel(ctx context.Context, arg ListActiveTenantIDsBySettlementModelParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listActiveTenantIDsBySettlementModel, arg.SettlementModel, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAllPendingSettlements = `-- name: ListAllPendingSettlements :many
@@ -263,12 +365,20 @@ func (q *Queries) ListPendingSettlements(ctx context.Context, tenantID uuid.UUID
 }
 
 const listTenantsBySettlementModel = `-- name: ListTenantsBySettlementModel :many
-SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events, crypto_enabled, default_settlement_pref, supported_chains, min_confirmations_tron, min_confirmations_eth, min_confirmations_base, payment_tolerance_bps, default_session_ttl_secs, bank_deposits_enabled, default_banking_partner, bank_supported_currencies, default_mismatch_policy, bank_default_session_ttl_secs, fee_schedule_version FROM tenants
+SELECT id, name, slug, status, fee_schedule, settlement_model, webhook_url, webhook_secret, daily_limit_usd, per_transfer_limit, kyb_status, kyb_verified_at, metadata, created_at, updated_at, webhook_events, crypto_enabled, default_settlement_pref, supported_chains, min_confirmations_tron, min_confirmations_eth, min_confirmations_base, payment_tolerance_bps, default_session_ttl_secs, bank_deposits_enabled, default_banking_partner, bank_supported_currencies, default_mismatch_policy, bank_default_session_ttl_secs, fee_schedule_version, max_pending_transfers FROM tenants
 WHERE settlement_model = $1
+ORDER BY id
+LIMIT $2 OFFSET $3
 `
 
-func (q *Queries) ListTenantsBySettlementModel(ctx context.Context, settlementModel string) ([]Tenant, error) {
-	rows, err := q.db.Query(ctx, listTenantsBySettlementModel, settlementModel)
+type ListTenantsBySettlementModelParams struct {
+	SettlementModel string `json:"settlement_model"`
+	Limit           int32  `json:"limit"`
+	Offset          int32  `json:"offset"`
+}
+
+func (q *Queries) ListTenantsBySettlementModel(ctx context.Context, arg ListTenantsBySettlementModelParams) ([]Tenant, error) {
+	rows, err := q.db.Query(ctx, listTenantsBySettlementModel, arg.SettlementModel, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +417,7 @@ func (q *Queries) ListTenantsBySettlementModel(ctx context.Context, settlementMo
 			&i.DefaultMismatchPolicy,
 			&i.BankDefaultSessionTtlSecs,
 			&i.FeeScheduleVersion,
+			&i.MaxPendingTransfers,
 		); err != nil {
 			return nil, err
 		}
