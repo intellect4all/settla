@@ -3,25 +3,43 @@ package transferdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
-
 	pgx "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/intellect4all/settla/domain"
+	"github.com/intellect4all/settla/store/rls"
 )
 
 // PaymentLinkStoreAdapter implements the payment link store interface using SQLC-generated queries.
 type PaymentLinkStoreAdapter struct {
-	q    *Queries
-	pool TxBeginner
+	q          *Queries
+	pool       TxBeginner
+	appPool    *pgxpool.Pool // optional: RLS-enforced pool
+	rlsEnabled bool          // true when appPool is configured; false means RLS is bypassed
 }
 
 // NewPaymentLinkStoreAdapter creates a new PaymentLinkStoreAdapter.
 func NewPaymentLinkStoreAdapter(q *Queries, pool TxBeginner) *PaymentLinkStoreAdapter {
-	return &PaymentLinkStoreAdapter{q: q, pool: pool}
+	a := &PaymentLinkStoreAdapter{q: q, pool: pool}
+	a.rlsEnabled = (a.appPool != nil)
+	if !a.rlsEnabled {
+		slog.Warn("settla-store: PaymentLinkStoreAdapter RLS pool not configured, tenant isolation relies on application-layer filters only")
+	}
+	return a
+}
+
+// WithPaymentLinkAppPool configures the RLS-enforced pool for tenant-scoped operations.
+func (s *PaymentLinkStoreAdapter) WithPaymentLinkAppPool(pool *pgxpool.Pool) *PaymentLinkStoreAdapter {
+	s.appPool = pool
+	s.rlsEnabled = (pool != nil)
+	return s
 }
 
 // Create persists a new payment link.
@@ -41,7 +59,7 @@ func (s *PaymentLinkStoreAdapter) Create(ctx context.Context, link *domain.Payme
 		expiresAt = pgtype.Timestamptz{Time: *link.ExpiresAt, Valid: true}
 	}
 
-	row, err := s.q.CreatePaymentLink(ctx, CreatePaymentLinkParams{
+	params := CreatePaymentLinkParams{
 		TenantID:      link.TenantID,
 		ShortCode:     link.ShortCode,
 		Description:   link.Description,
@@ -50,20 +68,59 @@ func (s *PaymentLinkStoreAdapter) Create(ctx context.Context, link *domain.Payme
 		ExpiresAt:     expiresAt,
 		RedirectUrl:   link.RedirectURL,
 		Status:        string(link.Status),
-	})
-	if err != nil {
-		return fmt.Errorf("settla-payment-link-store: creating link: %w", err)
 	}
 
-	link.ID = row.ID
-	link.CreatedAt = row.CreatedAt
-	link.UpdatedAt = row.UpdatedAt
-	link.UseCount = int(row.UseCount)
-	return nil
+	createFn := func(q *Queries) error {
+		row, err := q.CreatePaymentLink(ctx, params)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "payment_links_short_code_key" {
+				return domain.ErrShortCodeCollision()
+			}
+			return fmt.Errorf("settla-payment-link-store: creating link: %w", err)
+		}
+		link.ID = row.ID
+		link.CreatedAt = row.CreatedAt
+		link.UpdatedAt = row.UpdatedAt
+		link.UseCount = int(row.UseCount)
+		return nil
+	}
+
+	if s.appPool != nil {
+		return rls.WithTenantTx(ctx, s.appPool, link.TenantID, func(tx pgx.Tx) error {
+			return createFn(s.q.WithTx(tx))
+		})
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "Create", "tenant_id", link.TenantID)
+	return createFn(s.q)
 }
 
 // GetByID retrieves a payment link by tenant and ID.
 func (s *PaymentLinkStoreAdapter) GetByID(ctx context.Context, tenantID, linkID uuid.UUID) (*domain.PaymentLink, error) {
+	if s.appPool != nil {
+		var result *domain.PaymentLink
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			row, err := s.q.WithTx(tx).GetPaymentLinkByID(ctx, GetPaymentLinkByIDParams{
+				ID:       linkID,
+				TenantID: tenantID,
+			})
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					return nil
+				}
+				return err
+			}
+			result, err = paymentLinkFromRow(row)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-payment-link-store: getting link %s: %w", linkID, err)
+		}
+		return result, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "GetByID", "tenant_id", tenantID)
 	row, err := s.q.GetPaymentLinkByID(ctx, GetPaymentLinkByIDParams{
 		ID:       linkID,
 		TenantID: tenantID,
@@ -91,6 +148,40 @@ func (s *PaymentLinkStoreAdapter) GetByShortCode(ctx context.Context, shortCode 
 
 // List retrieves payment links for a tenant with pagination.
 func (s *PaymentLinkStoreAdapter) List(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.PaymentLink, int64, error) {
+	if s.appPool != nil {
+		var links []domain.PaymentLink
+		var total int64
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			qtx := s.q.WithTx(tx)
+			rows, err := qtx.ListPaymentLinksByTenant(ctx, ListPaymentLinksByTenantParams{
+				TenantID: tenantID,
+				Limit:    int32(limit),
+				Offset:   int32(offset),
+			})
+			if err != nil {
+				return err
+			}
+			total, err = qtx.CountPaymentLinksByTenant(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			links = make([]domain.PaymentLink, len(rows))
+			for i, row := range rows {
+				link, err := paymentLinkFromRow(row)
+				if err != nil {
+					return err
+				}
+				links[i] = *link
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("settla-payment-link-store: listing links: %w", err)
+		}
+		return links, total, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "List", "tenant_id", tenantID)
 	rows, err := s.q.ListPaymentLinksByTenant(ctx, ListPaymentLinksByTenantParams{
 		TenantID: tenantID,
 		Limit:    int32(limit),
@@ -123,11 +214,20 @@ func (s *PaymentLinkStoreAdapter) IncrementUseCount(ctx context.Context, linkID 
 
 // UpdateStatus sets the status of a payment link.
 func (s *PaymentLinkStoreAdapter) UpdateStatus(ctx context.Context, tenantID, linkID uuid.UUID, status domain.PaymentLinkStatus) error {
-	return s.q.UpdatePaymentLinkStatus(ctx, UpdatePaymentLinkStatusParams{
+	params := UpdatePaymentLinkStatusParams{
 		ID:       linkID,
 		TenantID: tenantID,
 		Status:   string(status),
-	})
+	}
+
+	if s.appPool != nil {
+		return rls.WithTenantTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			return s.q.WithTx(tx).UpdatePaymentLinkStatus(ctx, params)
+		})
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "UpdateStatus", "tenant_id", tenantID)
+	return s.q.UpdatePaymentLinkStatus(ctx, params)
 }
 
 // ── Row conversion helper ────────────────────────────────────────────────────
