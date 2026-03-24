@@ -9,20 +9,25 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
 	AccumulateBankReceivedAmount(ctx context.Context, arg AccumulateBankReceivedAmountParams) error
 	AccumulateReceivedAmount(ctx context.Context, arg AccumulateReceivedAmountParams) error
+	AggregateCompletedTransfersByPeriod(ctx context.Context, arg AggregateCompletedTransfersByPeriodParams) ([]AggregateCompletedTransfersByPeriodRow, error)
+	CheckWebhookDuplicate(ctx context.Context, arg CheckWebhookDuplicateParams) (CheckWebhookDuplicateRow, error)
 	// Atomically claims a provider transaction slot using INSERT ON CONFLICT DO NOTHING.
 	// Returns the row id if the claim succeeded, or no row if already claimed.
 	// NOTE: executed as raw SQL in the adapter because SQLC cannot handle
 	// INSERT ON CONFLICT DO NOTHING RETURNING :one (returns no rows on conflict).
 	ClaimProviderTransaction(ctx context.Context, arg ClaimProviderTransactionParams) (uuid.UUID, error)
+	CountActiveTenantsBySettlementModel(ctx context.Context, settlementModel string) (int64, error)
 	CountAvailablePoolAddresses(ctx context.Context, arg CountAvailablePoolAddressesParams) (int64, error)
 	// Count undispensed addresses across all tenants and chains.
 	CountAvailablePoolAddressesAll(ctx context.Context) (int32, error)
+	CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) ([]CountAvailableVirtualAccountsByCurrencyRow, error)
 	// Count rows in the outbox_default partition (should always be zero).
 	CountDefaultPartitionRows(ctx context.Context) (int32, error)
 	CountDepositSessionsByTenantAndStatus(ctx context.Context, arg CountDepositSessionsByTenantAndStatusParams) (int64, error)
@@ -33,6 +38,9 @@ type Querier interface {
 	CountPaymentLinksByTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// Count provider transactions stuck in pending status older than a threshold.
 	CountPendingProviderTxOlderThan(ctx context.Context, createdAt time.Time) (int32, error)
+	// Counts non-terminal transfers for a tenant (used for per-tenant resource limits).
+	CountPendingTransfers(ctx context.Context, tenantID uuid.UUID) (int32, error)
+	CountPositionTransactionsByTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
 	// Count chain monitors whose checkpoint has not been updated since threshold.
 	CountStaleBlockCheckpoints(ctx context.Context, updatedAt time.Time) (int32, error)
 	// Count bank deposit sessions in CREDITING status older than threshold.
@@ -50,9 +58,13 @@ type Querier interface {
 	CountTransfersInStatus(ctx context.Context, arg CountTransfersInStatusParams) (int32, error)
 	// Count unpublished outbox entries older than a threshold.
 	CountUnpublishedOlderThan(ctx context.Context, createdAt time.Time) (int32, error)
+	CountVirtualAccountsByTenant(ctx context.Context, arg CountVirtualAccountsByTenantParams) (int64, error)
 	CountWebhookDeliveries(ctx context.Context, arg CountWebhookDeliveriesParams) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	CreateBankDepositSession(ctx context.Context, arg CreateBankDepositSessionParams) (CreateBankDepositSessionRow, error)
+	// Creates a bank deposit session with all fields including pre-generated ID,
+	// version, and amount fields. Used by CreateSessionWithOutbox.
+	CreateBankDepositSessionFull(ctx context.Context, arg CreateBankDepositSessionFullParams) (CreateBankDepositSessionFullRow, error)
 	CreateBankDepositTransaction(ctx context.Context, arg CreateBankDepositTransactionParams) (CreateBankDepositTransactionRow, error)
 	CreateBankingPartner(ctx context.Context, arg CreateBankingPartnerParams) (BankingPartner, error)
 	// ============================================================================
@@ -74,6 +86,7 @@ type Querier interface {
 	CreateNetSettlementOps(ctx context.Context, arg CreateNetSettlementOpsParams) (NetSettlement, error)
 	CreatePaymentLink(ctx context.Context, arg CreatePaymentLinkParams) (PaymentLink, error)
 	CreatePortalUser(ctx context.Context, arg CreatePortalUserParams) (PortalUser, error)
+	CreatePositionTransaction(ctx context.Context, arg CreatePositionTransactionParams) (PositionTransaction, error)
 	CreateProviderTransaction(ctx context.Context, arg CreateProviderTransactionParams) (ProviderTransaction, error)
 	CreateQuote(ctx context.Context, arg CreateQuoteParams) (Quote, error)
 	// ============================================================================
@@ -149,9 +162,11 @@ type Querier interface {
 	GetPortalUserByEmail(ctx context.Context, email string) (GetPortalUserByEmailRow, error)
 	GetPortalUserByID(ctx context.Context, id uuid.UUID) (GetPortalUserByIDRow, error)
 	GetPortalUsersByTenant(ctx context.Context, tenantID uuid.UUID) ([]GetPortalUsersByTenantRow, error)
+	GetPositionTransaction(ctx context.Context, arg GetPositionTransactionParams) (PositionTransaction, error)
 	// Provider performance: success rate, avg settlement time, volume per corridor.
 	GetProviderPerformance(ctx context.Context, arg GetProviderPerformanceParams) ([]GetProviderPerformanceRow, error)
 	GetProviderTransaction(ctx context.Context, arg GetProviderTransactionParams) (ProviderTransaction, error)
+	GetProviderWebhookLog(ctx context.Context, arg GetProviderWebhookLogParams) (ProviderWebhookLog, error)
 	GetQuote(ctx context.Context, arg GetQuoteParams) (Quote, error)
 	// Recent transfer activity feed (latest state changes).
 	GetRecentActivity(ctx context.Context, arg GetRecentActivityParams) ([]GetRecentActivityRow, error)
@@ -203,12 +218,15 @@ type Querier interface {
 	InsertOutboxEntries(ctx context.Context, arg []InsertOutboxEntriesParams) (int64, error)
 	InsertOutboxEntry(ctx context.Context, arg InsertOutboxEntryParams) (Outbox, error)
 	InsertPoolAddress(ctx context.Context, arg InsertPoolAddressParams) (CryptoAddressPool, error)
+	InsertProviderWebhookLog(ctx context.Context, arg InsertProviderWebhookLogParams) (InsertProviderWebhookLogRow, error)
 	InsertVirtualAccount(ctx context.Context, arg InsertVirtualAccountParams) (VirtualAccountPool, error)
 	InsertVirtualAccountIndex(ctx context.Context, arg InsertVirtualAccountIndexParams) (VirtualAccountIndex, error)
 	InsertWebhookDelivery(ctx context.Context, arg InsertWebhookDeliveryParams) (InsertWebhookDeliveryRow, error)
 	ListAPIKeysByTenant(ctx context.Context, tenantID uuid.UUID) ([]ListAPIKeysByTenantRow, error)
-	// List all active tenant IDs for the snapshot scheduler.
-	ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error)
+	// Cursor-based pagination: pass uuid.Nil for the first page.
+	ListActiveTenantIDsBySettlementModel(ctx context.Context, arg ListActiveTenantIDsBySettlementModelParams) ([]uuid.UUID, error)
+	// List active tenant IDs with pagination for batch processing.
+	ListActiveTenantIDsPaginated(ctx context.Context, arg ListActiveTenantIDsPaginatedParams) ([]uuid.UUID, error)
 	ListAllActiveTokens(ctx context.Context) ([]Token, error)
 	// Admin-only: returns pending settlements across all tenants.
 	// Callers MUST verify admin authorization before invoking.
@@ -247,14 +265,18 @@ type Querier interface {
 	ListPendingExportJobs(ctx context.Context, batchSize int32) ([]AnalyticsExportJob, error)
 	ListPendingSettlements(ctx context.Context, tenantID uuid.UUID) ([]ListPendingSettlementsRow, error)
 	ListPoolAddressesByTenant(ctx context.Context, arg ListPoolAddressesByTenantParams) ([]CryptoAddressPool, error)
+	ListPositionTransactionsByTenant(ctx context.Context, arg ListPositionTransactionsByTenantParams) ([]PositionTransaction, error)
+	ListPositionTransactionsByTenantAndStatus(ctx context.Context, arg ListPositionTransactionsByTenantAndStatusParams) ([]PositionTransaction, error)
 	ListProviderTransactions(ctx context.Context, arg ListProviderTransactionsParams) ([]ProviderTransaction, error)
+	ListProviderWebhookLogsByProvider(ctx context.Context, arg ListProviderWebhookLogsByProviderParams) ([]ListProviderWebhookLogsByProviderRow, error)
+	ListProviderWebhookLogsByTransfer(ctx context.Context, arg ListProviderWebhookLogsByTransferParams) ([]ListProviderWebhookLogsByTransferRow, error)
 	ListReconciliationReports(ctx context.Context, arg ListReconciliationReportsParams) ([]ReconciliationReport, error)
 	ListReconciliationReportsCursor(ctx context.Context, arg ListReconciliationReportsCursorParams) ([]ReconciliationReport, error)
 	// Used by recovery detector to find transfers stuck in non-terminal states.
 	// This is an admin-only system query that scans across all tenants.
 	ListStuckTransfers(ctx context.Context, arg ListStuckTransfersParams) ([]ListStuckTransfersRow, error)
 	ListTenants(ctx context.Context, arg ListTenantsParams) ([]Tenant, error)
-	ListTenantsBySettlementModel(ctx context.Context, settlementModel string) ([]Tenant, error)
+	ListTenantsBySettlementModel(ctx context.Context, arg ListTenantsBySettlementModelParams) ([]Tenant, error)
 	ListTokensByChain(ctx context.Context, chain string) ([]Token, error)
 	ListTransferEvents(ctx context.Context, arg ListTransferEventsParams) ([]TransferEvent, error)
 	ListTransfersByStatus(ctx context.Context, arg ListTransfersByStatusParams) ([]Transfer, error)
@@ -275,6 +297,7 @@ type Querier interface {
 	// last item from the previous page as $4 (must be >= $2 and < $3).
 	ListTransfersInDateRangeCursor(ctx context.Context, arg ListTransfersInDateRangeCursorParams) ([]Transfer, error)
 	ListVirtualAccountsByTenant(ctx context.Context, tenantID uuid.UUID) ([]VirtualAccountPool, error)
+	ListVirtualAccountsByTenantPaginated(ctx context.Context, arg ListVirtualAccountsByTenantPaginatedParams) ([]VirtualAccountPool, error)
 	ListWebhookDeliveries(ctx context.Context, arg ListWebhookDeliveriesParams) ([]ListWebhookDeliveriesRow, error)
 	ListWebhookEventSubscriptions(ctx context.Context, tenantID uuid.UUID) ([]WebhookEventSubscription, error)
 	MarkFailed(ctx context.Context, arg MarkFailedParams) error
@@ -286,7 +309,19 @@ type Querier interface {
 	ResolveManualReview(ctx context.Context, arg ResolveManualReviewParams) error
 	// Sum fees from completed transfers for a tenant in [start, end).
 	SumCompletedTransferFeesUSD(ctx context.Context, arg SumCompletedTransferFeesUSDParams) (pgtype.Numeric, error)
+	// Sums the USD-equivalent volume (stable_amount) for daily limit enforcement.
+	// stable_amount is the intermediate stablecoin amount (USDT, pegged 1:1 to USD),
+	// set from the quote at transfer creation time.
 	SumDailyVolumeByTenant(ctx context.Context, arg SumDailyVolumeByTenantParams) (pgtype.Numeric, error)
+	// Atomically transitions a bank deposit session with optimistic lock, updating
+	// amounts, payer info, failure details, and status-specific timestamps.
+	TransitionBankDepositSession(ctx context.Context, arg TransitionBankDepositSessionParams) (pgconn.CommandTag, error)
+	// Atomically transitions a crypto deposit session with optimistic lock, updating
+	// amounts, settlement link, failure details, and status-specific timestamps.
+	TransitionDepositSession(ctx context.Context, arg TransitionDepositSessionParams) (pgconn.CommandTag, error)
+	// Atomically updates transfer status with optimistic lock (version check) and
+	// sets status-specific timestamps. Used by outbox TransitionWithOutbox.
+	TransitionTransferStatus(ctx context.Context, arg TransitionTransferStatusParams) (pgconn.CommandTag, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, id uuid.UUID) error
 	UpdateCompensationRecord(ctx context.Context, arg UpdateCompensationRecordParams) error
 	UpdateDepositSessionCancelled(ctx context.Context, arg UpdateDepositSessionCancelledParams) error
@@ -304,6 +339,7 @@ type Querier interface {
 	UpdateManualReview(ctx context.Context, arg UpdateManualReviewParams) error
 	UpdatePaymentLinkStatus(ctx context.Context, arg UpdatePaymentLinkStatusParams) error
 	UpdatePortalUserLastLogin(ctx context.Context, id uuid.UUID) error
+	UpdatePositionTransactionStatus(ctx context.Context, arg UpdatePositionTransactionStatusParams) error
 	UpdateProviderTransactionFull(ctx context.Context, arg UpdateProviderTransactionFullParams) error
 	UpdateProviderTransactionHash(ctx context.Context, arg UpdateProviderTransactionHashParams) error
 	UpdateProviderTransactionStatus(ctx context.Context, arg UpdateProviderTransactionStatusParams) error
@@ -320,10 +356,14 @@ type Querier interface {
 	UpdateTransferFailure(ctx context.Context, arg UpdateTransferFailureParams) error
 	UpdateTransferStatus(ctx context.Context, arg UpdateTransferStatusParams) error
 	UpdateTransferStatusWithVersion(ctx context.Context, arg UpdateTransferStatusWithVersionParams) error
+	UpdateWebhookLogProcessed(ctx context.Context, arg UpdateWebhookLogProcessedParams) error
 	UpsertBlockCheckpoint(ctx context.Context, arg UpsertBlockCheckpointParams) (BlockCheckpoint, error)
 	// INSERT ON CONFLICT for nightly snapshot job.
 	UpsertDailySnapshot(ctx context.Context, arg UpsertDailySnapshotParams) error
 	UpsertToken(ctx context.Context, arg UpsertTokenParams) (Token, error)
+	// Inserts or updates the virtual account index entry. On conflict (duplicate
+	// account_number), updates session_id and account_type to point to the new session.
+	UpsertVirtualAccountIndex(ctx context.Context, arg UpsertVirtualAccountIndexParams) error
 	UpsertWebhookEventSubscription(ctx context.Context, arg UpsertWebhookEventSubscriptionParams) (WebhookEventSubscription, error)
 	ValidateAPIKey(ctx context.Context, keyHash string) (ValidateAPIKeyRow, error)
 	VerifyPortalUserEmail(ctx context.Context, emailTokenHash pgtype.Text) error
