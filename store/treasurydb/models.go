@@ -23,6 +23,118 @@ type Position struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
+type PositionEvent struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202603 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202604 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202605 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202606 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202607 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEvents202608 struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
+type PositionEventsDefault struct {
+	ID             uuid.UUID      `json:"id"`
+	PositionID     uuid.UUID      `json:"position_id"`
+	TenantID       uuid.UUID      `json:"tenant_id"`
+	EventType      string         `json:"event_type"`
+	Amount         pgtype.Numeric `json:"amount"`
+	BalanceAfter   pgtype.Numeric `json:"balance_after"`
+	LockedAfter    pgtype.Numeric `json:"locked_after"`
+	ReferenceID    uuid.UUID      `json:"reference_id"`
+	ReferenceType  string         `json:"reference_type"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	RecordedAt     time.Time      `json:"recorded_at"`
+}
+
 type PositionHistory struct {
 	ID          uuid.UUID      `json:"id"`
 	PositionID  uuid.UUID      `json:"position_id"`

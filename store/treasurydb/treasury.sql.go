@@ -279,6 +279,47 @@ func (q *Queries) ListPositionsByTenant(ctx context.Context, tenantID uuid.UUID)
 	return items, nil
 }
 
+const listPositionsPaginated = `-- name: ListPositionsPaginated :many
+SELECT id, tenant_id, currency, location, balance, locked, min_balance, target_balance, updated_at FROM positions
+ORDER BY tenant_id, currency, location
+LIMIT $1 OFFSET $2
+`
+
+type ListPositionsPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListPositionsPaginated(ctx context.Context, arg ListPositionsPaginatedParams) ([]Position, error) {
+	rows, err := q.db.Query(ctx, listPositionsPaginated, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Position{}
+	for rows.Next() {
+		var i Position
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Currency,
+			&i.Location,
+			&i.Balance,
+			&i.Locked,
+			&i.MinBalance,
+			&i.TargetBalance,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updatePositionBalances = `-- name: UpdatePositionBalances :exec
 UPDATE positions
 SET balance = $2, locked = $3, updated_at = now()

@@ -11,14 +11,19 @@ import (
 )
 
 type Querier interface {
+	BatchInsertPositionEvents(ctx context.Context, arg BatchInsertPositionEventsParams) error
 	BatchUpdatePositions(ctx context.Context, arg BatchUpdatePositionsParams) error
+	CountPositionEvents(ctx context.Context, arg CountPositionEventsParams) (int64, error)
 	CreatePositionHistory(ctx context.Context, arg CreatePositionHistoryParams) (PositionHistory, error)
 	DeletePosition(ctx context.Context, id uuid.UUID) error
+	GetEventsAfterTimestamp(ctx context.Context, arg GetEventsAfterTimestampParams) ([]PositionEvent, error)
 	GetPosition(ctx context.Context, arg GetPositionParams) (Position, error)
+	GetPositionEventHistory(ctx context.Context, arg GetPositionEventHistoryParams) ([]PositionEvent, error)
 	ListAllPositions(ctx context.Context) ([]Position, error)
 	ListPositionHistory(ctx context.Context, arg ListPositionHistoryParams) ([]PositionHistory, error)
 	ListPositionHistoryInDateRange(ctx context.Context, arg ListPositionHistoryInDateRangeParams) ([]PositionHistory, error)
 	ListPositionsByTenant(ctx context.Context, tenantID uuid.UUID) ([]Position, error)
+	ListPositionsPaginated(ctx context.Context, arg ListPositionsPaginatedParams) ([]Position, error)
 	UpdatePositionBalances(ctx context.Context, arg UpdatePositionBalancesParams) error
 	UpsertPosition(ctx context.Context, arg UpsertPositionParams) (Position, error)
 }

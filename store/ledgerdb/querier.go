@@ -30,6 +30,7 @@ type Querier interface {
 	ListEntryLinesByAccount(ctx context.Context, arg ListEntryLinesByAccountParams) ([]EntryLine, error)
 	ListEntryLinesByAccountInDateRange(ctx context.Context, arg ListEntryLinesByAccountInDateRangeParams) ([]EntryLine, error)
 	ListEntryLinesByJournal(ctx context.Context, journalEntryID uuid.UUID) ([]EntryLine, error)
+	ListEntryLinesWithAccountByJournal(ctx context.Context, journalEntryID uuid.UUID) ([]ListEntryLinesWithAccountByJournalRow, error)
 	ListJournalEntriesByReference(ctx context.Context, arg ListJournalEntriesByReferenceParams) ([]JournalEntry, error)
 	ListJournalEntriesByTenant(ctx context.Context, arg ListJournalEntriesByTenantParams) ([]JournalEntry, error)
 	ListJournalEntriesInDateRange(ctx context.Context, arg ListJournalEntriesInDateRangeParams) ([]JournalEntry, error)
