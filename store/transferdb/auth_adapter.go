@@ -2,6 +2,7 @@ package transferdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,13 +16,22 @@ import (
 
 // PortalAuthStoreAdapter implements the PortalAuthStore interface for portal authentication.
 type PortalAuthStoreAdapter struct {
-	q    *Queries
-	pool *pgxpool.Pool
+	q           *Queries
+	pool        *pgxpool.Pool
+	tenantIndex TenantIndexer
+}
+
+// TenantIndexer is satisfied by *cache.TenantIndex. Defined here to avoid
+// a compile-time dependency from store → cache.
+type TenantIndexer interface {
+	Add(ctx context.Context, tenantID uuid.UUID) error
+	Remove(ctx context.Context, tenantID uuid.UUID) error
 }
 
 // NewPortalAuthStoreAdapter creates a new PortalAuthStoreAdapter.
-func NewPortalAuthStoreAdapter(q *Queries, pool *pgxpool.Pool) *PortalAuthStoreAdapter {
-	return &PortalAuthStoreAdapter{q: q, pool: pool}
+// tenantIndex may be nil if Redis tenant tracking is not configured.
+func NewPortalAuthStoreAdapter(q *Queries, pool *pgxpool.Pool, tenantIndex TenantIndexer) *PortalAuthStoreAdapter {
+	return &PortalAuthStoreAdapter{q: q, pool: pool, tenantIndex: tenantIndex}
 }
 
 // CreateTenantWithUser creates a tenant and its first portal user atomically in a single transaction.
@@ -101,7 +111,7 @@ func (s *PortalAuthStoreAdapter) CreateTenantWithUser(ctx context.Context, tenan
 func (s *PortalAuthStoreAdapter) GetPortalUserByEmail(ctx context.Context, email string) (*domain.PortalUser, string, string, string, string, error) {
 	row, err := s.q.GetPortalUserByEmail(ctx, email)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", "", "", "", nil
 		}
 		return nil, "", "", "", "", fmt.Errorf("settla-auth: getting portal user by email: %w", err)
@@ -115,7 +125,7 @@ func (s *PortalAuthStoreAdapter) GetPortalUserByEmail(ctx context.Context, email
 func (s *PortalAuthStoreAdapter) GetPortalUserByID(ctx context.Context, id uuid.UUID) (*domain.PortalUser, string, string, string, string, error) {
 	row, err := s.q.GetPortalUserByID(ctx, id)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", "", "", "", nil
 		}
 		return nil, "", "", "", "", fmt.Errorf("settla-auth: getting portal user by ID: %w", err)
@@ -139,7 +149,7 @@ func (s *PortalAuthStoreAdapter) UpdateLastLogin(ctx context.Context, userID uui
 func (s *PortalAuthStoreAdapter) GetTenantBySlug(ctx context.Context, slug string) (*domain.Tenant, error) {
 	row, err := s.q.GetTenantBySlug(ctx, slug)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("settla-auth: getting tenant by slug: %w", err)
@@ -156,12 +166,24 @@ func (s *PortalAuthStoreAdapter) UpdateTenantKYB(ctx context.Context, tenantID u
 	})
 }
 
-// UpdateTenantStatus updates the status of a tenant.
+// UpdateTenantStatus updates the status of a tenant and syncs the Redis tenant index.
 func (s *PortalAuthStoreAdapter) UpdateTenantStatus(ctx context.Context, tenantID uuid.UUID, status string) error {
-	return s.q.UpdateTenantStatus(ctx, UpdateTenantStatusParams{
+	if err := s.q.UpdateTenantStatus(ctx, UpdateTenantStatusParams{
 		ID:     tenantID,
 		Status: status,
-	})
+	}); err != nil {
+		return err
+	}
+
+	if s.tenantIndex != nil {
+		switch status {
+		case "ACTIVE":
+			_ = s.tenantIndex.Add(ctx, tenantID)
+		case "SUSPENDED":
+			_ = s.tenantIndex.Remove(ctx, tenantID)
+		}
+	}
+	return nil
 }
 
 // UpdateTenantMetadata updates the metadata JSONB field for a tenant.
@@ -176,7 +198,7 @@ func (s *PortalAuthStoreAdapter) UpdateTenantMetadata(ctx context.Context, tenan
 func (s *PortalAuthStoreAdapter) GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error) {
 	row, err := s.q.GetTenant(ctx, tenantID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("settla-auth: getting tenant: %w", err)

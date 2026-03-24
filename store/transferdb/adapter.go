@@ -86,7 +86,7 @@ func NewTransferStoreAdapter(q *Queries, pool ...TxBeginner) *TransferStoreAdapt
 	if len(pool) > 0 && pool[0] != nil {
 		a.pool = pool[0]
 	}
-	a.rlsEnabled = (a.appPool != nil)
+	a.rlsEnabled = a.appPool != nil
 	if !a.rlsEnabled {
 		slog.Warn("settla-store: RLS pool not configured, tenant isolation relies on application-layer filters only")
 	}
@@ -99,7 +99,7 @@ func NewTransferStoreAdapterWithOptions(q *Queries, opts ...TransferStoreOption)
 	for _, opt := range opts {
 		opt(a)
 	}
-	a.rlsEnabled = (a.appPool != nil)
+	a.rlsEnabled = a.appPool != nil
 	if !a.rlsEnabled {
 		slog.Warn("settla-store: RLS pool not configured, tenant isolation relies on application-layer filters only")
 	}
@@ -165,7 +165,7 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 		DestAmount:           numericFromDecimal(transfer.DestAmount),
 		StableCoin:           textFromString(string(transfer.StableCoin)),
 		StableAmount:         numericFromDecimal(transfer.StableAmount),
-		Chain:                textFromString(transfer.Chain),
+		Chain:                textFromString(string(transfer.Chain)),
 		FxRate:               numericFromDecimal(transfer.FXRate),
 		Fees:                 feesJSON,
 		Sender:               senderJSON,
@@ -187,7 +187,11 @@ func (s *TransferStoreAdapter) CreateTransfer(ctx context.Context, transfer *dom
 }
 
 func (s *TransferStoreAdapter) GetTransfer(ctx context.Context, tenantID, transferID uuid.UUID) (*domain.Transfer, error) {
-	// When tenantID is uuid.Nil, look up by ID only (used by worker pipeline).
+	// When tenantID is uuid.Nil, look up by ID only (used by worker pipeline
+	// where tenant_id comes from the trusted NATS event payload).
+	// SECURITY: This path bypasses tenant isolation — never call with uuid.Nil
+	// from API-facing code. The RLS pool is not used here because workers run
+	// as the database owner, not the tenant-scoped settla_app role.
 	if tenantID == uuid.Nil {
 		row, err := s.q.GetTransferByID(ctx, transferID)
 		if err != nil {
@@ -410,6 +414,15 @@ func (s *TransferStoreAdapter) GetDailyVolume(ctx context.Context, tenantID uuid
 	return decimalFromNumeric(result), nil
 }
 
+// CountPendingTransfers returns the number of non-terminal transfers for a tenant.
+func (s *TransferStoreAdapter) CountPendingTransfers(ctx context.Context, tenantID uuid.UUID) (int, error) {
+	count, err := s.q.CountPendingTransfers(ctx, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("settla-store: counting pending transfers: %w", err)
+	}
+	return int(count), nil
+}
+
 func (s *TransferStoreAdapter) CreateQuote(ctx context.Context, quote *domain.Quote) error {
 	feesJSON, err := json.Marshal(quote.Fees)
 	if err != nil {
@@ -629,19 +642,19 @@ func (s *TransferStoreAdapter) transferFromRowWithDecrypt(row Transfer) (*domain
 
 func transferFromRow(row Transfer) (*domain.Transfer, error) {
 	t := &domain.Transfer{
-		ID:             row.ID,
-		TenantID:       row.TenantID,
-		ExternalRef:    row.ExternalRef.String,
-		IdempotencyKey: row.IdempotencyKey.String,
-		Status:         domain.TransferStatus(row.Status),
-		Version:        row.Version,
-		SourceCurrency: domain.Currency(row.SourceCurrency),
-		SourceAmount:   decimalFromNumeric(row.SourceAmount),
-		DestCurrency:   domain.Currency(row.DestCurrency),
-		DestAmount:     decimalFromNumeric(row.DestAmount),
-		StableCoin:     domain.Currency(row.StableCoin.String),
-		StableAmount:   decimalFromNumeric(row.StableAmount),
-		Chain:          row.Chain.String,
+		ID:                row.ID,
+		TenantID:          row.TenantID,
+		ExternalRef:       row.ExternalRef.String,
+		IdempotencyKey:    row.IdempotencyKey.String,
+		Status:            domain.TransferStatus(row.Status),
+		Version:           row.Version,
+		SourceCurrency:    domain.Currency(row.SourceCurrency),
+		SourceAmount:      decimalFromNumeric(row.SourceAmount),
+		DestCurrency:      domain.Currency(row.DestCurrency),
+		DestAmount:        decimalFromNumeric(row.DestAmount),
+		StableCoin:        domain.Currency(row.StableCoin.String),
+		StableAmount:      decimalFromNumeric(row.StableAmount),
+		Chain:             domain.CryptoChain(row.Chain.String),
 		FXRate:            decimalFromNumeric(row.FxRate),
 		OnRampProviderID:  row.OnRampProviderID.String,
 		OffRampProviderID: row.OffRampProviderID.String,
@@ -696,7 +709,7 @@ func tenantFromRow(row Tenant) (*domain.Tenant, error) {
 		CryptoConfig: domain.TenantCryptoConfig{
 			CryptoEnabled:         row.CryptoEnabled,
 			DefaultSettlementPref: domain.SettlementPreference(row.DefaultSettlementPref),
-			SupportedChains:       row.SupportedChains,
+			SupportedChains:       cryptoChainsFromStrings(row.SupportedChains),
 			MinConfirmationsTron:  row.MinConfirmationsTron,
 			MinConfirmationsEth:   row.MinConfirmationsEth,
 			MinConfirmationsBase:  row.MinConfirmationsBase,
@@ -706,7 +719,7 @@ func tenantFromRow(row Tenant) (*domain.Tenant, error) {
 		BankConfig: domain.TenantBankConfig{
 			BankDepositsEnabled:     row.BankDepositsEnabled,
 			DefaultBankingPartner:   row.DefaultBankingPartner.String,
-			BankSupportedCurrencies: row.BankSupportedCurrencies,
+			BankSupportedCurrencies: currenciesFromStrings(row.BankSupportedCurrencies),
 			DefaultMismatchPolicy:   domain.PaymentMismatchPolicy(row.DefaultMismatchPolicy),
 			DefaultSessionTTLSecs:   row.BankDefaultSessionTtlSecs,
 		},
@@ -803,4 +816,20 @@ func timePtrFromPgtypeTz(t pgtype.Timestamptz) *time.Time {
 	}
 	ts := t.Time
 	return &ts
+}
+
+func cryptoChainsFromStrings(ss []string) []domain.CryptoChain {
+	out := make([]domain.CryptoChain, len(ss))
+	for i, s := range ss {
+		out[i] = domain.CryptoChain(s)
+	}
+	return out
+}
+
+func currenciesFromStrings(ss []string) []domain.Currency {
+	out := make([]domain.Currency, len(ss))
+	for i, s := range ss {
+		out[i] = domain.Currency(s)
+	}
+	return out
 }
