@@ -28,13 +28,16 @@ import (
 // picks up intents from the outbox table and executes them, then calls back
 // into the engine's Handle*Result methods with the outcome.
 type Engine struct {
-	transferStore    TransferStore
-	tenantStore      TenantStore
-	router           Router // used ONLY for quote generation, NOT for provider execution
-	providerRegistry domain.ProviderRegistry
-	logger           *slog.Logger
-	metrics          *observability.Metrics
-	dailyVolumeCache sync.Map // map[string]dailyVolumeEntry
+	transferStore      TransferStore
+	tenantStore        TenantStore
+	router             Router // used ONLY for quote generation, NOT for provider execution
+	providerRegistry   domain.ProviderRegistry
+	logger             *slog.Logger
+	metrics            *observability.Metrics
+	dailyVolumeCache            sync.Map // map[string]dailyVolumeEntry — fallback when volumeCounter is nil
+	dailyVolumeCounter          DailyVolumeCounter // optional: atomic counter (Redis). Nil = use sync.Map fallback.
+	dailyVolumeWarnOnce         sync.Once
+	requireDailyVolumeCounter   bool
 }
 
 type dailyVolumeEntry struct {
@@ -42,23 +45,26 @@ type dailyVolumeEntry struct {
 	expiresAt time.Time
 }
 
-// dailyVolumeCacheTTL is how long daily volume entries are cached in memory.
-//
-// Trade-off: the daily volume cache is intentionally approximate. Because
-// sync.Map's Load+Store is not atomic, two concurrent CreateTransfer calls may
-// both read the same cached volume and each add their own amount, resulting in
-// a stale value. This is acceptable because:
-//
-//  1. The cache exists purely for performance — the authoritative check is the
-//     DB query that runs once the 5-second TTL expires.
-//  2. Over-counting is benign: it may reject a transfer that was slightly under
-//     the limit, but the tenant can retry immediately after the TTL refresh.
-//  3. Under-counting (allowing a transfer slightly over the limit) is bounded
-//     by the TTL window and the per-transfer limit, not unbounded drift.
-//
-// If exact enforcement is needed, replace with an atomic CAS loop or move the
-// limit check into the database transaction.
+// dailyVolumeCacheTTL is how long daily volume entries are cached in memory
+// when the sync.Map fallback is active (no DailyVolumeCounter configured).
 const dailyVolumeCacheTTL = 5 * time.Second
+
+// EngineOption configures optional Engine dependencies.
+type EngineOption func(*Engine)
+
+// WithDailyVolumeCounter sets an atomic daily volume counter (e.g. Redis-backed)
+// for race-free daily limit enforcement. When set, the in-memory sync.Map cache
+// is bypassed.
+func WithDailyVolumeCounter(counter DailyVolumeCounter) EngineOption {
+	return func(e *Engine) { e.dailyVolumeCounter = counter }
+}
+
+// WithRequireDailyVolumeCounter rejects transfer creation when no atomic
+// DailyVolumeCounter is configured and the tenant has a daily limit. Use this
+// in production to prevent the non-atomic sync.Map fallback from being used.
+func WithRequireDailyVolumeCounter() EngineOption {
+	return func(e *Engine) { e.requireDailyVolumeCounter = true }
+}
 
 // NewEngine creates a settlement engine wired to the given dependencies.
 // The router is used only for generating quotes in CreateTransfer and GetQuote;
@@ -71,8 +77,9 @@ func NewEngine(
 	providerRegistry domain.ProviderRegistry,
 	logger *slog.Logger,
 	metrics *observability.Metrics,
+	opts ...EngineOption,
 ) *Engine {
-	return &Engine{
+	e := &Engine{
 		transferStore:    transferStore,
 		tenantStore:      tenantStore,
 		router:           router,
@@ -80,6 +87,10 @@ func NewEngine(
 		logger:           logger.With("module", "core.engine"),
 		metrics:          metrics,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // CreateTransfer validates a settlement request, checks tenant limits, enforces
@@ -127,45 +138,7 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		return nil, fmt.Errorf("settla-core: create transfer: recipient bank_name is required when account_number is provided")
 	}
 
-	// c. Check per-transfer limit
-	if !tenant.PerTransferLimit.IsZero() && req.SourceAmount.GreaterThan(tenant.PerTransferLimit) {
-		return nil, domain.ErrAmountTooHigh(req.SourceAmount.String(), tenant.PerTransferLimit.String())
-	}
-
-	// d. Check daily volume limit
-	if !tenant.DailyLimitUSD.IsZero() {
-		today := time.Now().UTC().Truncate(24 * time.Hour)
-		cacheKey := tenantID.String() + ":" + today.Format("2006-01-02")
-
-		var dailyVolume decimal.Decimal
-		if cached, ok := e.dailyVolumeCache.Load(cacheKey); ok {
-			entry := cached.(dailyVolumeEntry)
-			if time.Now().Before(entry.expiresAt) {
-				dailyVolume = entry.volume
-			} else {
-				e.dailyVolumeCache.Delete(cacheKey)
-				vol, err := e.transferStore.GetDailyVolume(ctx, tenantID, today)
-				if err != nil {
-					return nil, fmt.Errorf("settla-core: create transfer: checking daily volume: %w", err)
-				}
-				dailyVolume = vol
-				e.dailyVolumeCache.Store(cacheKey, dailyVolumeEntry{volume: vol, expiresAt: time.Now().Add(dailyVolumeCacheTTL)})
-			}
-		} else {
-			vol, err := e.transferStore.GetDailyVolume(ctx, tenantID, today)
-			if err != nil {
-				return nil, fmt.Errorf("settla-core: create transfer: checking daily volume: %w", err)
-			}
-			dailyVolume = vol
-			e.dailyVolumeCache.Store(cacheKey, dailyVolumeEntry{volume: vol, expiresAt: time.Now().Add(dailyVolumeCacheTTL)})
-		}
-
-		if dailyVolume.Add(req.SourceAmount).GreaterThan(tenant.DailyLimitUSD) {
-			return nil, domain.ErrDailyLimitExceeded(tenantID.String())
-		}
-	}
-
-	// e. Check idempotency key
+	// c. Check idempotency key
 	if req.IdempotencyKey != "" {
 		existing, err := e.transferStore.GetTransferByIdempotencyKey(ctx, tenantID, req.IdempotencyKey)
 		if err == nil && existing != nil {
@@ -173,7 +146,20 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		}
 	}
 
-	// f. Fetch and validate quote
+	// c2. Check per-tenant pending transfer limit
+	if tenant.MaxPendingTransfers > 0 {
+		count, err := e.transferStore.CountPendingTransfers(ctx, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: create transfer: counting pending transfers: %w", err)
+		}
+		if count >= tenant.MaxPendingTransfers {
+			return nil, fmt.Errorf("settla-core: create transfer: tenant %s exceeded max pending transfers (%d)", tenantID, tenant.MaxPendingTransfers)
+		}
+	}
+
+	// d. Fetch and validate quote — resolved before limit checks so that
+	// quote.StableAmount (USDT, pegged 1:1 to USD) provides the USD-equivalent
+	// for comparing against USD-denominated tenant limits.
 	var quote *domain.Quote
 	if req.QuoteID != nil {
 		quote, err = e.transferStore.GetQuote(ctx, tenantID, *req.QuoteID)
@@ -204,7 +190,7 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		req.QuoteID = &quote.ID
 	}
 
-	// f2. Cross-validate currency pair for pre-existing quotes
+	// d2. Cross-validate currency pair for pre-existing quotes
 	if req.QuoteID != nil {
 		if quote.SourceCurrency != req.SourceCurrency {
 			return nil, fmt.Errorf("settla-core: create transfer: quote source currency %s does not match request source currency %s", quote.SourceCurrency, req.SourceCurrency)
@@ -214,29 +200,10 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		}
 	}
 
-	// f3. Validate quote amounts are positive
-	if !quote.DestAmount.IsPositive() {
-		return nil, fmt.Errorf("settla-core: create transfer: quote dest amount must be positive, got %s", quote.DestAmount.String())
+	if err := quote.Validate(); err != nil {
+		return nil, fmt.Errorf("settla-core: create transfer: quote validation failed: %w", err)
 	}
-	if !quote.StableAmount.IsPositive() {
-		return nil, fmt.Errorf("settla-core: create transfer: quote stable amount must be positive, got %s", quote.StableAmount.String())
-	}
-
-	// f3. Validate quote route fields are non-empty
-	if quote.Route.OnRampProvider == "" {
-		return nil, fmt.Errorf("settla-core: create transfer: quote route on_ramp_provider is required")
-	}
-	if quote.Route.OffRampProvider == "" {
-		return nil, fmt.Errorf("settla-core: create transfer: quote route off_ramp_provider is required")
-	}
-	if quote.Route.Chain == "" {
-		return nil, fmt.Errorf("settla-core: create transfer: quote route chain is required")
-	}
-	if quote.Route.StableCoin == "" {
-		return nil, fmt.Errorf("settla-core: create transfer: quote route stablecoin is required")
-	}
-
-	// f4. Validate quoted providers are still available in the registry
+	// d5. Validate quoted providers are still available in the registry
 	if e.providerRegistry != nil {
 		if _, err := e.providerRegistry.GetOnRamp(quote.Route.OnRampProvider); err != nil {
 			return nil, domain.ErrProviderUnavailable(quote.Route.OnRampProvider)
@@ -246,9 +213,31 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		}
 	}
 
-	// f5. Validate chain is a supported blockchain
+	// d6. Validate chain is a supported blockchain
 	if err := domain.ValidateChain(quote.Route.Chain); err != nil {
 		return nil, fmt.Errorf("settla-core: create transfer: %w", err)
+	}
+
+	// e. Check per-transfer limit (USD-equivalent via quote.StableAmount)
+	// StableAmount is the intermediate stablecoin (USDT, pegged 1:1 to USD),
+	// making it the correct USD-equivalent for limit comparison regardless of source currency.
+	if !tenant.PerTransferLimit.IsZero() && quote.StableAmount.GreaterThan(tenant.PerTransferLimit) {
+		return nil, domain.ErrAmountTooHigh(quote.StableAmount.String(), tenant.PerTransferLimit.String())
+	}
+
+	// f. Check daily volume limit (USD-equivalent)
+	// The DB query sums stable_amount — the USD-equivalent set from the quote at creation.
+	if !tenant.DailyLimitUSD.IsZero() {
+		today := time.Now().UTC().Truncate(24 * time.Hour)
+
+		dailyVolume, err := e.getDailyVolume(ctx, tenantID, today)
+		if err != nil {
+			return nil, fmt.Errorf("settla-core: create transfer: checking daily volume: %w", err)
+		}
+
+		if dailyVolume.Add(quote.StableAmount).GreaterThan(tenant.DailyLimitUSD) {
+			return nil, domain.ErrDailyLimitExceeded(tenantID.String())
+		}
 	}
 
 	// g. Create transfer record
@@ -290,12 +279,9 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		return nil, fmt.Errorf("settla-core: create transfer: total fees (%s) must be less than source amount (%s)", transfer.Fees.TotalFeeUSD, transfer.SourceAmount)
 	}
 
-	// g4. Warn if fees are zero — may indicate misconfigured quote
+	// g4. Reject zero fees — indicates misconfigured fee schedule or quote
 	if transfer.Fees.TotalFeeUSD.IsZero() {
-		e.logger.Warn("settla-core: transfer created with zero fees",
-			"transfer_id", transfer.ID,
-			"tenant_id", transfer.TenantID,
-		)
+		return nil, fmt.Errorf("settla-core: create transfer: zero fees not permitted for tenant %s — check fee schedule configuration", tenantID)
 	}
 
 	// h. Build outbox event for transfer.created
@@ -317,17 +303,10 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 		return nil, fmt.Errorf("settla-core: create transfer: persisting: %w", err)
 	}
 
-	// Update daily volume cache with the new transfer amount
+	// Update daily volume counter with the new transfer amount
 	if !tenant.DailyLimitUSD.IsZero() {
 		today := time.Now().UTC().Truncate(24 * time.Hour)
-		cacheKey := tenantID.String() + ":" + today.Format("2006-01-02")
-		if cached, ok := e.dailyVolumeCache.Load(cacheKey); ok {
-			entry := cached.(dailyVolumeEntry)
-			e.dailyVolumeCache.Store(cacheKey, dailyVolumeEntry{
-				volume:    entry.volume.Add(req.SourceAmount),
-				expiresAt: entry.expiresAt,
-			})
-		}
+		e.incrDailyVolume(ctx, tenantID, today, quote.StableAmount)
 	}
 
 	corridor := observability.FormatCorridor(string(req.SourceCurrency), string(req.DestCurrency))
@@ -504,7 +483,7 @@ func (e *Engine) InitiateOnRamp(ctx context.Context, tenantID uuid.UUID, transfe
 		if qErr == nil && quote != nil {
 			seen := make(map[string]bool)
 			for _, alt := range quote.Route.AlternativeRoutes {
-				dedupKey := alt.OnRampProvider + ":" + alt.OffRampProvider + ":" + alt.Chain
+				dedupKey := alt.OnRampProvider + ":" + alt.OffRampProvider + ":" + string(alt.Chain)
 				if seen[dedupKey] {
 					continue
 				}
@@ -569,6 +548,11 @@ func (e *Engine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, tra
 		return fmt.Errorf("settla-core: handle on-ramp result %s: %w", transferID, err)
 	}
 	if transfer.Status != domain.TransferStatusOnRamping {
+		// If the transfer has advanced past ON_RAMPING, this is a NATS replay — skip.
+		// Otherwise (terminal, failed, or earlier state), reject.
+		if !isAdvancedPast(transfer.Status, domain.TransferStatusOnRamping) {
+			return domain.ErrInvalidTransition(string(transfer.Status), string(domain.TransferStatusOnRamping))
+		}
 		e.logger.Info("settla-core: skipping on-ramp result (NATS replay): transfer already advanced",
 			"transfer_id", transferID, "current_status", transfer.Status, "expected_status", domain.TransferStatusOnRamping)
 		return nil
@@ -592,7 +576,7 @@ func (e *Engine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, tra
 
 		onRampLines := []domain.LedgerLineEntry{
 			{
-				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
+				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(string(transfer.Chain))),
 				EntryType:   string(domain.EntryTypeDebit),
 				Amount:      transfer.StableAmount,
 				Currency:    string(transfer.StableCoin),
@@ -711,6 +695,9 @@ func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID,
 		return fmt.Errorf("settla-core: handle settlement result %s: %w", transferID, err)
 	}
 	if transfer.Status != domain.TransferStatusSettling {
+		if !isAdvancedPast(transfer.Status, domain.TransferStatusSettling) {
+			return domain.ErrInvalidTransition(string(transfer.Status), string(domain.TransferStatusSettling))
+		}
 		e.logger.Info("settla-core: skipping settlement result (NATS replay): transfer already advanced",
 			"transfer_id", transferID, "current_status", transfer.Status, "expected_status", domain.TransferStatusSettling)
 		return nil
@@ -747,6 +734,7 @@ func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID,
 			Reference:    transfer.ID.String(),
 			Alternatives: offRampAlts,
 			QuotedRate:   transfer.FXRate,
+			SourceTxHash: result.TxHash,
 		})
 		if err != nil {
 			return fmt.Errorf("settla-core: handle settlement result %s: marshalling off-ramp payload: %w", transferID, err)
@@ -806,7 +794,7 @@ func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID,
 		onRampFee := transfer.Fees.OnRampFee
 		reversalLines := []domain.LedgerLineEntry{
 			{
-				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
+				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(string(transfer.Chain))),
 				EntryType:   string(domain.EntryTypeCredit),
 				Amount:      transfer.StableAmount,
 				Currency:    string(transfer.StableCoin),
@@ -874,6 +862,9 @@ func (e *Engine) HandleOffRampResult(ctx context.Context, tenantID uuid.UUID, tr
 		return fmt.Errorf("settla-core: handle off-ramp result %s: %w", transferID, pErr)
 	}
 	if precheck.Status != domain.TransferStatusOffRamping {
+		if !isAdvancedPast(precheck.Status, domain.TransferStatusOffRamping) {
+			return domain.ErrInvalidTransition(string(precheck.Status), string(domain.TransferStatusOffRamping))
+		}
 		e.logger.Info("settla-core: skipping off-ramp result (NATS replay): transfer already advanced",
 			"transfer_id", transferID, "current_status", precheck.Status, "expected_status", domain.TransferStatusOffRamping)
 		return nil
@@ -911,7 +902,7 @@ func (e *Engine) HandleOffRampResult(ctx context.Context, tenantID uuid.UUID, tr
 
 	reversalLines := []domain.LedgerLineEntry{
 		{
-			AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
+			AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(string(transfer.Chain))),
 			EntryType:   string(domain.EntryTypeCredit),
 			Amount:      transfer.StableAmount,
 			Currency:    string(transfer.StableCoin),
@@ -989,17 +980,18 @@ func (e *Engine) CompleteTransfer(ctx context.Context, tenantID uuid.UUID, trans
 
 	location := fmt.Sprintf("bank:%s", strings.ToLower(string(transfer.SourceCurrency)))
 
-	// Treasury release intent — unlock the reservation
-	releasePayload, err := json.Marshal(domain.TreasuryReleasePayload{
+	// Treasury consume intent — consume the reservation and debit the balance.
+	// This atomically decrements both reservedMicro and balanceMicro because
+	// money physically left the tenant's position (sent to recipient).
+	consumePayload, err := json.Marshal(domain.TreasuryConsumePayload{
 		TransferID: transfer.ID,
 		TenantID:   transfer.TenantID,
 		Currency:   transfer.SourceCurrency,
 		Amount:     transfer.SourceAmount,
 		Location:   location,
-		Reason:     "transfer_complete",
 	})
 	if err != nil {
-		return fmt.Errorf("settla-core: complete transfer %s: marshalling release payload: %w", transferID, err)
+		return fmt.Errorf("settla-core: complete transfer %s: marshalling consume payload: %w", transferID, err)
 	}
 
 	// Ledger post intent — final completion entries
@@ -1068,7 +1060,7 @@ func (e *Engine) CompleteTransfer(ctx context.Context, tenantID uuid.UUID, trans
 	}
 
 	entries, err := buildOutboxEntries(
-		outboxResult(domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryRelease, releasePayload)),
+		outboxResult(domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentTreasuryConsume, consumePayload)),
 		outboxResult(domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentLedgerPost, ledgerPayload)),
 		outboxResult(domain.NewOutboxIntent("transfer", transfer.ID, transfer.TenantID, domain.IntentWebhookDeliver, webhookPayload)),
 		outboxResult(domain.NewOutboxEvent("transfer", transfer.ID, transfer.TenantID, domain.EventTransferCompleted, transferEventPayload(transfer.ID, transfer.TenantID))),
@@ -1198,7 +1190,7 @@ func (e *Engine) InitiateRefund(ctx context.Context, tenantID uuid.UUID, transfe
 		slug := tenant.Slug
 		refundLines = []domain.LedgerLineEntry{
 			{
-				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(transfer.Chain)),
+				AccountCode: fmt.Sprintf("assets:crypto:%s:%s", strings.ToLower(string(transfer.StableCoin)), strings.ToLower(string(transfer.Chain))),
 				EntryType:   string(domain.EntryTypeCredit),
 				Amount:      transfer.StableAmount,
 				Currency:    string(transfer.StableCoin),
@@ -1404,7 +1396,7 @@ func validateLedgerLines(lines []domain.LedgerLineEntry) error {
 		entryLines[i] = domain.EntryLine{
 			ID: uuid.New(),
 			Posting: domain.Posting{
-				AccountCode: l.AccountCode,
+				AccountCode: domain.AccountCode(l.AccountCode),
 				EntryType:   domain.EntryType(l.EntryType),
 				Amount:      l.Amount,
 				Currency:    domain.Currency(l.Currency),
@@ -1423,6 +1415,85 @@ func setCorrelationID(entries []domain.OutboxEntry, id uuid.UUID) []domain.Outbo
 	return entries
 }
 
+// getDailyVolume returns the current daily volume for a tenant.
+// If a DailyVolumeCounter is configured (e.g. Redis), it uses the atomic counter.
+// Otherwise falls back to the in-memory sync.Map cache with DB refresh.
+func (e *Engine) getDailyVolume(ctx context.Context, tenantID uuid.UUID, today time.Time) (decimal.Decimal, error) {
+	// Atomic counter path (Redis-backed)
+	if e.dailyVolumeCounter != nil {
+		vol, err := e.dailyVolumeCounter.GetDailyVolume(ctx, tenantID, today)
+		if err != nil {
+			e.logger.Warn("settla-core: daily volume counter unavailable, falling back to DB",
+				"tenant_id", tenantID, "error", err)
+			// Fall through to DB query below
+		} else if !vol.IsZero() {
+			return vol, nil
+		}
+		// Key doesn't exist yet — seed from DB
+		dbVol, dbErr := e.transferStore.GetDailyVolume(ctx, tenantID, today)
+		if dbErr != nil {
+			return decimal.Zero, dbErr
+		}
+		// Seed atomically (only if key still doesn't exist)
+		if _, seedErr := e.dailyVolumeCounter.SeedDailyVolume(ctx, tenantID, today, dbVol); seedErr != nil {
+			e.logger.Warn("settla-core: failed to seed daily volume counter",
+				"tenant_id", tenantID, "error", seedErr)
+		}
+		return dbVol, nil
+	}
+
+	// Fallback: approximate in-memory cache. WARNING: this path is NOT race-free.
+	// Two concurrent CreateTransfer calls may both read stale volume and both
+	// proceed, under-counting the daily total. Configure a DailyVolumeCounter
+	// (Redis-backed) via WithDailyVolumeCounter() for production enforcement.
+	if e.requireDailyVolumeCounter {
+		return decimal.Zero, fmt.Errorf("settla-core: daily volume counter required but not configured")
+	}
+	e.dailyVolumeWarnOnce.Do(func() {
+		e.logger.Warn("settla-core: using non-atomic sync.Map fallback for daily volume tracking; configure DailyVolumeCounter for production")
+	})
+	cacheKey := tenantID.String() + ":" + today.Format("2006-01-02")
+	if cached, ok := e.dailyVolumeCache.Load(cacheKey); ok {
+		entry := cached.(dailyVolumeEntry)
+		if time.Now().Before(entry.expiresAt) {
+			return entry.volume, nil
+		}
+		e.dailyVolumeCache.Delete(cacheKey)
+	}
+	vol, err := e.transferStore.GetDailyVolume(ctx, tenantID, today)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	e.dailyVolumeCache.Store(cacheKey, dailyVolumeEntry{volume: vol, expiresAt: time.Now().Add(dailyVolumeCacheTTL)})
+	return vol, nil
+}
+
+// incrDailyVolume atomically increments the daily volume counter after a
+// successful transfer creation. Best-effort: errors are logged but do not
+// fail the transfer.
+func (e *Engine) incrDailyVolume(ctx context.Context, tenantID uuid.UUID, today time.Time, amount decimal.Decimal) {
+	if e.dailyVolumeCounter != nil {
+		if _, err := e.dailyVolumeCounter.IncrDailyVolume(ctx, tenantID, today, amount); err != nil {
+			e.logger.Warn("settla-core: failed to increment daily volume counter",
+				"tenant_id", tenantID, "error", err)
+		}
+		return
+	}
+	// Fallback: update in-memory cache.
+	// NOTE: This Load+Store is NOT atomic — two concurrent goroutines may both
+	// read the same volume and each add their own amount, effectively losing one
+	// increment. This is acceptable for the approximate fallback; use
+	// DailyVolumeCounter (Redis INCRBYFLOAT) for exact enforcement.
+	cacheKey := tenantID.String() + ":" + today.Format("2006-01-02")
+	if cached, ok := e.dailyVolumeCache.Load(cacheKey); ok {
+		entry := cached.(dailyVolumeEntry)
+		e.dailyVolumeCache.Store(cacheKey, dailyVolumeEntry{
+			volume:    entry.volume.Add(amount),
+			expiresAt: entry.expiresAt,
+		})
+	}
+}
+
 // wrapTransitionError adds context to TransitionWithOutbox errors. Optimistic lock
 // conflicts get a "concurrent modification" message so callers (workers) can
 // distinguish retryable conflicts from permanent failures via errors.Is.
@@ -1434,4 +1505,29 @@ func wrapTransitionError(err error, step string, transferID uuid.UUID) error {
 		return fmt.Errorf("settla-core: %s: concurrent modification of transfer %s: %w", step, transferID, ErrOptimisticLock)
 	}
 	return fmt.Errorf("settla-core: %s %s: %w", step, transferID, err)
+}
+
+// advancedPastStates maps each expected status to the set of statuses that
+// indicate the transfer has already moved forward in the happy path. These
+// are the only statuses for which a NATS replay should be silently skipped.
+var advancedPastStates = map[domain.TransferStatus]map[domain.TransferStatus]bool{
+	domain.TransferStatusOnRamping: {
+		domain.TransferStatusSettling:   true,
+		domain.TransferStatusOffRamping: true,
+	},
+	domain.TransferStatusSettling: {
+		domain.TransferStatusOffRamping: true,
+	},
+}
+
+// isAdvancedPast returns true if currentStatus indicates the transfer has
+// already moved past expectedStatus in the happy-path lifecycle. This is
+// used to distinguish legitimate NATS replays (skip silently) from invalid
+// operations on terminal or unrelated states (return error).
+func isAdvancedPast(currentStatus, expectedStatus domain.TransferStatus) bool {
+	past, ok := advancedPastStates[expectedStatus]
+	if !ok {
+		return false
+	}
+	return past[currentStatus]
 }
