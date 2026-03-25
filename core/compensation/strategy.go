@@ -220,7 +220,7 @@ func buildSimpleRefundSteps(transfer *domain.Transfer, tenantSlug string) []Comp
 	if transfer.StableAmount.IsPositive() {
 		reversalLines = []domain.LedgerLineEntry{
 			{
-				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(transfer.Chain),
+				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(string(transfer.Chain)),
 				EntryType:   "CREDIT",
 				Amount:      transfer.StableAmount,
 				Currency:    string(transfer.StableCoin),
@@ -294,7 +294,7 @@ func buildReverseOnRampSteps(transfer *domain.Transfer, tenantSlug string) []Com
 	if transfer.StableAmount.IsPositive() {
 		reverseLines = []domain.LedgerLineEntry{
 			{
-				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(transfer.Chain),
+				AccountCode: "assets:crypto:" + lower(string(transfer.StableCoin)) + ":" + lower(string(transfer.Chain)),
 				EntryType:   "CREDIT",
 				Amount:      transfer.StableAmount,
 				Currency:    string(transfer.StableCoin),

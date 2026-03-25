@@ -18,7 +18,7 @@ import (
 
 // DetectorMetrics holds Prometheus metrics for the recovery detector.
 type DetectorMetrics struct {
-	StuckTransfersFound   *prometheus.GaugeVec  // labels: status
+	StuckTransfersFound   *prometheus.GaugeVec   // labels: status
 	RecoveryAttempts      *prometheus.CounterVec // labels: status, result
 	EscalationsCreated    prometheus.Counter
 	RecoveryCycleDuration prometheus.Histogram
@@ -196,11 +196,20 @@ func (d *Detector) Run(ctx context.Context) error {
 			d.logger.Info("settla-recovery: detector stopped")
 			return ctx.Err()
 		case <-ticker.C:
-			if err := d.runCycle(ctx); err != nil {
-				d.logger.Error("settla-recovery: cycle failed",
-					"error", err,
-				)
-			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						d.logger.Error("settla-recovery: panic in detection cycle, will retry next tick",
+							"panic", fmt.Sprintf("%v", r),
+						)
+					}
+				}()
+				if err := d.runCycle(ctx); err != nil {
+					d.logger.Error("settla-recovery: cycle failed",
+						"error", err,
+					)
+				}
+			}()
 		}
 	}
 }
@@ -231,7 +240,17 @@ func (d *Detector) runCycle(ctx context.Context) error {
 			d.metrics.StuckTransfersFound.WithLabelValues(string(status)).Set(float64(len(transfers)))
 		}
 
+		// Per-tenant fairness: limit recovery attempts per tenant per cycle
+		// to prevent one tenant's backlog from starving others.
+		const maxPerTenantPerCycle = 50
+		tenantCounts := make(map[uuid.UUID]int)
+
 		for _, transfer := range transfers {
+			if tenantCounts[transfer.TenantID] >= maxPerTenantPerCycle {
+				totalSkipped++
+				continue
+			}
+			tenantCounts[transfer.TenantID]++
 			stuckDuration := now.Sub(transfer.UpdatedAt)
 
 			// Try recovery first, escalate only if recovery fails or is skipped.
@@ -443,7 +462,7 @@ func (d *Detector) recoverSettling(ctx context.Context, transfer *domain.Transfe
 		return false, nil
 	}
 
-	status, err := d.providers.CheckBlockchainStatus(ctx, transfer.Chain, txHash)
+	status, err := d.providers.CheckBlockchainStatus(ctx, string(transfer.Chain), txHash)
 	if err != nil {
 		return false, fmt.Errorf("settla-recovery: checking blockchain status for transfer %s: %w", transfer.ID, err)
 	}

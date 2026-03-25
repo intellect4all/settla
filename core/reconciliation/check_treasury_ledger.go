@@ -13,9 +13,9 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-// TenantLister retrieves all active tenant IDs for reconciliation.
+// TenantLister iterates over active tenants in batches for reconciliation.
 type TenantLister interface {
-	ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error)
+	ForEachActiveTenant(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 }
 
 // TenantSlugResolver maps tenant UUIDs to slugs for account code construction.
@@ -68,58 +68,59 @@ func (c *TreasuryLedgerCheck) Name() string {
 
 // Run compares treasury positions with ledger balances for all active tenants.
 func (c *TreasuryLedgerCheck) Run(ctx context.Context) (*CheckResult, error) {
-	tenantIDs, err := c.tenants.ListActiveTenantIDs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("settla-reconciliation: listing tenants: %w", err)
-	}
-
 	var mismatches int
 	var details []string
 
-	for _, tenantID := range tenantIDs {
-		slug, err := c.slugResolver.GetTenantSlug(ctx, tenantID)
-		if err != nil {
-			c.logger.Warn("settla-reconciliation: failed to resolve tenant slug, falling back to UUID",
-				slog.String("tenant_id", tenantID.String()),
-				slog.String("error", err.Error()),
-			)
-			slug = tenantID.String()
-		}
-
-		positions, err := c.treasury.GetPositions(ctx, tenantID)
-		if err != nil {
-			return nil, fmt.Errorf("settla-reconciliation: getting positions for tenant %s: %w", tenantID, err)
-		}
-
-		for _, pos := range positions {
-			accountCode := buildAccountCode(slug, pos)
-			ledgerBalance, err := c.ledger.GetAccountBalance(ctx, accountCode)
+	err := c.tenants.ForEachActiveTenant(ctx, 500, func(tenantIDs []uuid.UUID) error {
+		for _, tenantID := range tenantIDs {
+			slug, err := c.slugResolver.GetTenantSlug(ctx, tenantID)
 			if err != nil {
-				c.logger.Warn("settla-reconciliation: ledger balance lookup failed",
-					slog.String("account_code", accountCode),
+				c.logger.Warn("settla-reconciliation: failed to resolve tenant slug, falling back to UUID",
+					slog.String("tenant_id", tenantID.String()),
 					slog.String("error", err.Error()),
 				)
-				mismatches++
-				details = append(details, fmt.Sprintf(
-					"tenant=%s account=%s: ledger query error: %v",
-					tenantID, accountCode, err,
-				))
-				continue
+				slug = tenantID.String()
 			}
 
-			treasuryBalance := pos.Balance
-			diff := treasuryBalance.Sub(ledgerBalance).Abs()
-			if diff.GreaterThan(c.tolerance) {
-				mismatches++
-				details = append(details, fmt.Sprintf(
-					"tenant=%s account=%s: treasury=%s ledger=%s diff=%s",
-					tenantID, accountCode,
-					treasuryBalance.StringFixed(2),
-					ledgerBalance.StringFixed(2),
-					diff.StringFixed(2),
-				))
+			positions, err := c.treasury.GetPositions(ctx, tenantID)
+			if err != nil {
+				return fmt.Errorf("settla-reconciliation: getting positions for tenant %s: %w", tenantID, err)
+			}
+
+			for _, pos := range positions {
+				accountCode := buildAccountCode(slug, pos)
+				ledgerBalance, err := c.ledger.GetAccountBalance(ctx, accountCode)
+				if err != nil {
+					c.logger.Warn("settla-reconciliation: ledger balance lookup failed",
+						slog.String("account_code", accountCode),
+						slog.String("error", err.Error()),
+					)
+					mismatches++
+					details = append(details, fmt.Sprintf(
+						"tenant=%s account=%s: ledger query error: %v",
+						tenantID, accountCode, err,
+					))
+					continue
+				}
+
+				treasuryBalance := pos.Balance
+				diff := treasuryBalance.Sub(ledgerBalance).Abs()
+				if diff.GreaterThan(c.tolerance) {
+					mismatches++
+					details = append(details, fmt.Sprintf(
+						"tenant=%s account=%s: treasury=%s ledger=%s diff=%s",
+						tenantID, accountCode,
+						treasuryBalance.StringFixed(2),
+						ledgerBalance.StringFixed(2),
+						diff.StringFixed(2),
+					))
+				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-reconciliation: tenant iteration failed: %w", err)
 	}
 
 	status := "pass"

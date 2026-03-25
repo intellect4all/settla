@@ -93,6 +93,15 @@ func (m *mockTreasuryManager) GetPosition(_ context.Context, _ uuid.UUID, _ doma
 func (m *mockTreasuryManager) GetLiquidityReport(_ context.Context, _ uuid.UUID) (*domain.LiquidityReport, error) {
 	return nil, nil
 }
+func (m *mockTreasuryManager) CreditBalance(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (m *mockTreasuryManager) DebitBalance(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (m *mockTreasuryManager) ConsumeReservation(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID) error {
+	return nil
+}
 
 // mockLedgerQuerier returns balances by account code.
 type mockLedgerQuerier struct {
@@ -112,8 +121,11 @@ type mockTenantLister struct {
 	tenantIDs []uuid.UUID
 }
 
-func (m *mockTenantLister) ListActiveTenantIDs(_ context.Context) ([]uuid.UUID, error) {
-	return m.tenantIDs, nil
+func (m *mockTenantLister) ForEachActiveTenant(_ context.Context, _ int32, fn func(ids []uuid.UUID) error) error {
+	if len(m.tenantIDs) == 0 {
+		return nil
+	}
+	return fn(m.tenantIDs)
 }
 
 // mockSlugResolver maps tenant UUIDs to slugs for testing.
