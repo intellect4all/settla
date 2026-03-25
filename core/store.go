@@ -33,6 +33,10 @@ type TransferStore interface {
 	// ListTransfersFiltered returns transfers with optional server-side filtering by status and search query.
 	ListTransfersFiltered(ctx context.Context, tenantID uuid.UUID, statusFilter, searchQuery string, limit int) ([]domain.Transfer, error)
 
+	// CountPendingTransfers returns the number of non-terminal transfers for a tenant.
+	// Used to enforce per-tenant pending transfer limits.
+	CountPendingTransfers(ctx context.Context, tenantID uuid.UUID) (int, error)
+
 	// TransitionWithOutbox atomically updates transfer status and inserts outbox entries
 	// in a single database transaction. Uses optimistic locking via version check.
 	// Returns domain.ErrOptimisticLock if version mismatch.
@@ -47,6 +51,23 @@ type TransferStore interface {
 type TenantStore interface {
 	GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error)
 	GetTenantBySlug(ctx context.Context, slug string) (*domain.Tenant, error)
+}
+
+// DailyVolumeCounter provides atomic daily volume tracking for limit enforcement.
+// When set on the Engine, it replaces the in-process sync.Map cache with an
+// atomic counter (typically backed by Redis INCRBYFLOAT) that is safe under
+// concurrent CreateTransfer calls. If nil, the engine falls back to the
+// approximate in-memory cache.
+type DailyVolumeCounter interface {
+	// GetDailyVolume returns the current daily volume for a tenant. If the key
+	// does not exist, returns 0 and a nil error.
+	GetDailyVolume(ctx context.Context, tenantID uuid.UUID, date time.Time) (decimal.Decimal, error)
+	// IncrDailyVolume atomically increments the daily volume counter by amount
+	// and returns the new total.
+	IncrDailyVolume(ctx context.Context, tenantID uuid.UUID, date time.Time, amount decimal.Decimal) (decimal.Decimal, error)
+	// SeedDailyVolume sets the daily volume counter if it does not already exist.
+	// Used to seed from DB on first access. Returns true if the key was set.
+	SeedDailyVolume(ctx context.Context, tenantID uuid.UUID, date time.Time, amount decimal.Decimal) (bool, error)
 }
 
 // Router is needed ONLY for quote generation in CreateTransfer and GetQuote.
