@@ -4,12 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/intellect4all/settla/domain"
+)
+
+const (
+	// defaultBatchSize is the number of tenant IDs fetched per paginated query.
+	defaultBatchSize int32 = 500
+	// defaultWorkers is the number of concurrent goroutines processing settlements.
+	defaultWorkers = 32
+	// perTenantTimeout is the maximum time allowed for a single tenant's settlement.
+	perTenantTimeout = 60 * time.Second
 )
 
 // settlementLastSuccess tracks when the last successful settlement tick completed.
@@ -17,6 +29,22 @@ import (
 var settlementLastSuccess = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "settla_settlement_last_success_timestamp",
 	Help: "Unix timestamp of the last successful settlement scheduler tick.",
+})
+
+var settlementTenantsProcessed = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "settla_settlement_tenants_processed_total",
+	Help: "Total number of tenants processed (success or failure) by the settlement scheduler.",
+})
+
+var settlementTenantsFailed = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "settla_settlement_tenants_failed_total",
+	Help: "Total number of tenant settlement calculations that failed.",
+})
+
+var settlementTickDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name:    "settla_settlement_tick_duration_seconds",
+	Help:    "Duration of a complete settlement scheduler tick.",
+	Buckets: prometheus.ExponentialBuckets(1, 2, 15), // 1s to ~4.5h
 })
 
 // OverdueThresholds defines the escalation policy for overdue net settlements.
@@ -105,6 +133,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 // tick performs a single cycle: calculate yesterday's settlement for all
 // NET_SETTLEMENT tenants and check for overdue payments.
 func (s *Scheduler) tick(ctx context.Context) error {
+	tickStart := time.Now()
+	defer func() { settlementTickDuration.Observe(time.Since(tickStart).Seconds()) }()
+
 	s.logger.Info("settla-settlement: scheduler tick starting")
 
 	// Calculate yesterday's settlement window: 00:00 UTC to 00:00 UTC
@@ -143,55 +174,111 @@ func (s *Scheduler) tick(ctx context.Context) error {
 	return nil
 }
 
-// calculateForAllTenants runs CalculateNetSettlement for each NET_SETTLEMENT tenant.
+// calculateForAllTenants processes settlement for all active NET_SETTLEMENT tenants
+// using paginated fetching and a bounded worker pool for concurrency.
 func (s *Scheduler) calculateForAllTenants(ctx context.Context, periodStart, periodEnd time.Time) error {
-	var tenants []domain.Tenant
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		tenants, err = s.tenantStore.ListTenantsBySettlementModel(ctx, domain.SettlementModelNetSettlement)
-		if err == nil {
-			break
-		}
-		s.logger.Warn("settla-settlement: failed to list tenants, retrying",
-			"attempt", attempt+1, "error", err)
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-	}
+	// Get total count for logging
+	totalTenants, err := s.tenantStore.CountActiveTenantsBySettlementModel(ctx, domain.SettlementModelNetSettlement)
 	if err != nil {
-		s.logger.Error("settla-settlement: CRITICAL - settlement cycle skipped, all retries failed", "error", err)
-		return fmt.Errorf("settla-settlement: listing tenants after 3 retries: %w", err)
+		return fmt.Errorf("settla-settlement: counting tenants: %w", err)
 	}
 
 	s.logger.Info("settla-settlement: processing tenants",
-		"tenant_count", len(tenants),
+		"tenant_count", totalTenants,
+		"workers", defaultWorkers,
+		"batch_size", defaultBatchSize,
 		"period_start", periodStart,
 		"period_end", periodEnd,
 	)
 
-	var errs []error
-	for _, tenant := range tenants {
-		if tenant.Status != "ACTIVE" {
-			s.logger.Info("settla-settlement: skipping inactive tenant",
-				"tenant_id", tenant.ID,
-				"tenant_name", tenant.Name,
-				"status", string(tenant.Status),
-			)
-			continue
-		}
-
-		_, err := s.calculator.CalculateNetSettlement(ctx, tenant.ID, periodStart, periodEnd)
-		if err != nil {
-			s.logger.Error("settla-settlement: failed to calculate settlement",
-				"tenant_id", tenant.ID,
-				"tenant_name", tenant.Name,
-				"error", err,
-			)
-			errs = append(errs, fmt.Errorf("tenant %s: %w", tenant.ID, err))
-			continue
-		}
+	if totalTenants == 0 {
+		return nil
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("settla-settlement: %d tenants failed: %v", len(errs), errs[0])
+	// Worker pool: feed tenant IDs through a channel, workers consume concurrently.
+	tenantCh := make(chan uuid.UUID, defaultBatchSize)
+	var failCount atomic.Int64
+
+	var wg sync.WaitGroup
+	for range defaultWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for tenantID := range tenantCh {
+				if err := s.processOneTenant(ctx, tenantID, periodStart, periodEnd); err != nil {
+					failCount.Add(1)
+				}
+				settlementTenantsProcessed.Inc()
+			}
+		}()
+	}
+
+	// Producer: cursor-paginate through tenant IDs and feed them to the worker channel.
+	var afterID uuid.UUID // uuid.Nil for first page
+	for {
+		ids, err := s.tenantStore.ListActiveTenantIDsBySettlementModel(
+			ctx, domain.SettlementModelNetSettlement, defaultBatchSize, afterID,
+		)
+		if err != nil {
+			// Close channel so workers drain and exit
+			close(tenantCh)
+			wg.Wait()
+			return fmt.Errorf("settla-settlement: listing tenant batch after %s: %w", afterID, err)
+		}
+
+		for _, id := range ids {
+			select {
+			case tenantCh <- id:
+			case <-ctx.Done():
+				close(tenantCh)
+				wg.Wait()
+				return ctx.Err()
+			}
+		}
+
+		if int32(len(ids)) < defaultBatchSize {
+			break // last page
+		}
+		afterID = ids[len(ids)-1] // cursor = last ID from this batch
+	}
+
+	close(tenantCh)
+	wg.Wait()
+
+	failed := failCount.Load()
+	succeeded := totalTenants - failed
+
+	s.logger.Info("settla-settlement: batch complete",
+		"succeeded", succeeded,
+		"failed", failed,
+		"total", totalTenants,
+	)
+
+	if failed > 0 {
+		s.logger.Warn("settla-settlement: some tenants failed during batch calculation",
+			"failed", failed,
+			"succeeded", succeeded,
+			"total", totalTenants,
+		)
+		// Partial success: don't fail the entire run because of individual tenant errors.
+		// Individual failures are already logged with tenant context in processOneTenant.
+	}
+	return nil
+}
+
+// processOneTenant calculates the net settlement for a single tenant with a per-tenant timeout.
+func (s *Scheduler) processOneTenant(ctx context.Context, tenantID uuid.UUID, periodStart, periodEnd time.Time) error {
+	tenantCtx, cancel := context.WithTimeout(ctx, perTenantTimeout)
+	defer cancel()
+
+	_, err := s.calculator.CalculateNetSettlement(tenantCtx, tenantID, periodStart, periodEnd)
+	if err != nil {
+		s.logger.Error("settla-settlement: failed to calculate settlement",
+			"tenant_id", tenantID,
+			"error", err,
+		)
+		settlementTenantsFailed.Inc()
+		return err
 	}
 	return nil
 }
