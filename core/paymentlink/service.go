@@ -18,6 +18,8 @@ import (
 // NanoID alphabet: URL-safe, unambiguous characters (no lookalikes like 0/O, l/1).
 const shortCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 const shortCodeLength = 12
+const maxShortCodeAttempts = 3
+
 
 // PaymentLinkStore defines the persistence interface for payment links.
 type PaymentLinkStore interface {
@@ -69,8 +71,8 @@ type CreateRequest struct {
 
 	// Session template
 	Amount         decimal.Decimal
-	Currency       string
-	Chain          string
+	Currency       domain.Currency
+	Chain          domain.CryptoChain
 	Token          string
 	SettlementPref domain.SettlementPreference
 	TTLSeconds     int32
@@ -101,44 +103,62 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateRequ
 		return nil, domain.ErrAmountTooLow(req.Amount.String(), "0")
 	}
 
-	// Generate short code
-	shortCode, err := generateShortCode()
-	if err != nil {
-		return nil, fmt.Errorf("settla-paymentlink: create: generating short code: %w", err)
+	var link *domain.PaymentLink
+	var lastErr error
+
+	for attempt := range maxShortCodeAttempts {
+		shortCode, err := generateShortCode()
+		if err != nil {
+			return nil, fmt.Errorf("settla-paymentlink: create: generating short code: %w", err)
+		}
+
+		link = &domain.PaymentLink{
+			TenantID:    tenantID,
+			ShortCode:   shortCode,
+			Description: req.Description,
+			RedirectURL: req.RedirectURL,
+			Status:      domain.PaymentLinkStatusActive,
+			UseLimit:    req.UseLimit,
+			SessionConfig: domain.PaymentLinkSessionConfig{
+				Amount:         req.Amount,
+				Currency:       req.Currency,
+				Chain:          req.Chain,
+				Token:          req.Token,
+				SettlementPref: req.SettlementPref,
+				TTLSeconds:     req.TTLSeconds,
+			},
+		}
+
+		if req.ExpiresAt != nil {
+			t := time.Unix(*req.ExpiresAt, 0).UTC()
+			link.ExpiresAt = &t
+		}
+
+		lastErr = s.store.Create(ctx, link)
+		if lastErr == nil {
+			break
+		}
+
+		if !domain.IsShortCodeCollision(lastErr) {
+			return nil, fmt.Errorf("settla-paymentlink: create: persisting: %w", lastErr)
+		}
+
+		s.logger.Warn("settla-paymentlink: short code collision, retrying",
+			"attempt", attempt+1,
+			"tenant_id", tenantID,
+		)
 	}
 
-	link := &domain.PaymentLink{
-		TenantID:    tenantID,
-		ShortCode:   shortCode,
-		Description: req.Description,
-		RedirectURL: req.RedirectURL,
-		Status:      domain.PaymentLinkStatusActive,
-		UseLimit:    req.UseLimit,
-		SessionConfig: domain.PaymentLinkSessionConfig{
-			Amount:         req.Amount,
-			Currency:       req.Currency,
-			Chain:          req.Chain,
-			Token:          req.Token,
-			SettlementPref: req.SettlementPref,
-			TTLSeconds:     req.TTLSeconds,
-		},
+	if lastErr != nil {
+		return nil, fmt.Errorf("settla-paymentlink: create: failed to generate unique short code after %d attempts", maxShortCodeAttempts)
 	}
 
-	if req.ExpiresAt != nil {
-		t := time.Unix(*req.ExpiresAt, 0).UTC()
-		link.ExpiresAt = &t
-	}
-
-	if err := s.store.Create(ctx, link); err != nil {
-		return nil, fmt.Errorf("settla-paymentlink: create: persisting: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/%s", s.baseURL, shortCode)
+	url := fmt.Sprintf("%s/%s", s.baseURL, link.ShortCode)
 
 	s.logger.Info("settla-paymentlink: link created",
 		"link_id", link.ID,
 		"tenant_id", tenantID,
-		"short_code", shortCode,
+		"short_code", link.ShortCode,
 	)
 
 	return &CreateResult{Link: link, URL: url}, nil
@@ -175,7 +195,10 @@ func (s *Service) Redeem(ctx context.Context, shortCode string) (*RedeemResult, 
 	}
 
 	// Create deposit session from link template
-	idempotencyKey := fmt.Sprintf("plink:%s:%d", link.ID, link.UseCount+1)
+	idempotencyKey, err := domain.NewIdempotencyKey(fmt.Sprintf("plink:%s:%d", link.ID, link.UseCount+1))
+	if err != nil {
+		return nil, fmt.Errorf("settla-paymentlink: redeem: generating idempotency key: %w", err)
+	}
 
 	session, err := s.depositEngine.CreateSession(ctx, link.TenantID, depositcore.CreateSessionRequest{
 		IdempotencyKey: idempotencyKey,
@@ -267,4 +290,3 @@ func generateShortCode() (string, error) {
 	}
 	return string(code), nil
 }
-
