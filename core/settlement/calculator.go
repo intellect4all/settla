@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,14 +29,37 @@ type TransferStore interface {
 	// ListCompletedTransfersByPeriod returns summaries of all completed transfers
 	// for a tenant within the given time range [start, end).
 	ListCompletedTransfersByPeriod(ctx context.Context, tenantID uuid.UUID, start, end time.Time) ([]TransferSummary, error)
+
+	// AggregateCompletedTransfersByPeriod returns pre-aggregated corridor summaries
+	// (GROUP BY source_currency, dest_currency) for a tenant within the given time range.
+	// This avoids materializing individual transfer rows for large tenants.
+	AggregateCompletedTransfersByPeriod(ctx context.Context, tenantID uuid.UUID, start, end time.Time) ([]CorridorAggregate, error)
+}
+
+// CorridorAggregate is a pre-aggregated summary of completed transfers for a single
+// corridor (source_currency → dest_currency), computed server-side via GROUP BY.
+type CorridorAggregate struct {
+	SourceCurrency string
+	DestCurrency   string
+	TotalSource    decimal.Decimal
+	TotalDest      decimal.Decimal
+	TransferCount  int64
+	TotalFeesUSD   decimal.Decimal
 }
 
 // TenantStore provides access to tenant configuration.
 type TenantStore interface {
 	// GetTenant retrieves a tenant by ID.
 	GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error)
-	// ListTenantsBySettlementModel returns all tenants using the given settlement model.
-	ListTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel) ([]domain.Tenant, error)
+	// ListTenantsBySettlementModel returns tenants using the given settlement model, paginated.
+	ListTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel, limit, offset int32) ([]domain.Tenant, error)
+	// ListActiveTenantIDsBySettlementModel returns a cursor-paginated batch of active
+	// tenant IDs for the given settlement model, ordered by ID. Pass uuid.Nil for
+	// afterID to start from the beginning.
+	ListActiveTenantIDsBySettlementModel(ctx context.Context, model domain.SettlementModel, limit int32, afterID uuid.UUID) ([]uuid.UUID, error)
+	// CountActiveTenantsBySettlementModel returns the number of active tenants
+	// for the given settlement model.
+	CountActiveTenantsBySettlementModel(ctx context.Context, model domain.SettlementModel) (int64, error)
 }
 
 // SettlementStore persists and retrieves net settlement records.
@@ -119,10 +143,15 @@ func (c *Calculator) CalculateNetSettlement(
 			tenantID, tenant.SettlementModel)
 	}
 
-	// 2. Query completed transfers for the period
-	transfers, err := c.transferStore.ListCompletedTransfersByPeriod(ctx, tenantID, periodStart, periodEnd)
+	// 2. Query pre-aggregated corridor summaries (DB-side GROUP BY)
+	aggregates, err := c.transferStore.AggregateCompletedTransfersByPeriod(ctx, tenantID, periodStart, periodEnd)
 	if err != nil {
-		return nil, fmt.Errorf("settla-settlement: listing transfers for tenant %s: %w", tenantID, err)
+		return nil, fmt.Errorf("settla-settlement: aggregating transfers for tenant %s: %w", tenantID, err)
+	}
+
+	var totalTransfers int64
+	for _, a := range aggregates {
+		totalTransfers += a.TransferCount
 	}
 
 	c.logger.Info("settla-settlement: calculating net settlement",
@@ -130,17 +159,18 @@ func (c *Calculator) CalculateNetSettlement(
 		"tenant_name", tenant.Name,
 		"period_start", periodStart,
 		"period_end", periodEnd,
-		"transfer_count", len(transfers),
+		"corridors", len(aggregates),
+		"transfer_count", totalTransfers,
 	)
 
-	// 3. Group by corridor and compute per-currency nets
-	corridors := c.groupByCorridors(transfers)
-	netByCurrency := c.computeNetByCurrency(transfers)
+	// 3. Build corridors and per-currency nets from aggregated data
+	corridors := c.corridorsFromAggregates(aggregates)
+	netByCurrency := c.netByCurrencyFromAggregates(aggregates)
 
 	// 4. Calculate total fees
 	totalFees := decimal.Zero
-	for _, t := range transfers {
-		totalFees = totalFees.Add(t.Fees)
+	for _, a := range aggregates {
+		totalFees = totalFees.Add(a.TotalFeesUSD)
 	}
 
 	// 5. Generate settlement instructions
@@ -167,6 +197,17 @@ func (c *Calculator) CalculateNetSettlement(
 	}
 
 	if err := c.store.CreateNetSettlement(ctx, settlement); err != nil {
+		// If a settlement for this tenant+period already exists (unique constraint),
+		// return the error with context so the scheduler can treat it as idempotent.
+		if strings.Contains(err.Error(), "uk_net_settlements_tenant_period") ||
+			strings.Contains(err.Error(), "duplicate key") {
+			c.logger.Info("settla-settlement: settlement already exists for period, skipping",
+				"tenant_id", tenantID,
+				"period_start", periodStart,
+				"period_end", periodEnd,
+			)
+			return settlement, nil
+		}
 		return nil, fmt.Errorf("settla-settlement: persisting net settlement for tenant %s: %w", tenantID, err)
 	}
 
@@ -181,67 +222,41 @@ func (c *Calculator) CalculateNetSettlement(
 	return settlement, nil
 }
 
-// groupByCorridors aggregates transfers by source/dest currency pair.
-func (c *Calculator) groupByCorridors(transfers []TransferSummary) []CorridorPosition {
-	type corridorKey struct {
-		source, dest string
-	}
-	grouped := make(map[corridorKey]*CorridorPosition)
-
-	for _, t := range transfers {
-		key := corridorKey{source: t.SourceCurrency, dest: t.DestCurrency}
-		pos, ok := grouped[key]
-		if !ok {
-			pos = &CorridorPosition{
-				SourceCurrency: t.SourceCurrency,
-				DestCurrency:   t.DestCurrency,
-				TotalSource:    decimal.Zero,
-				TotalDest:      decimal.Zero,
-			}
-			grouped[key] = pos
-		}
-		pos.TotalSource = pos.TotalSource.Add(t.SourceAmount)
-		pos.TotalDest = pos.TotalDest.Add(t.DestAmount)
-		pos.TransferCount++
-	}
-
-	result := make([]CorridorPosition, 0, len(grouped))
-	for _, pos := range grouped {
-		result = append(result, *pos)
+// corridorsFromAggregates converts pre-aggregated DB rows into CorridorPosition slices.
+func (c *Calculator) corridorsFromAggregates(aggregates []CorridorAggregate) []CorridorPosition {
+	result := make([]CorridorPosition, 0, len(aggregates))
+	for _, a := range aggregates {
+		result = append(result, CorridorPosition{
+			SourceCurrency: a.SourceCurrency,
+			DestCurrency:   a.DestCurrency,
+			TotalSource:    a.TotalSource,
+			TotalDest:      a.TotalDest,
+			TransferCount:  int(a.TransferCount),
+		})
 	}
 	return result
 }
 
-// computeNetByCurrency computes net position per currency.
-// Source amounts are outflows (tenant sends money in this currency).
-// Dest amounts are inflows (tenant receives money in this currency).
-func (c *Calculator) computeNetByCurrency(transfers []TransferSummary) []CurrencyNet {
+// netByCurrencyFromAggregates computes per-currency net positions from aggregated corridors.
+func (c *Calculator) netByCurrencyFromAggregates(aggregates []CorridorAggregate) []CurrencyNet {
 	nets := make(map[string]*CurrencyNet)
 
-	for _, t := range transfers {
-		// Source currency: tenant is sending, so it's an outflow for the tenant
-		srcNet, ok := nets[t.SourceCurrency]
+	for _, a := range aggregates {
+		// Source currency: outflow
+		srcNet, ok := nets[a.SourceCurrency]
 		if !ok {
-			srcNet = &CurrencyNet{
-				Currency: t.SourceCurrency,
-				Inflows:  decimal.Zero,
-				Outflows: decimal.Zero,
-			}
-			nets[t.SourceCurrency] = srcNet
+			srcNet = &CurrencyNet{Currency: a.SourceCurrency, Inflows: decimal.Zero, Outflows: decimal.Zero}
+			nets[a.SourceCurrency] = srcNet
 		}
-		srcNet.Outflows = srcNet.Outflows.Add(t.SourceAmount)
+		srcNet.Outflows = srcNet.Outflows.Add(a.TotalSource)
 
-		// Dest currency: tenant is receiving, so it's an inflow for the tenant
-		destNet, ok := nets[t.DestCurrency]
+		// Dest currency: inflow
+		destNet, ok := nets[a.DestCurrency]
 		if !ok {
-			destNet = &CurrencyNet{
-				Currency: t.DestCurrency,
-				Inflows:  decimal.Zero,
-				Outflows: decimal.Zero,
-			}
-			nets[t.DestCurrency] = destNet
+			destNet = &CurrencyNet{Currency: a.DestCurrency, Inflows: decimal.Zero, Outflows: decimal.Zero}
+			nets[a.DestCurrency] = destNet
 		}
-		destNet.Inflows = destNet.Inflows.Add(t.DestAmount)
+		destNet.Inflows = destNet.Inflows.Add(a.TotalDest)
 	}
 
 	result := make([]CurrencyNet, 0, len(nets))
