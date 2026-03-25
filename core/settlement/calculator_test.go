@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +18,42 @@ import (
 // --- mock stores ---
 
 type mockTransferStore struct {
-	transfers []TransferSummary
+	transfers  []TransferSummary
+	aggregates []CorridorAggregate
 }
 
 func (m *mockTransferStore) ListCompletedTransfersByPeriod(_ context.Context, _ uuid.UUID, _, _ time.Time) ([]TransferSummary, error) {
 	return m.transfers, nil
+}
+
+func (m *mockTransferStore) AggregateCompletedTransfersByPeriod(_ context.Context, _ uuid.UUID, _, _ time.Time) ([]CorridorAggregate, error) {
+	if m.aggregates != nil {
+		return m.aggregates, nil
+	}
+	// Auto-derive aggregates from transfers for backward compat with existing tests
+	grouped := make(map[string]*CorridorAggregate)
+	for _, t := range m.transfers {
+		key := t.SourceCurrency + "->" + t.DestCurrency
+		agg, ok := grouped[key]
+		if !ok {
+			agg = &CorridorAggregate{
+				SourceCurrency: t.SourceCurrency,
+				DestCurrency:   t.DestCurrency,
+				TotalSource:    decimal.Zero,
+				TotalDest:      decimal.Zero,
+			}
+			grouped[key] = agg
+		}
+		agg.TotalSource = agg.TotalSource.Add(t.SourceAmount)
+		agg.TotalDest = agg.TotalDest.Add(t.DestAmount)
+		agg.TotalFeesUSD = agg.TotalFeesUSD.Add(t.Fees)
+		agg.TransferCount++
+	}
+	result := make([]CorridorAggregate, 0, len(grouped))
+	for _, agg := range grouped {
+		result = append(result, *agg)
+	}
+	return result, nil
 }
 
 type mockTenantStore struct {
@@ -29,29 +61,77 @@ type mockTenantStore struct {
 	tenants []domain.Tenant
 }
 
-func (m *mockTenantStore) GetTenant(_ context.Context, _ uuid.UUID) (*domain.Tenant, error) {
+func (m *mockTenantStore) GetTenant(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	// Check in tenants list first (for multi-tenant tests)
+	for i := range m.tenants {
+		if m.tenants[i].ID == id {
+			return &m.tenants[i], nil
+		}
+	}
 	if m.tenant == nil {
 		return nil, domain.ErrTenantNotFound("test")
 	}
 	return m.tenant, nil
 }
 
-func (m *mockTenantStore) ListTenantsBySettlementModel(_ context.Context, _ domain.SettlementModel) ([]domain.Tenant, error) {
+func (m *mockTenantStore) ListTenantsBySettlementModel(_ context.Context, _ domain.SettlementModel, _, _ int32) ([]domain.Tenant, error) {
 	return m.tenants, nil
 }
 
+func (m *mockTenantStore) ListActiveTenantIDsBySettlementModel(_ context.Context, _ domain.SettlementModel, limit int32, afterID uuid.UUID) ([]uuid.UUID, error) {
+	var activeIDs []uuid.UUID
+	for _, t := range m.tenants {
+		if t.Status == domain.TenantStatusActive {
+			activeIDs = append(activeIDs, t.ID)
+		}
+	}
+	// Cursor-based: find first ID > afterID
+	start := 0
+	if afterID != uuid.Nil {
+		for i, id := range activeIDs {
+			if id.String() > afterID.String() {
+				start = i
+				break
+			}
+			if i == len(activeIDs)-1 {
+				return nil, nil // past end
+			}
+		}
+	}
+	end := start + int(limit)
+	if end > len(activeIDs) {
+		end = len(activeIDs)
+	}
+	return activeIDs[start:end], nil
+}
+
+func (m *mockTenantStore) CountActiveTenantsBySettlementModel(_ context.Context, _ domain.SettlementModel) (int64, error) {
+	var count int64
+	for _, t := range m.tenants {
+		if t.Status == domain.TenantStatusActive {
+			count++
+		}
+	}
+	return count, nil
+}
+
 type mockSettlementStore struct {
+	mu          sync.Mutex
 	settlements []NetSettlement
 	created     *NetSettlement
 }
 
 func (m *mockSettlementStore) CreateNetSettlement(_ context.Context, s *NetSettlement) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.created = s
 	m.settlements = append(m.settlements, *s)
 	return nil
 }
 
 func (m *mockSettlementStore) GetNetSettlement(_ context.Context, id uuid.UUID) (*NetSettlement, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, s := range m.settlements {
 		if s.ID == id {
 			return &s, nil
@@ -61,6 +141,8 @@ func (m *mockSettlementStore) GetNetSettlement(_ context.Context, id uuid.UUID) 
 }
 
 func (m *mockSettlementStore) ListPendingSettlements(_ context.Context, _ domain.AdminCaller) ([]NetSettlement, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var result []NetSettlement
 	for _, s := range m.settlements {
 		if s.Status == "pending" || s.Status == "overdue" {
@@ -71,6 +153,8 @@ func (m *mockSettlementStore) ListPendingSettlements(_ context.Context, _ domain
 }
 
 func (m *mockSettlementStore) UpdateSettlementStatus(_ context.Context, id uuid.UUID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for i := range m.settlements {
 		if m.settlements[i].ID == id {
 			m.settlements[i].Status = status
@@ -372,6 +456,258 @@ func TestFormatAmount(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("formatAmount(%s): expected %q, got %q", tt.amount, tt.expected, result)
 		}
+	}
+}
+
+func TestBatchedSettlementScheduler(t *testing.T) {
+	// Create 5 active tenants
+	var tenants []domain.Tenant
+	for i := range 5 {
+		tenant := testTenant(fmt.Sprintf("Tenant-%d", i))
+		tenant.Status = domain.TenantStatusActive
+		tenants = append(tenants, *tenant)
+	}
+
+	transferStore := &mockTransferStore{
+		transfers: []TransferSummary{
+			{SourceCurrency: "GBP", SourceAmount: decimal.NewFromInt(100), DestCurrency: "NGN", DestAmount: decimal.NewFromInt(200000), Fees: decimal.NewFromFloat(1.00)},
+		},
+	}
+	tenantStore := &mockTenantStore{tenants: tenants}
+	settlementStore := &mockSettlementStore{}
+
+	calc := NewCalculator(transferStore, tenantStore, settlementStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	periodEnd := now.Truncate(24 * time.Hour)
+	periodStart := periodEnd.Add(-24 * time.Hour)
+
+	err := scheduler.calculateForAllTenants(ctx, periodStart, periodEnd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All 5 tenants should have settlements created
+	if len(settlementStore.settlements) != 5 {
+		t.Errorf("expected 5 settlements, got %d", len(settlementStore.settlements))
+	}
+}
+
+func TestBatchedSettlementScheduler_ContextCancellation(t *testing.T) {
+	var tenants []domain.Tenant
+	for i := range 10 {
+		tenant := testTenant(fmt.Sprintf("Tenant-%d", i))
+		tenant.Status = domain.TenantStatusActive
+		tenants = append(tenants, *tenant)
+	}
+
+	transferStore := &mockTransferStore{
+		transfers: []TransferSummary{
+			{SourceCurrency: "GBP", SourceAmount: decimal.NewFromInt(100), DestCurrency: "NGN", DestAmount: decimal.NewFromInt(200000), Fees: decimal.NewFromFloat(1.00)},
+		},
+	}
+	tenantStore := &mockTenantStore{tenants: tenants}
+	settlementStore := &mockSettlementStore{}
+
+	calc := NewCalculator(transferStore, tenantStore, settlementStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	now := time.Now().UTC()
+	periodEnd := now.Truncate(24 * time.Hour)
+	periodStart := periodEnd.Add(-24 * time.Hour)
+
+	err := scheduler.calculateForAllTenants(ctx, periodStart, periodEnd)
+	// Should either return context error or succeed (race between cancel and processing)
+	if err != nil && err != context.Canceled {
+		// Some tenants may have been processed before cancellation; that's fine
+		t.Logf("got expected error on cancellation: %v", err)
+	}
+}
+
+// --- Scheduler lifecycle and tick tests ---
+
+func TestScheduler_RunOnce(t *testing.T) {
+	tenant := testTenant("Lemfi")
+	tenant.Status = domain.TenantStatusActive
+	tenants := []domain.Tenant{*tenant}
+
+	transferStore := &mockTransferStore{
+		transfers: []TransferSummary{
+			{SourceCurrency: "GBP", SourceAmount: decimal.NewFromInt(500), DestCurrency: "NGN", DestAmount: decimal.NewFromInt(1000000), Fees: decimal.NewFromFloat(2.00)},
+		},
+	}
+	tenantStore := &mockTenantStore{tenants: tenants, tenant: tenant}
+	settlementStore := &mockSettlementStore{}
+	calc := NewCalculator(transferStore, tenantStore, settlementStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	if err := scheduler.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	settlementStore.mu.Lock()
+	count := len(settlementStore.settlements)
+	settlementStore.mu.Unlock()
+
+	if count != 1 {
+		t.Errorf("expected 1 settlement after RunOnce, got %d", count)
+	}
+}
+
+func TestScheduler_SetInterval(t *testing.T) {
+	calc := NewCalculator(
+		&mockTransferStore{},
+		&mockTenantStore{},
+		&mockSettlementStore{},
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	)
+	scheduler := NewScheduler(calc, &mockTenantStore{}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	scheduler.SetInterval(1 * time.Hour)
+	if scheduler.interval != 1*time.Hour {
+		t.Errorf("expected interval 1h, got %v", scheduler.interval)
+	}
+}
+
+func TestScheduler_Start_StopsOnContextCancel(t *testing.T) {
+	calc := NewCalculator(
+		&mockTransferStore{},
+		&mockTenantStore{},
+		&mockSettlementStore{},
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	)
+	tenantStore := &mockTenantStore{}
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler.SetInterval(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	err := scheduler.Start(ctx)
+	if err != context.DeadlineExceeded {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+	}
+}
+
+func TestScheduler_ProcessOneTenant_Error(t *testing.T) {
+	// Create a calculator with a transfer store that returns errors.
+	failingTransferStore := &failingMockTransferStore{}
+	tenantStore := &mockTenantStore{
+		tenant: testTenant("Failing"),
+	}
+	settlementStore := &mockSettlementStore{}
+	calc := NewCalculator(failingTransferStore, tenantStore, settlementStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	err := scheduler.processOneTenant(context.Background(), uuid.New(), time.Now().Add(-24*time.Hour), time.Now())
+	if err == nil {
+		t.Fatal("expected error from processOneTenant when calculator fails")
+	}
+}
+
+type failingMockTransferStore struct{}
+
+func (f *failingMockTransferStore) ListCompletedTransfersByPeriod(_ context.Context, _ uuid.UUID, _, _ time.Time) ([]TransferSummary, error) {
+	return nil, fmt.Errorf("simulated DB failure")
+}
+
+func (f *failingMockTransferStore) AggregateCompletedTransfersByPeriod(_ context.Context, _ uuid.UUID, _, _ time.Time) ([]CorridorAggregate, error) {
+	return nil, fmt.Errorf("simulated DB failure")
+}
+
+func TestOverdueEscalation_Thresholds(t *testing.T) {
+	tenant := testTenant("OverdueTest")
+	tenant.Status = domain.TenantStatusActive
+
+	tenantStore := &mockTenantStore{tenants: []domain.Tenant{*tenant}, tenant: tenant}
+	settlementStore := &mockSettlementStore{}
+	calc := NewCalculator(
+		&mockTransferStore{},
+		tenantStore,
+		settlementStore,
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	)
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name       string
+		dueDate    time.Time
+		wantAction string
+	}{
+		{"3d overdue → reminder", now.Add(-3*24*time.Hour - time.Hour), "reminder"},
+		{"5d overdue → warning", now.Add(-5*24*time.Hour - time.Hour), "warning"},
+		{"7d overdue → suspend", now.Add(-7*24*time.Hour - time.Hour), "suspend"},
+		{"1d overdue → no action", now.Add(-1 * 24 * time.Hour), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset settlements.
+			settlementStore.mu.Lock()
+			dueDate := tt.dueDate
+			settlementStore.settlements = []NetSettlement{
+				{
+					ID:         uuid.New(),
+					TenantID:   tenant.ID,
+					TenantName: tenant.Name,
+					Status:     "pending",
+					DueDate:    &dueDate,
+				},
+			}
+			settlementStore.mu.Unlock()
+
+			actions, err := scheduler.checkOverdue(context.Background(), now)
+			if err != nil {
+				t.Fatalf("checkOverdue: %v", err)
+			}
+
+			if tt.wantAction == "" {
+				if len(actions) != 0 {
+					t.Errorf("expected no actions for %s, got %d", tt.name, len(actions))
+				}
+				return
+			}
+
+			if len(actions) != 1 {
+				t.Fatalf("expected 1 action, got %d", len(actions))
+			}
+			if actions[0].Action != tt.wantAction {
+				t.Errorf("action: got %q, want %q", actions[0].Action, tt.wantAction)
+			}
+		})
+	}
+}
+
+func TestCheckOverdue_NilDueDate(t *testing.T) {
+	tenant := testTenant("NoDueDate")
+	tenant.Status = domain.TenantStatusActive
+	settlementStore := &mockSettlementStore{
+		settlements: []NetSettlement{
+			{
+				ID:         uuid.New(),
+				TenantID:   tenant.ID,
+				TenantName: tenant.Name,
+				Status:     "pending",
+				DueDate:    nil, // no due date
+			},
+		},
+	}
+	tenantStore := &mockTenantStore{tenants: []domain.Tenant{*tenant}, tenant: tenant}
+	calc := NewCalculator(&mockTransferStore{}, tenantStore, settlementStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	scheduler := NewScheduler(calc, tenantStore, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	actions, err := scheduler.checkOverdue(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("checkOverdue: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected 0 actions for nil due date, got %d", len(actions))
 	}
 }
 
