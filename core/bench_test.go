@@ -150,6 +150,10 @@ func (s *benchTransferStore) GetTransferByExternalRef(_ context.Context, tenantI
 	return nil, fmt.Errorf("transfer not found for external ref %s", externalRef)
 }
 
+func (s *benchTransferStore) CountPendingTransfers(_ context.Context, _ uuid.UUID) (int, error) {
+	return 0, nil
+}
+
 // setupBenchmarkEngine creates an engine with mock dependencies for benchmarking.
 // The engine only needs transferStore, tenantStore, router, logger, and metrics.
 func setupBenchmarkEngine(b *testing.B) *Engine {
