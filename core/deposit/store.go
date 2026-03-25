@@ -28,7 +28,7 @@ type DepositStore interface {
 	GetSessionByAddress(ctx context.Context, address string) (*domain.DepositSession, error)
 
 	// GetSessionByIdempotencyKey retrieves a session by tenant and idempotency key.
-	GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.DepositSession, error)
+	GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key domain.IdempotencyKey) (*domain.DepositSession, error)
 
 	// ListSessions retrieves deposit sessions for a tenant with pagination.
 	ListSessions(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.DepositSession, error)
@@ -36,6 +36,9 @@ type DepositStore interface {
 	// TransitionWithOutbox atomically updates session status and inserts outbox entries
 	// in a single database transaction. Uses optimistic locking via version check.
 	TransitionWithOutbox(ctx context.Context, session *domain.DepositSession, entries []domain.OutboxEntry) error
+
+	// CountPendingSessions returns the number of non-terminal deposit sessions for a tenant.
+	CountPendingSessions(ctx context.Context, tenantID uuid.UUID) (int, error)
 
 	// DispenseAddress obtains a deposit address from the pre-generated pool.
 	// Uses SKIP LOCKED to avoid contention under concurrent session creation.
@@ -56,6 +59,10 @@ type DepositStore interface {
 
 	// AccumulateReceived adds an amount to the session's received_amount.
 	AccumulateReceived(ctx context.Context, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error
+
+	// RecordDepositTx atomically creates a deposit transaction and accumulates
+	// the received amount on the session in a single database transaction.
+	RecordDepositTx(ctx context.Context, tx *domain.DepositTransaction, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error
 
 	// GetExpiredPendingSessions returns sessions in PENDING_PAYMENT with expires_at < now().
 	GetExpiredPendingSessions(ctx context.Context, limit int) ([]domain.DepositSession, error)

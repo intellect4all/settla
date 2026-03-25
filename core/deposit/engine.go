@@ -37,8 +37,8 @@ func NewEngine(store DepositStore, tenantStore TenantStore, logger *slog.Logger)
 
 // CreateSessionRequest is the input for creating a new deposit session.
 type CreateSessionRequest struct {
-	IdempotencyKey string
-	Chain          string
+	IdempotencyKey domain.IdempotencyKey
+	Chain          domain.CryptoChain
 	Token          string
 	ExpectedAmount decimal.Decimal
 	SettlementPref domain.SettlementPreference
@@ -62,15 +62,9 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	}
 
 	// b. Validate chain is supported
-	chainSupported := false
-	for _, c := range tenant.CryptoConfig.SupportedChains {
-		if c == req.Chain {
-			chainSupported = true
-			break
-		}
-	}
-	if !chainSupported {
-		return nil, domain.ErrChainNotSupported(req.Chain, tenantID.String())
+
+	if !tenant.ChainSupported(req.Chain) {
+		return nil, domain.ErrChainNotSupported(string(req.Chain), tenantID.String())
 	}
 
 	// c. Validate amount > 0
@@ -78,7 +72,18 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 		return nil, domain.ErrAmountTooLow(req.ExpectedAmount.String(), "0")
 	}
 
-	// d. Check idempotency
+	// d. Check per-tenant pending deposit session limit (same pattern as MaxPendingTransfers)
+	if tenant.MaxPendingTransfers > 0 {
+		count, err := e.store.CountPendingSessions(ctx, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("settla-deposit: create session: counting pending sessions: %w", err)
+		}
+		if count >= tenant.MaxPendingTransfers {
+			return nil, fmt.Errorf("settla-deposit: create session: tenant %s exceeded max pending sessions (%d)", tenantID, tenant.MaxPendingTransfers)
+		}
+	}
+
+	// e. Check idempotency
 	if req.IdempotencyKey != "" {
 		existing, err := e.store.GetSessionByIdempotencyKey(ctx, tenantID, req.IdempotencyKey)
 		if err == nil && existing != nil {
@@ -87,12 +92,12 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	}
 
 	// e. Dispense address from pool
-	poolAddr, err := e.store.DispenseAddress(ctx, tenantID, req.Chain, uuid.Nil)
+	poolAddr, err := e.store.DispenseAddress(ctx, tenantID, string(req.Chain), uuid.Nil)
 	if err != nil {
 		return nil, fmt.Errorf("settla-deposit: create session: dispensing address: %w", err)
 	}
 	if poolAddr == nil {
-		return nil, domain.ErrAddressPoolEmpty(req.Chain, tenantID.String())
+		return nil, domain.ErrAddressPoolEmpty(string(req.Chain), tenantID.String())
 	}
 
 	// f. Determine settlement preference (use request or tenant default)
@@ -224,7 +229,7 @@ func (e *Engine) HandleTransactionDetected(ctx context.Context, tenantID, sessio
 	}
 
 	// Check for duplicate tx
-	existing, err := e.store.GetDepositTxByHash(ctx, tx.Chain, tx.TxHash)
+	existing, err := e.store.GetDepositTxByHash(ctx, string(tx.Chain), tx.TxHash)
 	if err == nil && existing != nil {
 		e.logger.Info("settla-deposit: duplicate tx detected, skipping",
 			"session_id", sessionID,
@@ -233,13 +238,8 @@ func (e *Engine) HandleTransactionDetected(ctx context.Context, tenantID, sessio
 		return nil
 	}
 
-	if err := e.store.CreateDepositTx(ctx, depositTx); err != nil {
-		return fmt.Errorf("settla-deposit: handle tx detected: recording tx: %w", err)
-	}
-
-	// Accumulate received amount
-	if err := e.store.AccumulateReceived(ctx, tenantID, sessionID, tx.Amount); err != nil {
-		return fmt.Errorf("settla-deposit: handle tx detected: accumulating received: %w", err)
+	if err := e.store.RecordDepositTx(ctx, depositTx, tenantID, sessionID, tx.Amount); err != nil {
+		return fmt.Errorf("settla-deposit: handle tx detected: recording tx and accumulating: %w", err)
 	}
 
 	// Check for late payment (session expired or cancelled)
@@ -417,7 +417,7 @@ func (e *Engine) initiateCredit(ctx context.Context, tenantID, sessionID uuid.UU
 		FeeAmount:      feeAmount,
 		NetAmount:      netAmount,
 		TxHash:         txHash,
-		IdempotencyKey: fmt.Sprintf("deposit-credit:%s", sessionID),
+		IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("deposit-credit:%s", sessionID)),
 	})
 	if err != nil {
 		return fmt.Errorf("settla-deposit: initiate credit: marshalling payload: %w", err)
@@ -920,16 +920,21 @@ func (e *Engine) failSession(ctx context.Context, session *domain.DepositSession
 	return nil
 }
 
+// TODO: confirm these confirmation valies
 // requiredConfirmations returns the min confirmations for a session's chain,
 // using tenant config defaults.
 func (e *Engine) requiredConfirmations(session *domain.DepositSession) int32 {
 	// Default confirmations per chain
-	switch strings.ToLower(session.Chain) {
-	case "tron":
+	switch session.Chain {
+	case domain.ChainTron:
 		return 19
-	case "ethereum":
+	case domain.ChainEthereum:
 		return 12
-	case "base":
+	case domain.ChainBase:
+		return 12
+	case domain.ChainPolygon:
+		return 12
+	case domain.ChainSolana:
 		return 12
 	default:
 		return 20
