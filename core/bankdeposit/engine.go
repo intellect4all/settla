@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,8 +36,8 @@ func NewEngine(store BankDepositStore, tenantStore TenantStore, logger *slog.Log
 
 // CreateSessionRequest is the input for creating a new bank deposit session.
 type CreateSessionRequest struct {
-	IdempotencyKey   string
-	Currency         string
+	IdempotencyKey   domain.IdempotencyKey
+	Currency         domain.Currency
 	BankingPartnerID string
 	AccountType      domain.VirtualAccountType
 	ExpectedAmount   decimal.Decimal
@@ -66,16 +65,15 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	}
 
 	// b. Validate currency is supported
-	currency := strings.ToUpper(req.Currency)
 	currencySupported := false
 	for _, c := range tenant.BankConfig.BankSupportedCurrencies {
-		if strings.ToUpper(c) == currency {
+		if c == req.Currency {
 			currencySupported = true
 			break
 		}
 	}
 	if !currencySupported {
-		return nil, domain.ErrCurrencyNotSupported(currency, tenantID.String())
+		return nil, domain.ErrCurrencyNotSupported(string(req.Currency), tenantID.String())
 	}
 
 	// c. Validate amount > 0
@@ -92,12 +90,12 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	}
 
 	// e. Dispense virtual account from pool (TEMPORARY accounts only)
-	poolAccount, err := e.store.DispenseVirtualAccount(ctx, tenantID, currency)
+	poolAccount, err := e.store.DispenseVirtualAccount(ctx, tenantID, string(req.Currency))
 	if err != nil {
 		return nil, fmt.Errorf("settla-bank-deposit: create session: dispensing virtual account: %w", err)
 	}
 	if poolAccount == nil {
-		return nil, domain.ErrVirtualAccountPoolEmpty(currency, tenantID.String())
+		return nil, domain.ErrVirtualAccountPoolEmpty(string(req.Currency), tenantID.String())
 	}
 
 	// f. Determine settlement preference (use request or tenant default — fall back to HOLD)
@@ -148,7 +146,7 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 		SortCode:         poolAccount.SortCode,
 		IBAN:             poolAccount.IBAN,
 		AccountType:      domain.VirtualAccountTypeTemporary,
-		Currency:         domain.Currency(currency),
+		Currency:         req.Currency,
 		ExpectedAmount:   req.ExpectedAmount,
 		MinAmount:        minAmount,
 		MaxAmount:        maxAmount,
@@ -169,7 +167,7 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 		SessionID: session.ID,
 		TenantID:  tenantID,
 		Status:    domain.BankDepositSessionStatusPendingPayment,
-		Currency:  currency,
+		Currency:  string(req.Currency),
 		Amount:    req.ExpectedAmount,
 	})
 	if err != nil {
@@ -183,7 +181,7 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	// Webhook + email notification for session created
 	notifEntries, err := bankDepositNotificationEntries(session.ID, tenantID,
 		domain.EventBankDepositSessionCreated,
-		fmt.Sprintf("Bank deposit session created — awaiting %s %s", req.ExpectedAmount.String(), currency),
+		fmt.Sprintf("Bank deposit session created — awaiting %s %s", req.ExpectedAmount.String(), req.Currency),
 		eventPayload,
 	)
 	if err != nil {
@@ -199,7 +197,7 @@ func (e *Engine) CreateSession(ctx context.Context, tenantID uuid.UUID, req Crea
 	e.logger.Info("settla-bank-deposit: session created",
 		"session_id", session.ID,
 		"tenant_id", tenantID,
-		"currency", currency,
+		"currency", req.Currency,
 		"account_number", session.AccountNumber,
 		"expected_amount", req.ExpectedAmount,
 	)
@@ -222,7 +220,11 @@ func (e *Engine) CreateSessionForPermanentAccount(ctx context.Context, tenantID 
 		return nil, domain.ErrBankDepositsDisabled(tenantID.String())
 	}
 
-	idempotencyKey := fmt.Sprintf("permanent:%s:%s", accountNumber, credit.BankReference)
+	idempotencyKey, err := domain.NewIdempotencyKey(fmt.Sprintf("permanent:%s:%s", accountNumber, credit.BankReference))
+
+	if err != nil {
+		return nil, fmt.Errorf("settla-bank-deposit: create permanent session: generating idempotency key: %w", err)
+	}
 
 	// Check idempotency
 	existing, err := e.store.GetSessionByIdempotencyKey(ctx, tenantID, idempotencyKey)
@@ -294,13 +296,23 @@ func (e *Engine) CreateSessionForPermanentAccount(ctx context.Context, tenantID 
 	return session, nil
 }
 
-// ListVirtualAccounts returns all virtual accounts for a tenant.
-func (e *Engine) ListVirtualAccounts(ctx context.Context, tenantID uuid.UUID) ([]domain.VirtualAccountPool, error) {
-	accounts, err := e.store.ListVirtualAccountsByTenant(ctx, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("settla-bank-deposit: list virtual accounts for tenant %s: %w", tenantID, err)
+// ListVirtualAccounts returns a paginated, filterable list of virtual accounts for a tenant.
+func (e *Engine) ListVirtualAccounts(ctx context.Context, params VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error) {
+	if params.Limit <= 0 {
+		params.Limit = 20
 	}
-	return accounts, nil
+	if params.Limit > 100 {
+		params.Limit = 100
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	accounts, total, err := e.store.ListVirtualAccountsPaginated(ctx, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("settla-bank-deposit: list virtual accounts for tenant %s: %w", params.TenantID, err)
+	}
+	return accounts, total, nil
 }
 
 // HandleBankCreditReceived processes an incoming bank credit notification.
@@ -336,13 +348,8 @@ func (e *Engine) HandleBankCreditReceived(ctx context.Context, tenantID, session
 		CreatedAt:          time.Now().UTC(),
 	}
 
-	if err := e.store.CreateBankDepositTx(ctx, depositTx); err != nil {
-		return fmt.Errorf("settla-bank-deposit: handle bank credit: recording tx: %w", err)
-	}
-
-	// Accumulate received amount
-	if err := e.store.AccumulateReceived(ctx, tenantID, sessionID, credit.Amount); err != nil {
-		return fmt.Errorf("settla-bank-deposit: handle bank credit: accumulating received: %w", err)
+	if err := e.store.RecordBankDepositTx(ctx, depositTx, tenantID, sessionID, credit.Amount); err != nil {
+		return fmt.Errorf("settla-bank-deposit: handle bank credit: recording tx and accumulating: %w", err)
 	}
 
 	// Check for late payment (session expired or cancelled)

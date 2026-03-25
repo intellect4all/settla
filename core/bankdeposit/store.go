@@ -25,7 +25,7 @@ type BankDepositStore interface {
 	GetSession(ctx context.Context, tenantID, sessionID uuid.UUID) (*domain.BankDepositSession, error)
 
 	// GetSessionByIdempotencyKey retrieves a session by tenant and idempotency key.
-	GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key string) (*domain.BankDepositSession, error)
+	GetSessionByIdempotencyKey(ctx context.Context, tenantID uuid.UUID, key domain.IdempotencyKey) (*domain.BankDepositSession, error)
 
 	// GetSessionByAccountNumber retrieves the most recent active session for a virtual account.
 	GetSessionByAccountNumber(ctx context.Context, accountNumber string) (*domain.BankDepositSession, error)
@@ -56,11 +56,21 @@ type BankDepositStore interface {
 	// AccumulateReceived adds an amount to the session's received_amount.
 	AccumulateReceived(ctx context.Context, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error
 
+	// RecordBankDepositTx atomically creates a bank deposit transaction and
+	// accumulates the received amount on the session in a single database transaction.
+	RecordBankDepositTx(ctx context.Context, tx *domain.BankDepositTransaction, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error
+
 	// GetExpiredPendingSessions returns sessions in PENDING_PAYMENT with expires_at < now().
 	GetExpiredPendingSessions(ctx context.Context, limit int) ([]domain.BankDepositSession, error)
 
 	// ListVirtualAccountsByTenant returns all virtual accounts for a tenant.
 	ListVirtualAccountsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.VirtualAccountPool, error)
+
+	// ListVirtualAccountsPaginated returns a paginated, filterable list of virtual accounts.
+	ListVirtualAccountsPaginated(ctx context.Context, params VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error)
+
+	// CountAvailableVirtualAccountsByCurrency returns available account counts grouped by currency.
+	CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) (map[string]int64, error)
 
 	// GetVirtualAccountIndexByNumber retrieves the account index entry by account number.
 	GetVirtualAccountIndexByNumber(ctx context.Context, accountNumber string) (*VirtualAccountIndex, error)
@@ -69,6 +79,15 @@ type BankDepositStore interface {
 // TenantStore is the bank deposit engine's port for reading tenant configuration.
 type TenantStore interface {
 	GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error)
+}
+
+// VirtualAccountListParams holds the filters for paginated virtual account listing.
+type VirtualAccountListParams struct {
+	TenantID    uuid.UUID
+	Currency    string // empty string = no filter
+	AccountType string // empty string = no filter
+	Limit       int32
+	Offset      int32
 }
 
 // VirtualAccountIndex is a lookup type that maps a virtual account number to its
