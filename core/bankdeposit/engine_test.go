@@ -71,7 +71,7 @@ func (m *mockBankDepositStore) CreateSessionWithOutbox(_ context.Context, sessio
 	s := *session
 	m.sessions[s.ID] = &s
 	if s.IdempotencyKey != "" {
-		m.idempMap[s.TenantID.String()+":"+s.IdempotencyKey] = &s
+		m.idempMap[s.TenantID.String()+":"+string(s.IdempotencyKey)] = &s
 	}
 	m.acctMap[s.AccountNumber] = &s
 	m.outbox = append(m.outbox, entries...)
@@ -89,10 +89,10 @@ func (m *mockBankDepositStore) GetSession(_ context.Context, tenantID, sessionID
 	return &cp, nil
 }
 
-func (m *mockBankDepositStore) GetSessionByIdempotencyKey(_ context.Context, tenantID uuid.UUID, key string) (*domain.BankDepositSession, error) {
+func (m *mockBankDepositStore) GetSessionByIdempotencyKey(_ context.Context, tenantID uuid.UUID, key domain.IdempotencyKey) (*domain.BankDepositSession, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	s, ok := m.idempMap[tenantID.String()+":"+key]
+	s, ok := m.idempMap[tenantID.String()+":"+string(key)]
 	if !ok {
 		return nil, fmt.Errorf("session not found for idempotency key")
 	}
@@ -139,7 +139,7 @@ func (m *mockBankDepositStore) TransitionWithOutbox(_ context.Context, session *
 	s := *session
 	m.sessions[s.ID] = &s
 	if s.IdempotencyKey != "" {
-		m.idempMap[s.TenantID.String()+":"+s.IdempotencyKey] = &s
+		m.idempMap[s.TenantID.String()+":"+string(s.IdempotencyKey)] = &s
 	}
 	m.outbox = append(m.outbox, entries...)
 	return nil
@@ -218,6 +218,19 @@ func (m *mockBankDepositStore) AccumulateReceived(_ context.Context, tenantID, s
 	return nil
 }
 
+func (m *mockBankDepositStore) RecordBankDepositTx(_ context.Context, tx *domain.BankDepositTransaction, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := *tx
+	m.txs[tx.BankReference] = &t
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+	s.ReceivedAmount = s.ReceivedAmount.Add(amount)
+	return nil
+}
+
 func (m *mockBankDepositStore) GetExpiredPendingSessions(_ context.Context, limit int) ([]domain.BankDepositSession, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -241,6 +254,46 @@ func (m *mockBankDepositStore) ListVirtualAccountsByTenant(_ context.Context, te
 	for _, a := range m.pool {
 		if a.TenantID == tenantID {
 			result = append(result, *a)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockBankDepositStore) ListVirtualAccountsPaginated(_ context.Context, params VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var filtered []domain.VirtualAccountPool
+	for _, a := range m.pool {
+		if a.TenantID != params.TenantID {
+			continue
+		}
+		if params.Currency != "" && string(a.Currency) != params.Currency {
+			continue
+		}
+		if params.AccountType != "" && string(a.AccountType) != params.AccountType {
+			continue
+		}
+		filtered = append(filtered, *a)
+	}
+	total := int64(len(filtered))
+	start := int(params.Offset)
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + int(params.Limit)
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[start:end], total, nil
+}
+
+func (m *mockBankDepositStore) CountAvailableVirtualAccountsByCurrency(_ context.Context, tenantID uuid.UUID) (map[string]int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]int64)
+	for _, a := range m.pool {
+		if a.TenantID == tenantID && a.Available {
+			result[string(a.Currency)]++
 		}
 	}
 	return result, nil
@@ -303,7 +356,7 @@ func testTenant() *domain.Tenant {
 		BankConfig: domain.TenantBankConfig{
 			BankDepositsEnabled:     true,
 			DefaultBankingPartner:   "settla-bank",
-			BankSupportedCurrencies: []string{"GBP", "EUR", "USD"},
+			BankSupportedCurrencies: []domain.Currency{"GBP", "EUR", "USD"},
 			DefaultMismatchPolicy:   domain.PaymentMismatchPolicyAccept,
 			DefaultSessionTTLSecs:   3600,
 		},
