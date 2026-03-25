@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ type AnalyticsQuerier interface {
 // SnapshotWriter persists daily snapshot rows.
 type SnapshotWriter interface {
 	UpsertDailySnapshot(ctx context.Context, snap domain.DailySnapshot) error
-	ListActiveTenantIDs(ctx context.Context) ([]uuid.UUID, error)
+	ForEachActiveTenant(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 }
 
 // SnapshotScheduler runs at 01:00 UTC daily, aggregating yesterday's data
@@ -91,32 +92,34 @@ func (s *SnapshotScheduler) tick(ctx context.Context) error {
 	dayStart := dayEnd.Add(-24 * time.Hour)
 	snapshotDate := dayStart
 
-	tenantIDs, err := s.writer.ListActiveTenantIDs(ctx)
-	if err != nil {
-		return fmt.Errorf("settla-analytics: listing tenants: %w", err)
-	}
+	var errs atomic.Int64
+	var total atomic.Int64
 
-	s.logger.Info("settla-analytics: processing tenants",
-		"tenant_count", len(tenantIDs),
-		"snapshot_date", snapshotDate.Format("2006-01-02"),
-	)
-
-	var errs int
-	for _, tenantID := range tenantIDs {
-		if err := s.snapshotTenant(ctx, tenantID, dayStart, dayEnd, snapshotDate); err != nil {
-			s.logger.Error("settla-analytics: snapshot failed for tenant",
-				"tenant_id", tenantID,
-				"error", err,
-			)
-			errs++
+	err := s.writer.ForEachActiveTenant(ctx, domain.DefaultTenantBatchSize, func(ids []uuid.UUID) error {
+		for _, tenantID := range ids {
+			total.Add(1)
+			if err := s.snapshotTenant(ctx, tenantID, dayStart, dayEnd, snapshotDate); err != nil {
+				s.logger.Error("settla-analytics: snapshot failed for tenant",
+					"tenant_id", tenantID,
+					"error", err,
+				)
+				errs.Add(1)
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("settla-analytics: tenant iteration failed: %w", err)
 	}
 
-	if errs > 0 {
-		return fmt.Errorf("settla-analytics: %d/%d tenants failed", errs, len(tenantIDs))
+	errCount := errs.Load()
+	totalCount := total.Load()
+
+	if errCount > 0 {
+		return fmt.Errorf("settla-analytics: %d/%d tenants failed", errCount, totalCount)
 	}
 
-	s.logger.Info("settla-analytics: snapshot tick completed", "tenants", len(tenantIDs))
+	s.logger.Info("settla-analytics: snapshot tick completed", "tenants", totalCount)
 	return nil
 }
 
@@ -165,7 +168,7 @@ func (s *SnapshotScheduler) snapshotTenant(ctx context.Context, tenantID uuid.UU
 
 		// Attach fee breakdown if available
 		key := c.SourceCurrency + ":" + c.DestCurrency
-		if f, ok := feeMap[key]; ok {
+		if f, ok := feeMap[string(key)]; ok {
 			snap.OnRampFeesUSD = f.OnRampFeesUSD
 			snap.OffRampFeesUSD = f.OffRampFeesUSD
 			snap.NetworkFeesUSD = f.NetworkFeesUSD

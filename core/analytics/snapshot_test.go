@@ -51,8 +51,11 @@ func (m *mockWriter) UpsertDailySnapshot(_ context.Context, snap domain.DailySna
 	return nil
 }
 
-func (m *mockWriter) ListActiveTenantIDs(_ context.Context) ([]uuid.UUID, error) {
-	return m.tenantIDs, nil
+func (m *mockWriter) ForEachActiveTenant(_ context.Context, _ int32, fn func(ids []uuid.UUID) error) error {
+	if len(m.tenantIDs) == 0 {
+		return nil
+	}
+	return fn(m.tenantIDs)
 }
 
 func TestSnapshotScheduler_RunOnce(t *testing.T) {

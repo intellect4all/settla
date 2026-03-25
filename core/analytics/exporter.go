@@ -29,10 +29,10 @@ type ExportJobStore interface {
 
 // Exporter polls for pending export jobs and generates CSV/JSON files.
 type Exporter struct {
-	source    ExportDataSource
-	jobStore  ExportJobStore
-	logger    *slog.Logger
-	storagePath string
+	source       ExportDataSource
+	jobStore     ExportJobStore
+	logger       *slog.Logger
+	storagePath  string
 	pollInterval time.Duration
 }
 
@@ -44,10 +44,10 @@ func NewExporter(
 	logger *slog.Logger,
 ) *Exporter {
 	return &Exporter{
-		source:      source,
-		jobStore:    jobStore,
-		logger:      logger.With("module", "core.analytics.exporter"),
-		storagePath: storagePath,
+		source:       source,
+		jobStore:     jobStore,
+		logger:       logger.With("module", "core.analytics.exporter"),
+		storagePath:  storagePath,
 		pollInterval: 5 * time.Second,
 	}
 }
@@ -184,7 +184,7 @@ func (e *Exporter) exportTransfers(ctx context.Context, tenantID uuid.UUID, from
 
 	for _, c := range corridors {
 		_ = w.Write([]string{
-			c.SourceCurrency, c.DestCurrency,
+			string(c.SourceCurrency), string(c.DestCurrency),
 			fmt.Sprintf("%d", c.TransferCount),
 			c.VolumeUSD.String(), c.FeesUSD.String(),
 			fmt.Sprintf("%d", c.Completed), fmt.Sprintf("%d", c.Failed),
