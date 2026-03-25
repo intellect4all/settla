@@ -41,7 +41,7 @@ func newMockStore() *mockDepositStore {
 	}
 }
 
-func (m *mockDepositStore) seedPool(tenantID uuid.UUID, chain string, count int) {
+func (m *mockDepositStore) seedPool(tenantID uuid.UUID, chain domain.CryptoChain, count int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := 0; i < count; i++ {
@@ -64,7 +64,7 @@ func (m *mockDepositStore) CreateSessionWithOutbox(_ context.Context, session *d
 	s := *session
 	m.sessions[s.ID] = &s
 	if s.IdempotencyKey != "" {
-		m.idempMap[s.TenantID.String()+":"+s.IdempotencyKey] = &s
+		m.idempMap[s.TenantID.String()+":"+string(s.IdempotencyKey)] = &s
 	}
 	m.addrMap[s.DepositAddress] = &s
 	m.outbox = append(m.outbox, entries...)
@@ -93,10 +93,10 @@ func (m *mockDepositStore) GetSessionByAddress(_ context.Context, address string
 	return &cp, nil
 }
 
-func (m *mockDepositStore) GetSessionByIdempotencyKey(_ context.Context, tenantID uuid.UUID, key string) (*domain.DepositSession, error) {
+func (m *mockDepositStore) GetSessionByIdempotencyKey(_ context.Context, tenantID uuid.UUID, key domain.IdempotencyKey) (*domain.DepositSession, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	s, ok := m.idempMap[tenantID.String()+":"+key]
+	s, ok := m.idempMap[tenantID.String()+":"+string(key)]
 	if !ok {
 		return nil, fmt.Errorf("session not found for idempotency key")
 	}
@@ -132,7 +132,7 @@ func (m *mockDepositStore) TransitionWithOutbox(_ context.Context, session *doma
 	s := *session
 	m.sessions[s.ID] = &s
 	if s.IdempotencyKey != "" {
-		m.idempMap[s.TenantID.String()+":"+s.IdempotencyKey] = &s
+		m.idempMap[s.TenantID.String()+":"+string(s.IdempotencyKey)] = &s
 	}
 	m.outbox = append(m.outbox, entries...)
 	return nil
@@ -145,7 +145,7 @@ func (m *mockDepositStore) DispenseAddress(_ context.Context, tenantID uuid.UUID
 		return nil, nil
 	}
 	for i, p := range m.pool {
-		if p.TenantID == tenantID && p.Chain == chain && !p.Dispensed {
+		if p.TenantID == tenantID && string(p.Chain) == chain && !p.Dispensed {
 			m.pool[i].Dispensed = true
 			now := time.Now().UTC()
 			m.pool[i].DispensedAt = &now
@@ -160,7 +160,7 @@ func (m *mockDepositStore) CreateDepositTx(_ context.Context, tx *domain.Deposit
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t := *tx
-	m.txs[tx.Chain+":"+tx.TxHash] = &t
+	m.txs[string(tx.Chain)+":"+tx.TxHash] = &t
 	return nil
 }
 
@@ -190,6 +190,19 @@ func (m *mockDepositStore) ListSessionTxs(_ context.Context, sessionID uuid.UUID
 func (m *mockDepositStore) AccumulateReceived(_ context.Context, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+	s.ReceivedAmount = s.ReceivedAmount.Add(amount)
+	return nil
+}
+
+func (m *mockDepositStore) RecordDepositTx(_ context.Context, tx *domain.DepositTransaction, tenantID, sessionID uuid.UUID, amount decimal.Decimal) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := *tx
+	m.txs[string(tx.Chain)+":"+tx.TxHash] = &t
 	s, ok := m.sessions[sessionID]
 	if !ok {
 		return fmt.Errorf("session not found")
@@ -238,6 +251,21 @@ func (m *mockDepositStore) GetSessionByTxHash(_ context.Context, tenantID uuid.U
 		return nil, fmt.Errorf("session not found for tx %s", key)
 	}
 	return sess, nil
+}
+
+func (m *mockDepositStore) CountPendingSessions(_ context.Context, tenantID uuid.UUID) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, s := range m.sessions {
+		if s.TenantID == tenantID &&
+			s.Status != domain.DepositSessionStatusSettled &&
+			s.Status != domain.DepositSessionStatusExpired &&
+			s.Status != domain.DepositSessionStatusFailed {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (m *mockDepositStore) outboxEntries() []domain.OutboxEntry {
@@ -292,7 +320,7 @@ func testTenant() *domain.Tenant {
 		CryptoConfig: domain.TenantCryptoConfig{
 			CryptoEnabled:         true,
 			DefaultSettlementPref: domain.SettlementPreferenceHold,
-			SupportedChains:       []string{"tron", "ethereum"},
+			SupportedChains:       []domain.CryptoChain{"tron", "ethereum"},
 			DefaultSessionTTLSecs: 3600,
 			PaymentToleranceBPS:   50,
 		},
@@ -304,7 +332,7 @@ func setupEngine() (*Engine, *mockDepositStore, *mockTenantStore) {
 	tenantStore := newMockTenantStore()
 	tenant := testTenant()
 	tenantStore.tenants[tenant.ID] = tenant
-	store.seedPool(tenant.ID, "tron", 10)
+	store.seedPool(tenant.ID, domain.ChainTron, 10)
 	engine := NewEngine(store, tenantStore, testLogger)
 	return engine, store, tenantStore
 }
