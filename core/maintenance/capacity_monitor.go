@@ -245,8 +245,26 @@ func (cm *CapacityMonitor) calculateGrowthRate(dbName string) float64 {
 
 // --- SQL generation functions (exported for testing) ---
 
+// validSQLIdentifier checks that a string is a safe SQL identifier
+// (lowercase alphanumeric + underscores only).
+func validSQLIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // DatabaseSizeSQL returns a query to get the size of a database.
+// Panics if dbName contains invalid characters.
 func DatabaseSizeSQL(dbName string) string {
+	if !validSQLIdentifier(dbName) {
+		panic("settla-maintenance: invalid database name: " + dbName)
+	}
 	return fmt.Sprintf("SELECT pg_database_size('%s')", dbName)
 }
 

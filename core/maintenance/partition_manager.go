@@ -420,8 +420,30 @@ func MonthlyPartitionName(table string, date time.Time) string {
 	return fmt.Sprintf("%s_y%dm%02d", table, date.Year(), date.Month())
 }
 
+// validPartitionIdentifier checks that a SQL identifier is safe (lowercase
+// alphanumeric + underscores only). This prevents SQL injection via table or
+// partition names, even though current callers use only hardcoded constants.
+func validPartitionIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // CreatePartitionSQL returns idempotent DDL for creating a partition.
+// Panics if identifiers contain unsafe characters.
 func CreatePartitionSQL(parentTable, partitionName string, from, to time.Time) string {
+	if !validPartitionIdentifier(parentTable) {
+		panic("settla-maintenance: invalid parent table name: " + parentTable)
+	}
+	if !validPartitionIdentifier(partitionName) {
+		panic("settla-maintenance: invalid partition name: " + partitionName)
+	}
 	return fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')",
 		partitionName, parentTable,
@@ -430,11 +452,19 @@ func CreatePartitionSQL(parentTable, partitionName string, from, to time.Time) s
 }
 
 // DropPartitionSQL returns idempotent DDL for dropping a partition.
+// Panics if the identifier contains unsafe characters.
 func DropPartitionSQL(partitionName string) string {
+	if !validPartitionIdentifier(partitionName) {
+		panic("settla-maintenance: invalid partition name: " + partitionName)
+	}
 	return fmt.Sprintf("DROP TABLE IF EXISTS %s", partitionName)
 }
 
 // DefaultPartitionCheckSQL returns a query to count rows in a default partition.
+// Panics if the identifier contains unsafe characters.
 func DefaultPartitionCheckSQL(defaultPartitionName string) string {
+	if !validPartitionIdentifier(defaultPartitionName) {
+		panic("settla-maintenance: invalid partition name: " + defaultPartitionName)
+	}
 	return fmt.Sprintf("SELECT COUNT(*) FROM ONLY %s", defaultPartitionName)
 }
