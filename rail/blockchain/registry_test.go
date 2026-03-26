@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +19,9 @@ import (
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // fakeClient is a minimal domain.BlockchainClient for registry tests.
-type fakeClient struct{ chain string }
+type fakeClient struct{ chain domain.CryptoChain }
 
-func (f *fakeClient) Chain() string                                                      { return f.chain }
+func (f *fakeClient) Chain() domain.CryptoChain                                          { return f.chain }
 func (f *fakeClient) GetBalance(_ context.Context, _, _ string) (decimal.Decimal, error) { return decimal.Zero, nil }
 func (f *fakeClient) EstimateGas(_ context.Context, _ domain.TxRequest) (decimal.Decimal, error) {
 	return decimal.Zero, nil
@@ -41,32 +41,32 @@ func (f *fakeClient) SubscribeTransactions(_ context.Context, _ string, _ chan<-
 func TestRegistry_RegisterAndGetClient(t *testing.T) {
 	r := blockchain.NewRegistry(slog.Default())
 
-	tron := &fakeClient{chain: "tron"}
-	eth := &fakeClient{chain: "ethereum"}
+	tron := &fakeClient{chain: domain.ChainTron}
+	eth := &fakeClient{chain: domain.ChainEthereum}
 	r.Register(tron)
 	r.Register(eth)
 
-	got, err := r.GetClient("tron")
+	got, err := r.GetClient(domain.ChainTron)
 	if err != nil {
 		t.Fatalf("GetClient(tron): unexpected error: %v", err)
 	}
-	if got.Chain() != "tron" {
-		t.Errorf("GetClient(tron): chain = %q, want %q", got.Chain(), "tron")
+	if got.Chain() != domain.ChainTron {
+		t.Errorf("GetClient(tron): chain = %q, want %q", got.Chain(), domain.ChainTron)
 	}
 
-	got, err = r.GetClient("ethereum")
+	got, err = r.GetClient(domain.ChainEthereum)
 	if err != nil {
 		t.Fatalf("GetClient(ethereum): unexpected error: %v", err)
 	}
-	if got.Chain() != "ethereum" {
-		t.Errorf("GetClient(ethereum): chain = %q, want %q", got.Chain(), "ethereum")
+	if got.Chain() != domain.ChainEthereum {
+		t.Errorf("GetClient(ethereum): chain = %q, want %q", got.Chain(), domain.ChainEthereum)
 	}
 }
 
 func TestRegistry_GetClient_UnknownChain(t *testing.T) {
 	r := blockchain.NewRegistry(nil)
 
-	_, err := r.GetClient("unknown")
+	_, err := r.GetClient(domain.CryptoChain("unknown"))
 	if err == nil {
 		t.Fatal("expected error for unknown chain, got nil")
 	}
@@ -77,13 +77,13 @@ func TestRegistry_GetClient_UnknownChain(t *testing.T) {
 
 func TestRegistry_Register_Replaces(t *testing.T) {
 	r := blockchain.NewRegistry(nil)
-	r.Register(&fakeClient{chain: "tron"})
+	r.Register(&fakeClient{chain: domain.ChainTron})
 
 	// Replace with a different instance for the same chain.
-	newTron := &fakeClient{chain: "tron"}
+	newTron := &fakeClient{chain: domain.ChainTron}
 	r.Register(newTron)
 
-	got, _ := r.GetClient("tron")
+	got, _ := r.GetClient(domain.ChainTron)
 	if got != newTron {
 		t.Error("Register should replace the existing client for the same chain")
 	}
@@ -97,19 +97,19 @@ func TestRegistry_MustGetClient_Panics(t *testing.T) {
 			t.Error("MustGetClient should panic for unknown chain")
 		}
 	}()
-	r.MustGetClient("nonexistent")
+	r.MustGetClient(domain.CryptoChain("nonexistent"))
 }
 
 func TestRegistry_Chains(t *testing.T) {
 	r := blockchain.NewRegistry(nil)
-	r.Register(&fakeClient{chain: "tron"})
-	r.Register(&fakeClient{chain: "ethereum"})
-	r.Register(&fakeClient{chain: "solana"})
+	r.Register(&fakeClient{chain: domain.ChainTron})
+	r.Register(&fakeClient{chain: domain.ChainEthereum})
+	r.Register(&fakeClient{chain: domain.ChainSolana})
 
 	chains := r.Chains()
-	sort.Strings(chains)
+	slices.Sort(chains)
 
-	want := []string{"ethereum", "solana", "tron"}
+	want := []domain.CryptoChain{"ethereum", "solana", "tron"}
 	if len(chains) != len(want) {
 		t.Fatalf("Chains() = %v, want %v", chains, want)
 	}
@@ -126,16 +126,16 @@ func TestExplorerURL(t *testing.T) {
 	const hash = "abc123"
 
 	tests := []struct {
-		chain    string
+		chain    domain.CryptoChain
 		wantSub  string // required substring in the URL
 		wantHash bool   // hash must appear in the URL
 	}{
-		{"tron", "tronscan.org", true},
-		{"ethereum", "sepolia.etherscan.io", true},
-		{"base", "basescan.org", true},
-		{"solana", "explorer.solana.com", true},
-		{"solana", "devnet", false}, // cluster param present
-		{"unknown", "", false},      // empty for unknown chains
+		{domain.ChainTron, "tronscan.org", true},
+		{domain.ChainEthereum, "sepolia.etherscan.io", true},
+		{domain.ChainBase, "basescan.org", true},
+		{domain.ChainSolana, "explorer.solana.com", true},
+		{domain.ChainSolana, "devnet", false}, // cluster param present
+		{"unknown", "", false},                // empty for unknown chains
 	}
 
 	for _, tc := range tests {
