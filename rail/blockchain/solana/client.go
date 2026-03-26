@@ -72,7 +72,7 @@ func (c *Client) RegisterWallet(address, walletPath string) {
 }
 
 // Chain implements domain.BlockchainClient.
-func (c *Client) Chain() string {
+func (c *Client) Chain() domain.CryptoChain {
 	return chainIdentifier
 }
 

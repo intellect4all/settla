@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/intellect4all/settla/domain"
 )
 
 // Well-known program addresses.
@@ -24,6 +25,9 @@ const (
 	SysvarRentPubkey = "SysvarRent111111111111111111111111111111111"
 )
 
+// chainIdentifier is the chain() return value.
+const chainIdentifier = domain.ChainSolana
+
 // Solana-specific constants.
 const (
 	// lamportsPerSOL is the number of lamports in one SOL.
@@ -34,9 +38,6 @@ const (
 
 	// ataRentExemptLamports is the rent-exempt minimum for a token account (~0.002 SOL).
 	ataRentExemptLamports = 2_039_280
-
-	// chainIdentifier is the chain() return value.
-	chainIdentifier = "solana"
 
 	// pollInterval is how often SubscribeTransactions polls for new transactions.
 	pollInterval = 2 * time.Second

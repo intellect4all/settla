@@ -131,13 +131,25 @@ func newClientWithRPC(config Config, rpc *rpcClient, signer Signer, logger *slog
 	}
 }
 
+// RegisterWallet maps a blockchain address to its wallet manager path so that
+// SendTransaction can sign on behalf of this address. This is a no-op if the
+// client's signer does not support wallet registration (e.g., nil or custom signer).
+func (c *Client) RegisterWallet(address, walletPath string) {
+	type registrar interface {
+		RegisterWallet(address, walletPath string)
+	}
+	if r, ok := c.signer.(registrar); ok {
+		r.RegisterWallet(address, walletPath)
+	}
+}
+
 // Close releases the underlying RPC connection.
 func (c *Client) Close() {
 	c.rpc.close()
 }
 
-// Chain returns the blockchain identifier (e.g., "ethereum", "base").
-func (c *Client) Chain() string {
+// Chain returns the blockchain identifier (e.g., domain.ChainEthereum, domain.ChainBase).
+func (c *Client) Chain() domain.CryptoChain {
 	return c.config.ChainName
 }
 

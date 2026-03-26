@@ -63,8 +63,8 @@ func NewClient(config TronConfig, walletMgr *wallet.Manager, logger *slog.Logger
 }
 
 // Chain returns the blockchain identifier.
-func (c *Client) Chain() string {
-	return "tron"
+func (c *Client) Chain() domain.CryptoChain {
+	return domain.ChainTron
 }
 
 // GetBalance returns the TRX or TRC20 token balance for an address.

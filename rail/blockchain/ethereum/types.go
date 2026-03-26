@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/intellect4all/settla/domain"
 )
 
 // Config holds the configuration for an EVM chain client.
 type Config struct {
-	// ChainName is the human-readable chain identifier (e.g., "ethereum", "base").
-	ChainName string
+	// ChainName is the chain identifier (e.g., domain.ChainEthereum, domain.ChainBase).
+	ChainName domain.CryptoChain
 
 	// ChainID is the EVM chain ID (Sepolia: 11155111, Base Sepolia: 84532).
 	ChainID int64
