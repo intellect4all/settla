@@ -8,8 +8,8 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
+	"github.com/shopspring/decimal"
 )
 
 // AmountScale is the fixed-point scale for converting decimal amounts to
@@ -219,7 +219,7 @@ func (tb *tbBackend) buildTransfers(entry domain.JournalEntry, debits, credits [
 		cRem = credits[0].Amount
 	}
 
-	idempKey := AccountIDFromCode(entry.IdempotencyKey)
+	idempKey := AccountIDFromCode(string(entry.IdempotencyKey))
 	idx := 0
 
 	for di < len(debits) && ci < len(credits) {
@@ -235,8 +235,8 @@ func (tb *tbBackend) buildTransfers(entry domain.JournalEntry, debits, credits [
 
 		transfers = append(transfers, TBTransfer{
 			ID:              generateTransferID(entry.ID, idx),
-			DebitAccountID:  AccountIDFromCode(debits[di].AccountCode),
-			CreditAccountID: AccountIDFromCode(credits[ci].AccountCode),
+			DebitAccountID:  AccountIDFromCode(string(debits[di].AccountCode)),
+			CreditAccountID: AccountIDFromCode(string(credits[ci].AccountCode)),
 			UserData128:     idempKey,
 			Amount:          tbAmount,
 			Ledger:          tb.ledger,
