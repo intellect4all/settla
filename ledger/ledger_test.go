@@ -131,14 +131,14 @@ func balancedEntry(tenantSlug string) domain.JournalEntry {
 	return domain.JournalEntry{
 		ID:             uuid.New(),
 		TenantID:       &tenantID,
-		IdempotencyKey: fmt.Sprintf("idem-%s", uuid.New()),
+		IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("idem-%s", uuid.New())),
 		Description:    "Test balanced entry",
 		ReferenceType:  "transfer",
 		Lines: []domain.EntryLine{
 			{
 				ID: uuid.New(),
 				Posting: domain.Posting{
-					AccountCode: domain.TenantAccountCode(tenantSlug, "assets:bank:gbp:clearing"),
+					AccountCode: domain.AccountCode(domain.TenantAccountCode(tenantSlug, "assets:bank:gbp:clearing")),
 					EntryType:   domain.EntryTypeDebit,
 					Amount:      decimal.NewFromFloat(1000.00),
 					Currency:    domain.CurrencyGBP,
@@ -147,7 +147,7 @@ func balancedEntry(tenantSlug string) domain.JournalEntry {
 			{
 				ID: uuid.New(),
 				Posting: domain.Posting{
-					AccountCode: domain.TenantAccountCode(tenantSlug, "liabilities:customer:pending"),
+					AccountCode: domain.AccountCode(domain.TenantAccountCode(tenantSlug, "liabilities:customer:pending")),
 					EntryType:   domain.EntryTypeCredit,
 					Amount:      decimal.NewFromFloat(1000.00),
 					Currency:    domain.CurrencyGBP,
@@ -162,7 +162,7 @@ func multiLineEntry() domain.JournalEntry {
 	return domain.JournalEntry{
 		ID:             uuid.New(),
 		TenantID:       &tenantID,
-		IdempotencyKey: fmt.Sprintf("idem-%s", uuid.New()),
+		IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("idem-%s", uuid.New())),
 		Description:    "Multi-line settlement entry",
 		Lines: []domain.EntryLine{
 			{
@@ -241,7 +241,7 @@ func TestPostEntries_Imbalanced(t *testing.T) {
 
 	entry := domain.JournalEntry{
 		ID:             uuid.New(),
-		IdempotencyKey: "test-imbalanced",
+		IdempotencyKey: domain.IdempotencyKey("test-imbalanced"),
 		Lines: []domain.EntryLine{
 			{
 				ID: uuid.New(),
@@ -281,7 +281,7 @@ func TestPostEntries_EmptyLines(t *testing.T) {
 
 	entry := domain.JournalEntry{
 		ID:             uuid.New(),
-		IdempotencyKey: "test-empty",
+		IdempotencyKey: domain.IdempotencyKey("test-empty"),
 		Lines:          nil,
 	}
 
@@ -348,7 +348,7 @@ func TestGetBalance_FromTB(t *testing.T) {
 
 	// Check debit account balance (debits_posted - credits_posted).
 	debitCode := entry.Lines[0].AccountCode
-	balance, err := svc.GetBalance(context.Background(), debitCode)
+	balance, err := svc.GetBalance(context.Background(), string(debitCode))
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestGetBalance_FromTB(t *testing.T) {
 
 	// Check credit account balance.
 	creditCode := entry.Lines[1].AccountCode
-	balance, err = svc.GetBalance(context.Background(), creditCode)
+	balance, err = svc.GetBalance(context.Background(), string(creditCode))
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestPostEntries_AssignsIDs(t *testing.T) {
 	svc, _ := newTestService(tb)
 
 	entry := domain.JournalEntry{
-		IdempotencyKey: "auto-id-test",
+		IdempotencyKey: domain.IdempotencyKey("auto-id-test"),
 		Description:    "Test auto ID assignment",
 		Lines: []domain.EntryLine{
 			{
@@ -477,7 +477,7 @@ func TestPostEntries_BalanceUpdatesCorrectly(t *testing.T) {
 	}
 
 	// Debit account: debited 500 + 300 = 800, credits 0. Balance = 0 - 800 = -800.
-	balance, err := svc.GetBalance(context.Background(), entry1.Lines[0].AccountCode)
+	balance, err := svc.GetBalance(context.Background(), string(entry1.Lines[0].AccountCode))
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestPostEntries_BalanceUpdatesCorrectly(t *testing.T) {
 	}
 
 	// Credit account: credited 500 + 300 = 800, debits 0. Balance = 800 - 0 = 800.
-	balance, err = svc.GetBalance(context.Background(), entry1.Lines[1].AccountCode)
+	balance, err = svc.GetBalance(context.Background(), string(entry1.Lines[1].AccountCode))
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
 	}
@@ -509,13 +509,13 @@ func TestPostEntries_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			entry := domain.JournalEntry{
 				ID:             uuid.New(),
-				IdempotencyKey: fmt.Sprintf("concurrent-%d", idx),
+				IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("concurrent-%d", idx)),
 				Description:    fmt.Sprintf("Concurrent entry %d", idx),
 				Lines: []domain.EntryLine{
 					{
 						ID: uuid.New(),
 						Posting: domain.Posting{
-							AccountCode: fmt.Sprintf("assets:concurrent:%d", idx),
+							AccountCode: domain.AccountCode(fmt.Sprintf("assets:concurrent:%d", idx)),
 							EntryType:   domain.EntryTypeDebit,
 							Amount:      decimal.NewFromFloat(100),
 							Currency:    domain.CurrencyUSD,
@@ -524,7 +524,7 @@ func TestPostEntries_ConcurrentAccess(t *testing.T) {
 					{
 						ID: uuid.New(),
 						Posting: domain.Posting{
-							AccountCode: fmt.Sprintf("liabilities:concurrent:%d", idx),
+							AccountCode: domain.AccountCode(fmt.Sprintf("liabilities:concurrent:%d", idx)),
 							EntryType:   domain.EntryTypeCredit,
 							Amount:      decimal.NewFromFloat(100),
 							Currency:    domain.CurrencyUSD,
@@ -555,8 +555,8 @@ func TestPostEntries_HotKeyContention(t *testing.T) {
 
 	// All 100 goroutines post to the SAME account pair (hot-key contention).
 	const goroutines = 100
-	debitCode := "assets:hotkey:contention:debit"
-	creditCode := "liabilities:hotkey:contention:credit"
+	debitCode := domain.AccountCode("assets:hotkey:contention:debit")
+	creditCode := domain.AccountCode("liabilities:hotkey:contention:credit")
 
 	var wg sync.WaitGroup
 	var errCount atomic.Int32
@@ -569,7 +569,7 @@ func TestPostEntries_HotKeyContention(t *testing.T) {
 			entry := domain.JournalEntry{
 				ID:             uuid.New(),
 				TenantID:       &tenantID,
-				IdempotencyKey: fmt.Sprintf("hotkey-%d", idx),
+				IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("hotkey-%d", idx)),
 				Description:    fmt.Sprintf("Hot key entry %d", idx),
 				Lines: []domain.EntryLine{
 					{
@@ -613,7 +613,7 @@ func TestPostEntries_HotKeyContention(t *testing.T) {
 	}
 
 	// Check balances: 100 × $100 = $10,000 each side.
-	debitBalance, err := svc.GetBalance(context.Background(), debitCode)
+	debitBalance, err := svc.GetBalance(context.Background(), string(debitCode))
 	if err != nil {
 		t.Fatalf("GetBalance debit failed: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestPostEntries_HotKeyContention(t *testing.T) {
 		t.Errorf("debit balance = %s, want %s", debitBalance, expectedDebit)
 	}
 
-	creditBalance, err := svc.GetBalance(context.Background(), creditCode)
+	creditBalance, err := svc.GetBalance(context.Background(), string(creditCode))
 	if err != nil {
 		t.Fatalf("GetBalance credit failed: %v", err)
 	}
@@ -780,13 +780,13 @@ func TestBatcher_BatchesMultipleEntries(t *testing.T) {
 			defer wg.Done()
 			entry := domain.JournalEntry{
 				ID:             uuid.New(),
-				IdempotencyKey: fmt.Sprintf("batch-%d", idx),
+				IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("batch-%d", idx)),
 				Description:    fmt.Sprintf("Batch entry %d", idx),
 				Lines: []domain.EntryLine{
 					{
 						ID: uuid.New(),
 						Posting: domain.Posting{
-							AccountCode: fmt.Sprintf("assets:batch:%d", idx),
+							AccountCode: domain.AccountCode(fmt.Sprintf("assets:batch:%d", idx)),
 							EntryType:   domain.EntryTypeDebit,
 							Amount:      decimal.NewFromFloat(100),
 							Currency:    domain.CurrencyUSD,
@@ -795,7 +795,7 @@ func TestBatcher_BatchesMultipleEntries(t *testing.T) {
 					{
 						ID: uuid.New(),
 						Posting: domain.Posting{
-							AccountCode: fmt.Sprintf("liabilities:batch:%d", idx),
+							AccountCode: domain.AccountCode(fmt.Sprintf("liabilities:batch:%d", idx)),
 							EntryType:   domain.EntryTypeCredit,
 							Amount:      decimal.NewFromFloat(100),
 							Currency:    domain.CurrencyUSD,

@@ -61,7 +61,7 @@ func BenchmarkPostEntries_HotKey(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			e := balancedEntry("hot-key-contention")
-			e.IdempotencyKey = fmt.Sprintf("idem-hotkey-%d-%d", time.Now().UnixNano(), i)
+			e.IdempotencyKey = domain.IdempotencyKey(fmt.Sprintf("idem-hotkey-%d-%d", time.Now().UnixNano(), i))
 			_, _ = svc.PostEntries(ctx, e)
 			opsCompleted.Add(1)
 			i++
@@ -156,9 +156,9 @@ func BenchmarkPostEntries_Concurrent(b *testing.B) {
 	ctx := context.Background()
 
 	// Pre-create accounts
-	accounts := make([]string, 256)
+	accounts := make([]domain.AccountCode, 256)
 	for i := 0; i < 256; i++ {
-		accounts[i] = domain.TenantAccountCode(fmt.Sprintf("concurrent-%d", i), "assets:bank:gbp:clearing")
+		accounts[i] = domain.AccountCode(domain.TenantAccountCode(fmt.Sprintf("concurrent-%d", i), "assets:bank:gbp:clearing"))
 	}
 
 	var opCount atomic.Int64
@@ -171,7 +171,7 @@ func BenchmarkPostEntries_Concurrent(b *testing.B) {
 		for pb.Next() {
 			entry := domain.JournalEntry{
 				ID:             uuid.New(),
-				IdempotencyKey: fmt.Sprintf("idem-concurrent-%d", idx),
+				IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("idem-concurrent-%d", idx)),
 				Description:    "Concurrent test entry",
 				ReferenceType:  "transfer",
 				Lines: []domain.EntryLine{
@@ -226,7 +226,7 @@ func BenchmarkPostEntries_MultiLine(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		entry := multiLineEntry()
-		entry.IdempotencyKey = fmt.Sprintf("idem-multiline-%d", i)
+		entry.IdempotencyKey = domain.IdempotencyKey(fmt.Sprintf("idem-multiline-%d", i))
 		b.StartTimer()
 
 		_, _ = svc.PostEntries(ctx, entry)
@@ -328,7 +328,7 @@ func BenchmarkPostEntries_HighThroughput(b *testing.B) {
 			defer wg.Done()
 			for j := 0; j < opsPerWorker; j++ {
 				e := balancedEntry(fmt.Sprintf("worker-%d", workerID))
-				e.IdempotencyKey = fmt.Sprintf("idem-throughput-%d-%d", workerID, j)
+				e.IdempotencyKey = domain.IdempotencyKey(fmt.Sprintf("idem-throughput-%d-%d", workerID, j))
 				_, _ = svc.PostEntries(ctx, e)
 			}
 		}(i)
@@ -349,7 +349,7 @@ func BenchmarkGetEntries(b *testing.B) {
 	// Post some entries
 	for i := 0; i < 100; i++ {
 		entry := balancedEntry("query-test")
-		entry.IdempotencyKey = fmt.Sprintf("idem-query-%d", i)
+		entry.IdempotencyKey = domain.IdempotencyKey(fmt.Sprintf("idem-query-%d", i))
 		_, _ = svc.PostEntries(ctx, entry)
 	}
 
@@ -400,12 +400,12 @@ func BenchmarkTBCreateTransfers(b *testing.B) {
 		b.StopTimer()
 		entry := domain.JournalEntry{
 			ID:             uuid.New(),
-			IdempotencyKey: fmt.Sprintf("idem-tb-%d", i),
+			IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("idem-tb-%d", i)),
 			Lines: []domain.EntryLine{
 				{
 					ID: uuid.New(),
 					Posting: domain.Posting{
-						AccountCode: accounts[0],
+						AccountCode: domain.AccountCode(accounts[0]),
 						EntryType:   domain.EntryTypeDebit,
 						Amount:      decimal.NewFromInt(1000),
 						Currency:    domain.CurrencyGBP,
@@ -414,7 +414,7 @@ func BenchmarkTBCreateTransfers(b *testing.B) {
 				{
 					ID: uuid.New(),
 					Posting: domain.Posting{
-						AccountCode: accounts[1],
+						AccountCode: domain.AccountCode(accounts[1]),
 						EntryType:   domain.EntryTypeCredit,
 						Amount:      decimal.NewFromInt(1000),
 						Currency:    domain.CurrencyGBP,
