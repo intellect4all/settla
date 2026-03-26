@@ -15,7 +15,7 @@ import (
 
 type fakeOnRamp struct{ id string }
 
-func (f *fakeOnRamp) ID() string                       { return f.id }
+func (f *fakeOnRamp) ID() string                            { return f.id }
 func (f *fakeOnRamp) SupportedPairs() []domain.CurrencyPair { return nil }
 func (f *fakeOnRamp) GetQuote(_ context.Context, _ domain.QuoteRequest) (*domain.ProviderQuote, error) {
 	return nil, nil
@@ -29,7 +29,7 @@ func (f *fakeOnRamp) GetStatus(_ context.Context, _ string) (*domain.ProviderTx,
 
 type fakeOffRamp struct{ id string }
 
-func (f *fakeOffRamp) ID() string                       { return f.id }
+func (f *fakeOffRamp) ID() string                            { return f.id }
 func (f *fakeOffRamp) SupportedPairs() []domain.CurrencyPair { return nil }
 func (f *fakeOffRamp) GetQuote(_ context.Context, _ domain.QuoteRequest) (*domain.ProviderQuote, error) {
 	return nil, nil
@@ -41,9 +41,9 @@ func (f *fakeOffRamp) GetStatus(_ context.Context, _ string) (*domain.ProviderTx
 	return nil, nil
 }
 
-type fakeBlockchain struct{ chain string }
+type fakeBlockchain struct{ chain domain.CryptoChain }
 
-func (f *fakeBlockchain) Chain() string { return f.chain }
+func (f *fakeBlockchain) Chain() domain.CryptoChain { return f.chain }
 func (f *fakeBlockchain) GetBalance(_ context.Context, _, _ string) (decimal.Decimal, error) {
 	return decimal.Zero, nil
 }
@@ -121,7 +121,7 @@ func TestProviderModeFromEnv_Defaults(t *testing.T) {
 	t.Setenv("SETTLA_PROVIDER_MODE", "")
 	t.Setenv("SETTLA_ENV", "")
 
-	mode := provider.ProviderModeFromEnv()
+	mode := provider.ModeFromEnv()
 	if mode != provider.ProviderModeTestnet {
 		t.Errorf("default mode: got %q, want %q", mode, provider.ProviderModeTestnet)
 	}
@@ -131,7 +131,7 @@ func TestProviderModeFromEnv_MockInTest(t *testing.T) {
 	t.Setenv("SETTLA_PROVIDER_MODE", "")
 	t.Setenv("SETTLA_ENV", "test")
 
-	mode := provider.ProviderModeFromEnv()
+	mode := provider.ModeFromEnv()
 	if mode != provider.ProviderModeMock {
 		t.Errorf("test env mode: got %q, want %q", mode, provider.ProviderModeMock)
 	}
@@ -149,7 +149,7 @@ func TestProviderModeFromEnv_Explicit(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.env, func(t *testing.T) {
 			t.Setenv("SETTLA_PROVIDER_MODE", tc.env)
-			got := provider.ProviderModeFromEnv()
+			got := provider.ModeFromEnv()
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
@@ -240,5 +240,105 @@ func TestNewRegistryFromMode_ModeSwitchIsConfigOnly(t *testing.T) {
 	}
 	if len(testnetOnRamps) != 1 {
 		t.Errorf("testnet: expected 1 on-ramp, got %d", len(testnetOnRamps))
+	}
+}
+
+// ── StablecoinsFromProviders tests ──────────────────────────────────────────
+
+type fakeOnRampWithPairs struct {
+	id    string
+	pairs []domain.CurrencyPair
+}
+
+func (f *fakeOnRampWithPairs) ID() string                            { return f.id }
+func (f *fakeOnRampWithPairs) SupportedPairs() []domain.CurrencyPair { return f.pairs }
+func (f *fakeOnRampWithPairs) GetQuote(_ context.Context, _ domain.QuoteRequest) (*domain.ProviderQuote, error) {
+	return nil, nil
+}
+func (f *fakeOnRampWithPairs) Execute(_ context.Context, _ domain.OnRampRequest) (*domain.ProviderTx, error) {
+	return nil, nil
+}
+func (f *fakeOnRampWithPairs) GetStatus(_ context.Context, _ string) (*domain.ProviderTx, error) {
+	return nil, nil
+}
+
+type fakeOffRampWithPairs struct {
+	id    string
+	pairs []domain.CurrencyPair
+}
+
+func (f *fakeOffRampWithPairs) ID() string                            { return f.id }
+func (f *fakeOffRampWithPairs) SupportedPairs() []domain.CurrencyPair { return f.pairs }
+func (f *fakeOffRampWithPairs) GetQuote(_ context.Context, _ domain.QuoteRequest) (*domain.ProviderQuote, error) {
+	return nil, nil
+}
+func (f *fakeOffRampWithPairs) Execute(_ context.Context, _ domain.OffRampRequest) (*domain.ProviderTx, error) {
+	return nil, nil
+}
+func (f *fakeOffRampWithPairs) GetStatus(_ context.Context, _ string) (*domain.ProviderTx, error) {
+	return nil, nil
+}
+
+func TestStablecoinsFromProviders_DiscoverFromPairs(t *testing.T) {
+	reg := provider.NewRegistry()
+	ctx := context.Background()
+
+	// On-ramp: GBP→USDT, NGN→USDC
+	reg.RegisterOnRamp(&fakeOnRampWithPairs{
+		id: "on-1",
+		pairs: []domain.CurrencyPair{
+			{From: domain.CurrencyGBP, To: domain.CurrencyUSDT},
+			{From: domain.CurrencyNGN, To: domain.CurrencyUSDC},
+		},
+	})
+	// Off-ramp: USDT→NGN
+	reg.RegisterOffRamp(&fakeOffRampWithPairs{
+		id: "off-1",
+		pairs: []domain.CurrencyPair{
+			{From: domain.CurrencyUSDT, To: domain.CurrencyNGN},
+		},
+	})
+
+	stables := reg.StablecoinsFromProviders(ctx)
+
+	stableSet := make(map[domain.Currency]bool)
+	for _, s := range stables {
+		stableSet[s] = true
+	}
+
+	if !stableSet[domain.CurrencyUSDT] {
+		t.Error("expected USDT in stablecoins")
+	}
+	if !stableSet[domain.CurrencyUSDC] {
+		t.Error("expected USDC in stablecoins")
+	}
+	if len(stables) != 2 {
+		t.Errorf("expected 2 stablecoins, got %d", len(stables))
+	}
+}
+
+func TestStablecoinsFromProviders_EmptyRegistry(t *testing.T) {
+	reg := provider.NewRegistry()
+	ctx := context.Background()
+
+	stables := reg.StablecoinsFromProviders(ctx)
+	if len(stables) != 0 {
+		t.Errorf("expected 0 stablecoins from empty registry, got %d", len(stables))
+	}
+}
+
+func TestStablecoinsFromProviders_NoFiatInResult(t *testing.T) {
+	reg := provider.NewRegistry()
+	ctx := context.Background()
+
+	// On-ramp outputs GBP (fiat, not stablecoin) — should NOT appear.
+	reg.RegisterOnRamp(&fakeOnRampWithPairs{
+		id:    "weird-onramp",
+		pairs: []domain.CurrencyPair{{From: domain.CurrencyUSD, To: domain.CurrencyGBP}},
+	})
+
+	stables := reg.StablecoinsFromProviders(ctx)
+	if len(stables) != 0 {
+		t.Errorf("expected 0 stablecoins (fiat should be excluded), got %d: %v", len(stables), stables)
 	}
 }

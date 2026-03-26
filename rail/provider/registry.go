@@ -16,20 +16,24 @@ type ProviderMode string
 const (
 	// ProviderModeMock uses mock providers (unit tests, CI).
 	ProviderModeMock ProviderMode = "mock"
+	// ProviderModeMockHTTP uses mock providers that delegate to an external HTTP service (demos).
+	ProviderModeMockHTTP ProviderMode = "mock-http"
 	// ProviderModeTestnet uses Settla on/off-ramp providers with real testnet blockchain.
 	ProviderModeTestnet ProviderMode = "testnet"
 	// ProviderModeLive is reserved for future production providers.
 	ProviderModeLive ProviderMode = "live"
 )
 
-// ProviderModeFromEnv reads SETTLA_PROVIDER_MODE from the environment.
+// ModeFromEnv reads SETTLA_PROVIDER_MODE from the environment.
 // Returns ProviderModeTestnet if not set (development default).
 // In test builds (SETTLA_ENV=test), defaults to ProviderModeMock.
-func ProviderModeFromEnv() ProviderMode {
+func ModeFromEnv() ProviderMode {
 	mode := os.Getenv("SETTLA_PROVIDER_MODE")
 	switch ProviderMode(mode) {
 	case ProviderModeMock:
 		return ProviderModeMock
+	case ProviderModeMockHTTP:
+		return ProviderModeMockHTTP
 	case ProviderModeTestnet:
 		return ProviderModeTestnet
 	case ProviderModeLive:
@@ -98,7 +102,9 @@ type Registry struct {
 	mu          sync.RWMutex
 	onRamps     map[string]domain.OnRampProvider
 	offRamps    map[string]domain.OffRampProvider
-	blockchains map[string]domain.BlockchainClient
+	blockchains map[domain.CryptoChain]domain.BlockchainClient
+	normalizers map[string]domain.WebhookNormalizer // keyed by provider slug
+	listeners   map[string]domain.ProviderListener  // keyed by provider slug
 }
 
 // NewRegistry creates an empty provider registry.
@@ -106,7 +112,9 @@ func NewRegistry() *Registry {
 	return &Registry{
 		onRamps:     make(map[string]domain.OnRampProvider),
 		offRamps:    make(map[string]domain.OffRampProvider),
-		blockchains: make(map[string]domain.BlockchainClient),
+		blockchains: make(map[domain.CryptoChain]domain.BlockchainClient),
+		normalizers: make(map[string]domain.WebhookNormalizer),
+		listeners:   make(map[string]domain.ProviderListener),
 	}
 }
 
@@ -176,7 +184,7 @@ func (r *Registry) RegisterBlockchainClient(c domain.BlockchainClient) {
 }
 
 // GetBlockchainClient returns a blockchain client by chain ID or an error if not found.
-func (r *Registry) GetBlockchainClient(chain string) (domain.BlockchainClient, error) {
+func (r *Registry) GetBlockchainClient(chain domain.CryptoChain) (domain.BlockchainClient, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	c, ok := r.blockchains[chain]
@@ -187,17 +195,93 @@ func (r *Registry) GetBlockchainClient(chain string) (domain.BlockchainClient, e
 }
 
 // GetBlockchain is an alias for GetBlockchainClient that satisfies domain.ProviderRegistry.
-func (r *Registry) GetBlockchain(chain string) (domain.BlockchainClient, error) {
+func (r *Registry) GetBlockchain(chain domain.CryptoChain) (domain.BlockchainClient, error) {
 	return r.GetBlockchainClient(chain)
 }
 
-// ListBlockchainChains returns the chain IDs of all registered blockchain clients.
-func (r *Registry) ListBlockchainChains() []string {
+// RegisterNormalizer adds a webhook normalizer for a provider slug.
+func (r *Registry) RegisterNormalizer(slug string, n domain.WebhookNormalizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.normalizers[slug] = n
+}
+
+// GetNormalizer returns the webhook normalizer for a provider slug, or nil if not found.
+func (r *Registry) GetNormalizer(slug string) domain.WebhookNormalizer {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	chains := make([]string, 0, len(r.blockchains))
+	return r.normalizers[slug]
+}
+
+// RegisterListener adds an optional provider listener for non-HTTP communication.
+func (r *Registry) RegisterListener(slug string, l domain.ProviderListener) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.listeners[slug] = l
+}
+
+// GetListener returns the provider listener for a slug, or nil if not registered.
+func (r *Registry) GetListener(slug string) domain.ProviderListener {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.listeners[slug]
+}
+
+// Listeners returns all registered provider listeners.
+func (r *Registry) Listeners() map[string]domain.ProviderListener {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make(map[string]domain.ProviderListener, len(r.listeners))
+	for k, v := range r.listeners {
+		result[k] = v
+	}
+	return result
+}
+
+// ListBlockchainChains returns the chain IDs of all registered blockchain clients.
+func (r *Registry) ListBlockchainChains() []domain.CryptoChain {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	chains := make([]domain.CryptoChain, 0, len(r.blockchains))
 	for chain := range r.blockchains {
 		chains = append(chains, chain)
 	}
 	return chains
+}
+
+// StablecoinsFromProviders returns the set of stablecoin currencies that
+// registered providers can handle. Discovered from on-ramp output currencies
+// (pair.To) and off-ramp input currencies (pair.From) that satisfy IsStablecoin.
+func (r *Registry) StablecoinsFromProviders(ctx context.Context) []domain.Currency {
+	seen := make(map[domain.Currency]bool)
+
+	for _, id := range r.ListOnRampIDs(ctx) {
+		p, err := r.GetOnRamp(id)
+		if err != nil {
+			continue
+		}
+		for _, pair := range p.SupportedPairs() {
+			if domain.IsStablecoin(pair.To) {
+				seen[pair.To] = true
+			}
+		}
+	}
+
+	for _, id := range r.ListOffRampIDs(ctx) {
+		p, err := r.GetOffRamp(id)
+		if err != nil {
+			continue
+		}
+		for _, pair := range p.SupportedPairs() {
+			if domain.IsStablecoin(pair.From) {
+				seen[pair.From] = true
+			}
+		}
+	}
+
+	result := make([]domain.Currency, 0, len(seen))
+	for c := range seen {
+		result = append(result, c)
+	}
+	return result
 }
