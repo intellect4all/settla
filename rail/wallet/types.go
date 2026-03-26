@@ -6,24 +6,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/intellect4all/settla/domain"
 )
 
-// Chain represents a supported blockchain network.
-type Chain string
+// Chain is an alias for domain.CryptoChain for backward compatibility within the wallet package.
+type Chain = domain.CryptoChain
 
+// Re-export chain constants from domain for backward compatibility.
 const (
-	// ChainTron is the Tron blockchain (TRC20 tokens).
-	ChainTron Chain = "tron"
-	// ChainSolana is the Solana blockchain (SPL tokens).
-	ChainSolana Chain = "solana"
-	// ChainEthereum is the Ethereum blockchain (ERC20 tokens).
-	ChainEthereum Chain = "ethereum"
-	// ChainBase is the Base L2 blockchain (ERC20 tokens, EVM-compatible).
-	ChainBase Chain = "base"
+	ChainTron     = domain.ChainTron
+	ChainSolana   = domain.ChainSolana
+	ChainEthereum = domain.ChainEthereum
+	ChainBase     = domain.ChainBase
 )
 
 // CoinType returns the BIP-44 coin type for the chain.
-func (c Chain) CoinType() uint32 {
+func CoinType(c Chain) uint32 {
 	switch c {
 	case ChainTron:
 		return 195
@@ -36,29 +34,9 @@ func (c Chain) CoinType() uint32 {
 	}
 }
 
-// IsEVM returns true if the chain is EVM-compatible (Ethereum, Base, etc.).
-func (c Chain) IsEVM() bool {
-	return c == ChainEthereum || c == ChainBase
-}
-
-// String returns the chain name.
-func (c Chain) String() string {
-	return string(c)
-}
-
-// ValidChains returns all supported chains.
-func ValidChains() []Chain {
-	return []Chain{ChainTron, ChainSolana, ChainEthereum, ChainBase}
-}
-
 // IsValidChain checks if a chain string is valid.
 func IsValidChain(s string) bool {
-	switch Chain(s) {
-	case ChainTron, ChainSolana, ChainEthereum, ChainBase:
-		return true
-	default:
-		return false
-	}
+	return domain.ValidateChain(domain.CryptoChain(s)) == nil
 }
 
 // WalletType distinguishes between system and tenant wallets.

@@ -10,10 +10,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 
 	"github.com/intellect4all/settla/domain"
-	"github.com/intellect4all/settla/rail/blockchain"
 )
 
 // Scoring weights for route selection.
@@ -28,7 +28,7 @@ var (
 type Route struct {
 	OnRamp         domain.OnRampProvider
 	OffRamp        domain.OffRampProvider
-	Chain          string
+	Chain          domain.CryptoChain
 	Stable         domain.Currency
 	Score          decimal.Decimal
 	ScoreBreakdown domain.ScoreBreakdown
@@ -52,9 +52,13 @@ type LiquidityScorer interface {
 
 // ReliabilityScorer optionally provides a reliability score (0–1) for a
 // provider based on recent success/failure metrics. 1.0 = perfect track
-// record; 0.0 = always failing. When nil, falls back to 1.0.
+// record; 0.0 = always failing. When nil, it falls back to 1.0.
 type ReliabilityScorer interface {
 	ReliabilityScore(ctx context.Context, providerID string) decimal.Decimal
+}
+
+type ExplorerURLProvider interface {
+	ExplorerURL(chain domain.CryptoChain, txHash string) string
 }
 
 // RouterOption configures optional Router behaviour.
@@ -70,16 +74,34 @@ func WithReliabilityScorer(s ReliabilityScorer) RouterOption {
 	return func(r *Router) { r.reliabilityScorer = s }
 }
 
+func WithExplorerUrl(s ExplorerURLProvider) RouterOption {
+	return func(r *Router) { r.explorerUrlProvider = s }
+}
+
+// WithProviderRateLimits sets per-provider rate limit overrides. Providers not
+// in the map use the default (100 req/s, burst 200).
+func WithProviderRateLimits(limits map[string]RateLimitConfig) RouterOption {
+	return func(r *Router) { r.providerRateLimits = limits }
+}
+
 // Router selects the optimal provider corridor for each settlement.
 // It implements domain.Router (Route method).
+// RateLimitConfig holds per-provider rate limit settings.
+type RateLimitConfig struct {
+	PerSec int
+	Burst  int
+}
+
 type Router struct {
-	registry          domain.ProviderRegistry
-	tenants           TenantStore
-	logger            *slog.Logger
-	liquidityScorer    LiquidityScorer   // optional — nil = assume 1.0
-	reliabilityScorer  ReliabilityScorer // optional — nil = assume 1.0
-	providerLimiters   map[string]*rate.Limiter
-	providerLimitersMu sync.Mutex
+	registry            domain.ProviderRegistry
+	tenants             TenantStore
+	logger              *slog.Logger
+	liquidityScorer     LiquidityScorer   // optional — nil = assume 1.0
+	reliabilityScorer   ReliabilityScorer // optional — nil = assume 1.0
+	explorerUrlProvider ExplorerURLProvider
+	providerRateLimits  map[string]RateLimitConfig // optional per-provider overrides
+	providerLimiters    map[string]*rate.Limiter
+	providerLimitersMu  sync.Mutex
 }
 
 // Compile-time check: Router implements domain.Router.
@@ -140,7 +162,10 @@ func (r *Router) Route(ctx context.Context, req domain.RouteRequest) (*domain.Ro
 	}
 
 	// Generate block explorer URL for the selected chain (empty for unknown chains).
-	explorerURL := blockchain.ExplorerURL(best.Chain, "")
+	var explorerURL string
+	if r.explorerUrlProvider != nil {
+		explorerURL = r.explorerUrlProvider.ExplorerURL(best.Chain, "")
+	}
 
 	// Build up to 2 fallback alternatives from remaining candidates.
 	var alternatives []domain.RouteAlternative
@@ -187,106 +212,239 @@ func (r *Router) buildCandidates(ctx context.Context, req domain.RouteRequest) (
 	offRampIDs := r.registry.ListOffRampIDs(ctx)
 	chains := r.registry.ListBlockchainChains()
 
-	// Stablecoins we can route through.
-	stables := []domain.Currency{domain.CurrencyUSDT, domain.CurrencyUSDC}
+	// Discover stablecoins dynamically from what providers actually support,
+	// rather than maintaining a hardcoded list.
+	stables := r.registry.StablecoinsFromProviders(ctx)
+	if len(stables) == 0 {
+		return nil, fmt.Errorf("settla-rail: no stablecoins available from registered providers")
+	}
 
-	var candidates []Route
-
-	for _, stable := range stables {
-		for _, onID := range onRampIDs {
-			onRamp, err := r.registry.GetOnRamp(onID)
-			if err != nil {
-				r.logger.Debug("settla-rail: skipping candidate",
-					"provider_id", onID, "stage", "on_ramp_lookup", "error", err)
-				continue
+	onRampsByStable := make(map[domain.Currency][]domain.OnRampProvider, len(stables))
+	for _, onID := range onRampIDs {
+		onRamp, err := r.registry.GetOnRamp(onID)
+		if err != nil {
+			r.logger.Debug("settla-rail: skipping candidate",
+				"provider_id", onID, "stage", "on_ramp_lookup", "error", err)
+			continue
+		}
+		if !r.getProviderLimiter(onID).Allow() {
+			continue
+		}
+		for _, pair := range onRamp.SupportedPairs() {
+			if pair.From == req.SourceCurrency {
+				onRampsByStable[pair.To] = append(onRampsByStable[pair.To], onRamp)
 			}
+		}
+	}
 
-			if !r.getProviderLimiter(onID).Allow() {
-				continue
+	// offRampsByStable[stable] = off-ramps that support stable → req.TargetCurrency
+	offRampsByStable := make(map[domain.Currency][]domain.OffRampProvider, len(stables))
+	for _, offID := range offRampIDs {
+		offRamp, err := r.registry.GetOffRamp(offID)
+		if err != nil {
+			r.logger.Debug("settla-rail: skipping candidate",
+				"provider_id", offID, "stage", "off_ramp_lookup", "error", err)
+			continue
+		}
+		if !r.getProviderLimiter(offID).Allow() {
+			continue
+		}
+		for _, pair := range offRamp.SupportedPairs() {
+			if pair.To == req.TargetCurrency {
+				offRampsByStable[pair.From] = append(offRampsByStable[pair.From], offRamp)
 			}
+		}
+	}
 
-			// Does the on-ramp support source→stable?
-			onQuote, err := onRamp.GetQuote(ctx, domain.QuoteRequest{
-				SourceCurrency: req.SourceCurrency,
-				SourceAmount:   req.Amount,
-				DestCurrency:   stable,
+	type gasKey struct {
+		chain  domain.CryptoChain
+		stable domain.Currency
+	}
+	gasCache := make(map[gasKey]decimal.Decimal, len(chains)*len(stables))
+
+	for _, chain := range chains {
+		bc, err := r.registry.GetBlockchain(chain)
+		if err != nil {
+			r.logger.Debug("settla-rail: skipping candidate",
+				"provider_id", chain, "stage", "blockchain_lookup", "error", err)
+			continue
+		}
+		for _, stable := range stables {
+			fee, err := bc.EstimateGas(ctx, domain.TxRequest{
+				Token:  string(stable),
+				Amount: req.Amount,
 			})
 			if err != nil {
 				r.logger.Debug("settla-rail: skipping candidate",
-					"provider_id", onID, "stage", "on_ramp_quote", "error", err)
+					"provider_id", chain, "stage", "gas_estimate", "error", err)
 				continue
 			}
+			gasCache[gasKey{chain, stable}] = fee
+		}
+	}
 
-			for _, offID := range offRampIDs {
-				offRamp, err := r.registry.GetOffRamp(offID)
-				if err != nil {
-					r.logger.Debug("settla-rail: skipping candidate",
-						"provider_id", offID, "stage", "off_ramp_lookup", "error", err)
-					continue
-				}
+	onQuotes, err := r.fetchOnRampQuotes(ctx, req, stables, onRampsByStable)
+	if err != nil {
+		return nil, err
+	}
 
-				if !r.getProviderLimiter(offID).Allow() {
-					continue
-				}
+	pairs, err := r.fetchOffRampQuotes(ctx, req, onQuotes, offRampsByStable)
+	if err != nil {
+		return nil, err
+	}
 
-				// Does the off-ramp support stable→target?
-				offQuote, err := offRamp.GetQuote(ctx, domain.QuoteRequest{
-					SourceCurrency: stable,
-					SourceAmount:   req.Amount.Mul(onQuote.Rate).Sub(onQuote.Fee),
-					DestCurrency:   req.TargetCurrency,
-				})
-				if err != nil {
-					r.logger.Debug("settla-rail: skipping candidate",
-						"provider_id", offID, "stage", "off_ramp_quote", "error", err)
-					continue
-				}
-
-				for _, chain := range chains {
-					bc, err := r.registry.GetBlockchain(chain)
-					if err != nil {
-						r.logger.Debug("settla-rail: skipping candidate",
-							"provider_id", chain, "stage", "blockchain_lookup", "error", err)
-						continue
-					}
-
-					gasFee, err := bc.EstimateGas(ctx, domain.TxRequest{
-						Token:  string(stable),
-						Amount: req.Amount.Mul(onQuote.Rate),
-					})
-					if err != nil {
-						r.logger.Debug("settla-rail: skipping candidate",
-							"provider_id", chain, "stage", "gas_estimate", "error", err)
-						continue
-					}
-
-					route := Route{
-						OnRamp:   onRamp,
-						OffRamp:  offRamp,
-						Chain:    chain,
-						Stable:   stable,
-						OnQuote:  onQuote,
-						OffQuote: offQuote,
-						GasFee:   gasFee,
-					}
-					route.Score, route.ScoreBreakdown = r.scoreRoute(ctx, route, req.Amount)
-					candidates = append(candidates, route)
-				}
+	// Assemble candidates using cached gas (no network calls).
+	candidates := make([]Route, 0, len(pairs)*len(chains))
+	for i := range pairs {
+		p := &pairs[i]
+		for _, chain := range chains {
+			gasFee, ok := gasCache[gasKey{chain, p.stable}]
+			if !ok {
+				continue
 			}
+			route := Route{
+				OnRamp:   p.onRamp,
+				OffRamp:  p.offRamp,
+				Chain:    chain,
+				Stable:   p.stable,
+				OnQuote:  p.onQuote,
+				OffQuote: p.offQuote,
+				GasFee:   gasFee,
+			}
+			route.Score, route.ScoreBreakdown = r.scoreRoute(ctx, route, req.Amount)
+			candidates = append(candidates, route)
 		}
 	}
 
 	return candidates, nil
 }
 
+// onRampQuote holds a successful on-ramp quote for a specific stablecoin.
+type onRampQuote struct {
+	onRamp domain.OnRampProvider
+	stable domain.Currency
+	quote  *domain.ProviderQuote
+}
+
+// quotedPair is a fully-quoted on-ramp + off-ramp combination, ready for
+// candidate assembly (only the chain and gas fee are missing).
+type quotedPair struct {
+	onRamp   domain.OnRampProvider
+	offRamp  domain.OffRampProvider
+	stable   domain.Currency
+	onQuote  *domain.ProviderQuote
+	offQuote *domain.ProviderQuote
+}
+
+const quoteParallelism = 20
+
+// fetchOnRampQuotes fetches quotes from all eligible on-ramp providers concurrently.
+func (r *Router) fetchOnRampQuotes(
+	ctx context.Context,
+	req domain.RouteRequest,
+	stables []domain.Currency,
+	onRampsByStable map[domain.Currency][]domain.OnRampProvider,
+) ([]onRampQuote, error) {
+	var (
+		mu      sync.Mutex
+		results []onRampQuote
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(quoteParallelism)
+
+	for _, stable := range stables {
+		for _, onRamp := range onRampsByStable[stable] {
+			g.Go(func() error {
+				quote, err := onRamp.GetQuote(gctx, domain.QuoteRequest{
+					SourceCurrency: req.SourceCurrency,
+					SourceAmount:   req.Amount,
+					DestCurrency:   stable,
+				})
+				if err != nil {
+					r.logger.Debug("settla-rail: skipping candidate",
+						"provider_id", onRamp.ID(), "stage", "on_ramp_quote", "error", err)
+					return nil
+				}
+				mu.Lock()
+				results = append(results, onRampQuote{onRamp: onRamp, stable: stable, quote: quote})
+				mu.Unlock()
+				return nil
+			})
+		}
+	}
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("settla-rail: fetching on-ramp quotes: %w", err)
+	}
+	return results, nil
+}
+
+// fetchOffRampQuotes pairs each on-ramp quote with every eligible off-ramp,
+// fetching off-ramp quotes concurrently.
+func (r *Router) fetchOffRampQuotes(
+	ctx context.Context,
+	req domain.RouteRequest,
+	onQuotes []onRampQuote,
+	offRampsByStable map[domain.Currency][]domain.OffRampProvider,
+) ([]quotedPair, error) {
+	var (
+		mu      sync.Mutex
+		results []quotedPair
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(quoteParallelism)
+
+	for _, oq := range onQuotes {
+		stableAmount := req.Amount.Mul(oq.quote.Rate).Sub(oq.quote.Fee)
+		for _, offRamp := range offRampsByStable[oq.stable] {
+			g.Go(func() error {
+				quote, err := offRamp.GetQuote(gctx, domain.QuoteRequest{
+					SourceCurrency: oq.stable,
+					SourceAmount:   stableAmount,
+					DestCurrency:   req.TargetCurrency,
+				})
+				if err != nil {
+					r.logger.Debug("settla-rail: skipping candidate",
+						"provider_id", offRamp.ID(), "stage", "off_ramp_quote", "error", err)
+					return nil
+				}
+				mu.Lock()
+				results = append(results, quotedPair{
+					onRamp:   oq.onRamp,
+					offRamp:  offRamp,
+					stable:   oq.stable,
+					onQuote:  oq.quote,
+					offQuote: quote,
+				})
+				mu.Unlock()
+				return nil
+			})
+		}
+	}
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("settla-rail: fetching off-ramp quotes: %w", err)
+	}
+	return results, nil
+}
+
 // getProviderLimiter returns a per-provider rate limiter, creating one if needed.
-// Default: 100 quotes/sec per provider.
+// Uses per-provider config if set via WithProviderRateLimits, otherwise defaults
+// to 100 req/s with burst 200.
 func (r *Router) getProviderLimiter(providerID string) *rate.Limiter {
 	r.providerLimitersMu.Lock()
 	defer r.providerLimitersMu.Unlock()
 	if lim, ok := r.providerLimiters[providerID]; ok {
 		return lim
 	}
-	lim := rate.NewLimiter(100, 200) // 100 req/s, burst 200
+	perSec, burst := 100, 200
+	if cfg, ok := r.providerRateLimits[providerID]; ok {
+		if cfg.PerSec > 0 {
+			perSec = cfg.PerSec
+		}
+		if cfg.Burst > 0 {
+			burst = cfg.Burst
+		}
+	}
+	lim := rate.NewLimiter(rate.Limit(perSec), burst)
 	r.providerLimiters[providerID] = lim
 	return lim
 }
@@ -294,9 +452,9 @@ func (r *Router) getProviderLimiter(providerID string) *rate.Limiter {
 // scoreRoute computes a weighted score for a candidate route.
 // Higher is better. Score components are normalized to [0, 1].
 //
-// Cost (40%):        Lower total fee → higher score
-// Speed (30%):       Lower estimated time → higher score
-// Liquidity (20%):   From LiquidityScorer if wired, else 1.0
+// Cost (40%): Lower total fee → higher score
+// Speed (30%): Lower estimated time → higher score
+// Liquidity (20%): From LiquidityScorer if wired, else 1.0
 // Reliability (10%): From ReliabilityScorer if wired, else 1.0
 func (r *Router) scoreRoute(ctx context.Context, route Route, amount decimal.Decimal) (decimal.Decimal, domain.ScoreBreakdown) {
 	totalFee := route.OnQuote.Fee.Add(route.GasFee).Add(route.OffQuote.Fee)

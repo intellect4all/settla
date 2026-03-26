@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/uuid"
 
+	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/rail/wallet/keymgmt"
 )
 
@@ -158,6 +159,14 @@ func (m *Manager) GetOrCreateWallet(ctx context.Context, path string, chain Chai
 // GetSystemWallet returns (or creates) the system hot wallet for a chain.
 func (m *Manager) GetSystemWallet(chain Chain) (*Wallet, error) {
 	path := SystemWalletPath("hot", chain)
+	return m.GetOrCreateWallet(context.Background(), path, chain, nil)
+}
+
+// DeriveTransactionWallet derives a unique wallet for a specific transaction.
+// Uses path format "system/offramp/{chain}/{txReference}" to ensure deterministic,
+// per-transaction addresses. The same reference always produces the same address.
+func (m *Manager) DeriveTransactionWallet(chain Chain, txReference string) (*Wallet, error) {
+	path := fmt.Sprintf("system/offramp/%s/%s", chain, txReference)
 	return m.GetOrCreateWallet(context.Background(), path, chain, nil)
 }
 
@@ -445,7 +454,7 @@ func (m *Manager) nextIndex(chain Chain) uint32 {
 
 // loadIndexCounters loads the highest derivation index from existing wallets.
 func (m *Manager) loadIndexCounters() error {
-	for _, chain := range ValidChains() {
+	for _, chain := range domain.ValidChains() {
 		wallets, err := m.store.ListWallets(chain.String())
 		if err != nil {
 			continue

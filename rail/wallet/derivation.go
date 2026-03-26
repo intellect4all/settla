@@ -24,7 +24,7 @@ import (
 // The returned wallet contains the private key in memory.
 // Call wallet.ZeroPrivateKey() when done.
 func DeriveWallet(km keymgmt.KeyManager, keyID string, chain Chain, index uint32) (*Wallet, error) {
-	coinType := chain.CoinType()
+	coinType := CoinType(chain)
 	if coinType == 0 && chain != ChainEthereum && chain != ChainBase {
 		return nil, fmt.Errorf("settla-wallet: unsupported chain: %s", chain)
 	}

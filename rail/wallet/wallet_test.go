@@ -360,7 +360,7 @@ func TestChainTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.chain), func(t *testing.T) {
-			if got := tt.chain.CoinType(); got != tt.coinType {
+			if got := wallet.CoinType(tt.chain); got != tt.coinType {
 				t.Errorf("CoinType() = %d, want %d", got, tt.coinType)
 			}
 			if got := tt.chain.IsEVM(); got != tt.isEVM {
