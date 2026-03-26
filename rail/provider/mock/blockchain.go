@@ -12,7 +12,7 @@ import (
 // BlockchainClient is a mock blockchain client for testing and demos.
 // Simulates a Tron-like chain with configurable gas fees and balances.
 type BlockchainClient struct {
-	chain    string
+	chain    domain.CryptoChain
 	gasFee   decimal.Decimal
 	mu       sync.Mutex
 	balances map[string]decimal.Decimal // address:token → balance
@@ -20,7 +20,7 @@ type BlockchainClient struct {
 }
 
 // NewBlockchainClient creates a mock blockchain client.
-func NewBlockchainClient(chain string, gasFee decimal.Decimal) *BlockchainClient {
+func NewBlockchainClient(chain domain.CryptoChain, gasFee decimal.Decimal) *BlockchainClient {
 	return &BlockchainClient{
 		chain:    chain,
 		gasFee:   gasFee,
@@ -35,7 +35,7 @@ func (c *BlockchainClient) SetBalance(address, token string, balance decimal.Dec
 	c.balances[address+":"+token] = balance
 }
 
-func (c *BlockchainClient) Chain() string { return c.chain }
+func (c *BlockchainClient) Chain() domain.CryptoChain { return c.chain }
 
 func (c *BlockchainClient) GetBalance(_ context.Context, address string, token string) (decimal.Decimal, error) {
 	c.mu.Lock()
