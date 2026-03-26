@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/observability"
+	"github.com/shopspring/decimal"
 )
 
 // idempotencyShard is one of 16 shards of the idempotency map. Each shard has
@@ -30,7 +30,6 @@ var _ domain.TreasuryManager = (*Manager)(nil)
 // USDT on Tron (6dp) and more than enough for fiat (2dp).
 //
 // With int64 max ≈ 9.2e18, this supports up to ~$9.2 trillion per position.
-// Previous value of 10^8 capped at ~$92B and caused overflow with large balances.
 const microScale int64 = 1_000_000
 
 // positionKey uniquely identifies a treasury position in memory.
@@ -38,67 +37,6 @@ type positionKey struct {
 	TenantID uuid.UUID
 	Currency string
 	Location string
-}
-
-// PositionState holds the in-memory state for a single treasury position.
-// Balance and locked are stored as atomic int64 micro-units so that Reserve
-// can run a lock-free CAS loop without holding any mutex.
-type PositionState struct {
-	// Immutable metadata (set once during load, never mutated).
-	ID            uuid.UUID
-	TenantID      uuid.UUID
-	Currency      domain.Currency
-	Location      string
-	MinBalance    decimal.Decimal
-	TargetBalance decimal.Decimal
-
-	// mu protects multi-field operations that must be observed atomically:
-	// - snapshot() takes RLock to read balance+locked+reserved consistently
-	// - CommitReservation takes Lock to modify reserved and locked together
-	// Single-field CAS operations (Reserve, Release) do not need this lock.
-	mu sync.RWMutex
-
-	// Atomic micro-unit counters — the hot path.
-	// balance: total funds (updated by ledger sync / admin top-up)
-	// locked:  committed for in-flight transfers (incremented by CommitReservation)
-	// reserved: tentatively held (incremented by Reserve, decremented by Release/Commit)
-	balanceMicro  atomic.Int64
-	lockedMicro   atomic.Int64
-	reservedMicro atomic.Int64
-
-	// dirty is set when the position has been modified since the last flush.
-	dirty atomic.Bool
-}
-
-// Available returns balance - locked - reserved in decimal.
-func (ps *PositionState) Available() decimal.Decimal {
-	b := ps.balanceMicro.Load()
-	l := ps.lockedMicro.Load()
-	r := ps.reservedMicro.Load()
-	return fromMicro(b - l - r)
-}
-
-// snapshot returns the current position as a domain.Position for reads.
-// Takes RLock to ensure balance, locked, and reserved are read consistently
-// (no intermediate state from CommitReservation modifying both reserved and locked).
-func (ps *PositionState) snapshot() domain.Position {
-	ps.mu.RLock()
-	b := ps.balanceMicro.Load()
-	l := ps.lockedMicro.Load()
-	r := ps.reservedMicro.Load()
-	ps.mu.RUnlock()
-
-	return domain.Position{
-		ID:            ps.ID,
-		TenantID:      ps.TenantID,
-		Currency:      ps.Currency,
-		Location:      ps.Location,
-		Balance:       fromMicro(b),
-		Locked:        fromMicro(l + r),
-		MinBalance:    ps.MinBalance,
-		TargetBalance: ps.TargetBalance,
-		UpdatedAt:     time.Now().UTC(),
-	}
 }
 
 // Manager orchestrates position tracking and liquidity reservations.
@@ -118,29 +56,57 @@ func (ps *PositionState) snapshot() domain.Position {
 //  3. Background flush: The 100ms ticker drains the pendingOps channel (batch
 //     insert), flushes all dirty positions, and cleans up old ops.
 type Manager struct {
-	positions map[positionKey]*PositionState
-	mu        sync.RWMutex // protects map reads/writes, NOT individual positions
+	positions   map[positionKey]*PositionState
+	tenantIndex map[uuid.UUID][]*PositionState // O(1) tenant lookup, avoids full-scan
+	mu          sync.RWMutex                   // protects map reads/writes, NOT individual positions
+
+	// dirtySet tracks positions modified since the last flush. Only these
+	// positions are written to Postgres — avoids scanning all positions.
+	dirtySet map[positionKey]*PositionState
+	dirtyMu  sync.Mutex // separate lock so Reserve/Release don't contend with flush
 
 	// Idempotency shards: 16 shards to reduce lock contention at peak TPS.
 	// Key format: "{transferID}:{operation}" (e.g., "uuid:reserve").
 	// Shard selected by fnv32a hash of the key.
 	idempotencyShards [16]idempotencyShard
 
-	store          Store
-	publisher      domain.EventPublisher
-	flushInterval  time.Duration
-	syncThreshold  decimal.Decimal // reservations >= this amount get a synchronous DB flush
-	logger         *slog.Logger
-	metrics        *observability.Metrics
+	store         Store
+	publisher     domain.EventPublisher
+	flushInterval time.Duration
+
+	// syncThresholds holds per-currency thresholds above which Reserve
+	// performs a synchronous DB flush. Defaults approximate $100,000 USD
+	// equivalent per currency. syncThresholdDefault is used for currencies
+	// not in the map (e.g. newly added currencies).
+	syncThresholds       map[domain.Currency]decimal.Decimal
+	syncThresholdDefault decimal.Decimal
+
+	logger  *slog.Logger
+	metrics *observability.Metrics
 
 	// Crash recovery: pending reserve ops queued by Reserve/Release/Commit,
 	// drained by flushOnce() and batch-inserted to DB. Capacity 10000 to avoid
 	// blocking the hot path even under peak load.
 	pendingOps chan ReserveOp
 
+	// pendingEvents queues position events for batch insertion by the event
+	// writer goroutine. All treasury operations (Reserve, Release, Credit, Debit,
+	// Consume) queue events here. The writer drains every 10ms and batch-inserts.
+	// Capacity 100,000 to cover ~5 seconds of peak load without blocking.
+	pendingEvents chan domain.PositionEvent
+
+	// eventWriterDone signals that the event writer goroutine has exited.
+	eventWriterDone chan struct{}
+
 	// Flush lifecycle.
 	stopCh chan struct{}
 	doneCh chan struct{}
+
+	// replaying is true during startup crash recovery replay. When set, Reserve/
+	// Release/Commit/etc skip logOp() since ops are already WAL-logged. This
+	// prevents the pendingOps channel from filling up when there are thousands of
+	// uncommitted ops to replay before the flush loop starts.
+	replaying atomic.Bool
 
 	// consecutiveFlushFailures counts consecutive flush cycles that encountered
 	// at least one DB write error. Used to surface persistent DB outages via logs.
@@ -161,16 +127,21 @@ func NewManager(
 	opts ...Option,
 ) *Manager {
 	m := &Manager{
-		positions: make(map[positionKey]*PositionState),
-		store:     store,
-		publisher:      publisher,
-		flushInterval:  100 * time.Millisecond,
-		syncThreshold:  decimal.NewFromInt(100_000), // $100,000 default
-		logger:         logger.With("module", "treasury.manager"),
-		metrics:        metrics,
-		pendingOps:     make(chan ReserveOp, 10000),
-		stopCh:         make(chan struct{}),
-		doneCh:         make(chan struct{}),
+		positions:            make(map[positionKey]*PositionState),
+		tenantIndex:          make(map[uuid.UUID][]*PositionState),
+		dirtySet:             make(map[positionKey]*PositionState),
+		store:                store,
+		publisher:            publisher,
+		flushInterval:        100 * time.Millisecond,
+		syncThresholds:       DefaultSyncThresholds(),
+		syncThresholdDefault: decimal.NewFromInt(100_000), // USD-equivalent fallback
+		logger:               logger.With("module", "treasury.manager"),
+		metrics:              metrics,
+		pendingOps:           make(chan ReserveOp, 10000),
+		pendingEvents:        make(chan domain.PositionEvent, 100_000),
+		eventWriterDone:      make(chan struct{}),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
 	}
 	for i := range m.idempotencyShards {
 		m.idempotencyShards[i].items = make(map[string]time.Time)
@@ -191,12 +162,57 @@ func WithFlushInterval(d time.Duration) Option {
 	}
 }
 
-// WithSyncThreshold sets the amount threshold above which Reserve performs
-// a synchronous position flush to DB immediately after the CAS succeeds.
-// Default: $100,000. Set to 0 to disable sync flush.
-func WithSyncThreshold(amount decimal.Decimal) Option {
+// DefaultSyncThresholds returns per-currency sync flush thresholds that
+// approximate $100,000 USD equivalent. These are conservative estimates —
+// operators should tune via SETTLA_TREASURY_SYNC_THRESHOLDS for live rates.
+//
+// Approximate rates used (as of 2025):
+//
+//	USD/USDT/USDC: $100,000  (1:1)
+//	GBP:           £80,000   (~$100K at 1.25)
+//	EUR:           €92,000   (~$100K at 1.09)
+//	NGN:          ₦160,000,000  (~$100K at 1600)
+//	GHS:          ₵1,500,000    (~$100K at 15)
+//	KES:          KSh13,000,000 (~$100K at 130)
+func DefaultSyncThresholds() map[domain.Currency]decimal.Decimal {
+	return map[domain.Currency]decimal.Decimal{
+		domain.CurrencyUSD:  decimal.NewFromInt(100_000),
+		domain.CurrencyUSDT: decimal.NewFromInt(100_000),
+		domain.CurrencyUSDC: decimal.NewFromInt(100_000),
+		domain.CurrencyGBP:  decimal.NewFromInt(80_000),
+		domain.CurrencyEUR:  decimal.NewFromInt(92_000),
+		domain.CurrencyNGN:  decimal.NewFromInt(160_000_000),
+		domain.CurrencyGHS:  decimal.NewFromInt(1_500_000),
+		domain.CurrencyKES:  decimal.NewFromInt(13_000_000),
+	}
+}
+
+// syncThresholdFor returns the sync flush threshold for the given currency.
+// Returns the per-currency threshold if configured, otherwise the default.
+// Returns zero (sync flush disabled) if the default is also zero.
+func (m *Manager) syncThresholdFor(currency domain.Currency) decimal.Decimal {
+	if threshold, ok := m.syncThresholds[currency]; ok {
+		return threshold
+	}
+	return m.syncThresholdDefault
+}
+
+// WithSyncThresholds sets per-currency sync flush thresholds. Each entry
+// defines the amount above which a Reserve for that currency triggers an
+// immediate synchronous DB flush. Merges with (and overrides) defaults.
+func WithSyncThresholds(thresholds map[domain.Currency]decimal.Decimal) Option {
 	return func(m *Manager) {
-		m.syncThreshold = amount
+		for currency, amount := range thresholds {
+			m.syncThresholds[currency] = amount
+		}
+	}
+}
+
+// WithSyncThresholdDefault sets the fallback sync threshold for currencies
+// not in the per-currency map. Set to 0 to disable sync flush for unknown currencies.
+func WithSyncThresholdDefault(amount decimal.Decimal) Option {
+	return func(m *Manager) {
+		m.syncThresholdDefault = amount
 	}
 }
 
@@ -319,6 +335,13 @@ const pendingOpsTimeout = 1 * time.Second
 // is full for longer than pendingOpsTimeout — failing the operation is safer
 // than silently losing the WAL entry.
 func (m *Manager) logOp(tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, reference uuid.UUID, opType ReserveOpType) error {
+	// During startup replay, ops are already WAL-logged — skip both the DB
+	// write and the channel enqueue to avoid saturating the pendingOps channel
+	// before the flush loop starts.
+	if m.replaying.Load() {
+		return nil
+	}
+
 	op := ReserveOp{
 		ID:        uuid.New(),
 		TenantID:  tenantID,
@@ -385,6 +408,10 @@ func (m *Manager) syncFlushPosition(ps *PositionState) error {
 		return fmt.Errorf("settla-treasury: sync flush failed for position %s: %w", ps.ID, err)
 	}
 	ps.dirty.Store(false)
+	key := positionKey{TenantID: ps.TenantID, Currency: string(ps.Currency), Location: ps.Location}
+	m.dirtyMu.Lock()
+	delete(m.dirtySet, key)
+	m.dirtyMu.Unlock()
 	return nil
 }
 
@@ -407,6 +434,7 @@ func (m *Manager) Reserve(ctx context.Context, tenantID uuid.UUID, currency doma
 		return err
 	}
 
+	// TODO: Look into this
 	// Circuit breaker: reject new reservations during a persistent DB outage.
 	// In-memory state remains authoritative, but new reservations accepted while
 	// the DB is down cannot be durably persisted and risk data loss on restart.
@@ -449,7 +477,7 @@ func (m *Manager) Reserve(ctx context.Context, tenantID uuid.UUID, currency doma
 		// CAS failed — another goroutine changed reserved. Loop re-reads everything.
 	}
 
-	ps.dirty.Store(true)
+	m.markDirty(ps)
 	if err := m.logOp(tenantID, currency, location, amount, reference, OpReserve); err != nil {
 		// Roll back the CAS reservation — failing the reserve is safer than
 		// losing the WAL entry.
@@ -461,7 +489,7 @@ func (m *Manager) Reserve(ctx context.Context, tenantID uuid.UUID, currency doma
 	// Synchronous flush for large amounts — closes the crash window entirely.
 	// If the flush fails, roll back the reservation to avoid accepting a large
 	// reservation that cannot be durably persisted.
-	if !m.syncThreshold.IsZero() && amount.GreaterThanOrEqual(m.syncThreshold) {
+	if threshold := m.syncThresholdFor(currency); !threshold.IsZero() && amount.GreaterThanOrEqual(threshold) {
 		if err := m.syncFlushPosition(ps); err != nil {
 			// Roll back the CAS reservation.
 			ps.reservedMicro.Add(-amountMicro)
@@ -519,7 +547,7 @@ func (m *Manager) Release(ctx context.Context, tenantID uuid.UUID, currency doma
 		}
 	}
 
-	ps.dirty.Store(true)
+	m.markDirty(ps)
 	if err := m.logOp(tenantID, currency, location, amount, reference, OpRelease); err != nil {
 		// Roll back the CAS release — re-add the reserved amount.
 		ps.reservedMicro.Add(amountMicro)
@@ -574,7 +602,7 @@ func (m *Manager) CommitReservation(ctx context.Context, tenantID uuid.UUID, cur
 
 	ps.mu.Unlock()
 
-	ps.dirty.Store(true)
+	m.markDirty(ps)
 	if err := m.logOp(tenantID, currency, location, amount, reference, OpCommit); err != nil {
 		// Roll back: reverse the commit by re-adding to reserved and removing from locked.
 		ps.mu.Lock()
@@ -588,15 +616,15 @@ func (m *Manager) CommitReservation(ctx context.Context, tenantID uuid.UUID, cur
 }
 
 // GetPositions returns all treasury positions for a tenant (from in-memory state).
+// Uses the tenantIndex for O(tenant positions) lookup instead of scanning all positions.
 func (m *Manager) GetPositions(ctx context.Context, tenantID uuid.UUID) ([]domain.Position, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	states := m.tenantIndex[tenantID]
+	m.mu.RUnlock()
 
-	var result []domain.Position
-	for k, ps := range m.positions {
-		if k.TenantID == tenantID {
-			result = append(result, ps.snapshot())
-		}
+	result := make([]domain.Position, 0, len(states))
+	for _, ps := range states {
+		result = append(result, ps.snapshot())
 	}
 	return result, nil
 }
@@ -636,6 +664,8 @@ func (m *Manager) GetLiquidityReport(ctx context.Context, tenantID uuid.UUID) (*
 	return report, nil
 }
 
+// TODO: update balance is never called anywhere else, meaning there is no way to update tenants positions in realtime!!! look into this
+
 // UpdateBalance sets the balance for a position. Called by ledger sync when
 // external deposits/withdrawals change the total balance.
 //
@@ -669,7 +699,255 @@ func (m *Manager) UpdateBalance(ctx context.Context, tenantID uuid.UUID, currenc
 	}
 
 	ps.balanceMicro.Store(newBalanceMicro)
-	ps.dirty.Store(true)
+	m.markDirty(ps)
+	return nil
+}
+
+// queueEvent sends a position event to the batch writer channel. Non-blocking:
+// if the channel is full, logs a warning and drops the event. The event is
+// best-effort for audit; the in-memory CAS is already committed and the
+// reserve_ops WAL provides crash recovery for Reserve/Release/Commit/Consume.
+func (m *Manager) queueEvent(ps *PositionState, eventType domain.PositionEventType, amount decimal.Decimal, reference uuid.UUID, refType string) {
+	balance := fromMicro(ps.balanceMicro.Load())
+	locked := fromMicro(ps.lockedMicro.Load() + ps.reservedMicro.Load())
+	event := domain.PositionEvent{
+		ID:             uuid.Must(uuid.NewV7()),
+		PositionID:     ps.ID,
+		TenantID:       ps.TenantID,
+		EventType:      eventType,
+		Amount:         amount,
+		BalanceAfter:   balance,
+		LockedAfter:    locked,
+		ReferenceID:    reference,
+		ReferenceType:  refType,
+		IdempotencyKey: idempotencyKey(reference, string(eventType)),
+		RecordedAt:     time.Now().UTC(),
+	}
+	select {
+	case m.pendingEvents <- event:
+	default:
+		m.logger.Warn("settla-treasury: event channel full, dropping position event",
+			"position_id", ps.ID,
+			"event_type", eventType,
+			"reference", reference,
+		)
+	}
+}
+
+// CreditBalance atomically increases the balance for a position.
+// Used when money enters the tenant's position: deposit confirmations, payment
+// link payments, stablecoin compensation, manual top-ups, and rebalancing.
+//
+// Idempotent: calling with the same reference UUID returns nil on repeat.
+func (m *Manager) CreditBalance(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, reference uuid.UUID, refType string) error {
+	if !amount.IsPositive() {
+		return fmt.Errorf("settla-treasury: credit amount must be positive")
+	}
+
+	if err := validateMicroRange(amount); err != nil {
+		return err
+	}
+
+	// Circuit breaker: reject during persistent DB outage.
+	if failures := m.consecutiveFlushFailures.Load(); failures >= maxFlushFailuresBeforeReject {
+		return fmt.Errorf("settla-treasury: rejecting credit — DB flush failing (consecutive failures: %d)", failures)
+	}
+
+	if m.tryAcquireIdempotency(reference, "credit") {
+		return nil
+	}
+
+	ps, err := m.getPosition(tenantID, currency, location)
+	if err != nil {
+		m.rollbackIdempotency(reference, "credit")
+		return err
+	}
+
+	amountMicro := toMicro(amount)
+
+	// Atomic add — credits always succeed (no contention with other ops on balanceMicro
+	// because balance only increases here; Reserve/Release only touch reservedMicro).
+	ps.balanceMicro.Add(amountMicro)
+
+	m.markDirty(ps)
+	m.queueEvent(ps, domain.PosEventCredit, amount, reference, refType)
+
+	if err := m.logOp(tenantID, currency, location, amount, reference, OpCredit); err != nil {
+		// Roll back the credit.
+		ps.balanceMicro.Add(-amountMicro)
+		m.rollbackIdempotency(reference, "credit")
+		return err
+	}
+
+	// Sync flush for large credits.
+	threshold := m.syncThresholdFor(currency)
+	if !threshold.IsZero() && amount.GreaterThanOrEqual(threshold) {
+		if err := m.syncFlushPosition(ps); err != nil {
+			m.logger.Error("settla-treasury: sync flush after large credit failed",
+				"position_id", ps.ID,
+				"amount", amount.StringFixed(2),
+				"error", err,
+			)
+			// Don't roll back — the credit is in-memory and will be flushed eventually.
+		}
+	}
+
+	return nil
+}
+
+// DebitBalance atomically decreases the balance for a position.
+// Used for manual withdrawals and internal rebalancing (source side).
+// Rejects if available balance (balance - locked - reserved) is less than amount.
+//
+// Idempotent: calling with the same reference UUID returns nil on repeat.
+func (m *Manager) DebitBalance(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, reference uuid.UUID, refType string) error {
+	if !amount.IsPositive() {
+		return fmt.Errorf("settla-treasury: debit amount must be positive")
+	}
+
+	if err := validateMicroRange(amount); err != nil {
+		return err
+	}
+
+	if failures := m.consecutiveFlushFailures.Load(); failures >= maxFlushFailuresBeforeReject {
+		return fmt.Errorf("settla-treasury: rejecting debit — DB flush failing (consecutive failures: %d)", failures)
+	}
+
+	if m.tryAcquireIdempotency(reference, "debit") {
+		return nil
+	}
+
+	ps, err := m.getPosition(tenantID, currency, location)
+	if err != nil {
+		m.rollbackIdempotency(reference, "debit")
+		return err
+	}
+
+	amountMicro := toMicro(amount)
+
+	// CAS loop: check available (balance - locked - reserved) >= amount, then subtract.
+	for {
+		currentBalance := ps.balanceMicro.Load()
+		locked := ps.lockedMicro.Load()
+		reserved := ps.reservedMicro.Load()
+		available := currentBalance - locked - reserved
+
+		if available < amountMicro {
+			m.rollbackIdempotency(reference, "debit")
+			return domain.ErrInsufficientFunds(string(currency), location)
+		}
+
+		if ps.balanceMicro.CompareAndSwap(currentBalance, currentBalance-amountMicro) {
+			break
+		}
+	}
+
+	m.markDirty(ps)
+	m.queueEvent(ps, domain.PosEventDebit, amount, reference, refType)
+
+	if err := m.logOp(tenantID, currency, location, amount, reference, OpDebit); err != nil {
+		// Roll back the debit.
+		ps.balanceMicro.Add(amountMicro)
+		m.rollbackIdempotency(reference, "debit")
+		return err
+	}
+
+	// Sync flush for large debits.
+	threshold := m.syncThresholdFor(currency)
+	if !threshold.IsZero() && amount.GreaterThanOrEqual(threshold) {
+		if err := m.syncFlushPosition(ps); err != nil {
+			m.logger.Error("settla-treasury: sync flush after large debit failed",
+				"position_id", ps.ID,
+				"amount", amount.StringFixed(2),
+				"error", err,
+			)
+		}
+	}
+
+	return nil
+}
+
+// ConsumeReservation atomically decrements both reservedMicro and balanceMicro.
+// Called when a transfer completes — the reserved funds are consumed because
+// money physically left the tenant's position.
+//
+// Uses mu.Lock() because two fields must change atomically (same pattern as
+// CommitReservation). Without the lock, a concurrent snapshot() could observe
+// an intermediate state where reserved decreased but balance hasn't yet.
+//
+// Idempotent: calling with the same reference UUID returns nil on repeat.
+func (m *Manager) ConsumeReservation(ctx context.Context, tenantID uuid.UUID, currency domain.Currency, location string, amount decimal.Decimal, reference uuid.UUID) error {
+	if !amount.IsPositive() {
+		return domain.ErrReservationFailed("consume amount must be positive")
+	}
+
+	if err := validateMicroRange(amount); err != nil {
+		return err
+	}
+
+	if m.tryAcquireIdempotency(reference, "consume") {
+		return nil
+	}
+
+	ps, err := m.getPosition(tenantID, currency, location)
+	if err != nil {
+		m.rollbackIdempotency(reference, "consume")
+		return err
+	}
+
+	amountMicro := toMicro(amount)
+
+	// Lock ensures that decrementing reserved and balance happen atomically
+	// from the perspective of snapshot() readers.
+	ps.mu.Lock()
+
+	currentReserved := ps.reservedMicro.Load()
+	if currentReserved < amountMicro {
+		ps.mu.Unlock()
+		m.rollbackIdempotency(reference, "consume")
+		return fmt.Errorf("settla-treasury: insufficient reserved amount for consume: have %d, need %d (ref %s)",
+			currentReserved, amountMicro, reference)
+	}
+
+	currentBalance := ps.balanceMicro.Load()
+	if currentBalance < amountMicro {
+		ps.mu.Unlock()
+		m.rollbackIdempotency(reference, "consume")
+		return fmt.Errorf("settla-treasury: insufficient balance for consume: have %d, need %d (ref %s)",
+			currentBalance, amountMicro, reference)
+	}
+
+	// Atomic: decrease reserved first (briefly permissive on crash), then balance.
+	ps.reservedMicro.Store(currentReserved - amountMicro)
+	ps.balanceMicro.Store(currentBalance - amountMicro)
+
+	ps.mu.Unlock()
+
+	m.markDirty(ps)
+	m.queueEvent(ps, domain.PosEventConsume, amount, reference, "transfer")
+
+	if err := m.logOp(tenantID, currency, location, amount, reference, OpConsume); err != nil {
+		// Roll back: re-add both reserved and balance.
+		ps.mu.Lock()
+		ps.reservedMicro.Add(amountMicro)
+		ps.balanceMicro.Add(amountMicro)
+		ps.mu.Unlock()
+		m.rollbackIdempotency(reference, "consume")
+		return err
+	}
+
+	// Sync flush for large consumptions.
+	threshold := m.syncThresholdFor(currency)
+	if !threshold.IsZero() && amount.GreaterThanOrEqual(threshold) {
+		if err := m.syncFlushPosition(ps); err != nil {
+			m.logger.Error("settla-treasury: sync flush after large consume failed",
+				"position_id", ps.ID,
+				"amount", amount.StringFixed(2),
+				"error", err,
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -713,7 +991,18 @@ func (m *Manager) addPosition(pos domain.Position) {
 
 	m.mu.Lock()
 	m.positions[key] = ps
+	m.tenantIndex[pos.TenantID] = append(m.tenantIndex[pos.TenantID], ps)
 	m.mu.Unlock()
+}
+
+// markDirty flags a position as modified and adds it to the dirty set for flush.
+// Uses a separate mutex from the positions map to avoid contention on the hot path.
+func (m *Manager) markDirty(ps *PositionState) {
+	ps.dirty.Store(true)
+	key := positionKey{TenantID: ps.TenantID, Currency: string(ps.Currency), Location: ps.Location}
+	m.dirtyMu.Lock()
+	m.dirtySet[key] = ps
+	m.dirtyMu.Unlock()
 }
 
 func (m *Manager) publishLiquidityAlert(ctx context.Context, ps *PositionState) {
@@ -771,17 +1060,21 @@ func fromMicro(v int64) decimal.Decimal {
 	return decimal.NewFromInt(v).Div(decimal.NewFromInt(microScale))
 }
 
-// dirtyPositions returns all positions that have been modified since the last flush.
+// dirtyPositions drains the dirty set and returns only positions modified since
+// the last flush. O(dirty count) instead of O(all positions) — critical at 500K+ positions.
 func (m *Manager) dirtyPositions() []*PositionState {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var dirty []*PositionState
-	for _, ps := range m.positions {
-		if ps.dirty.Load() {
-			dirty = append(dirty, ps)
-		}
+	m.dirtyMu.Lock()
+	if len(m.dirtySet) == 0 {
+		m.dirtyMu.Unlock()
+		return nil
 	}
+	dirty := make([]*PositionState, 0, len(m.dirtySet))
+	for _, ps := range m.dirtySet {
+		dirty = append(dirty, ps)
+	}
+	// Swap to a fresh map — avoids deleting keys one by one.
+	m.dirtySet = make(map[positionKey]*PositionState)
+	m.dirtyMu.Unlock()
 	return dirty
 }
 
