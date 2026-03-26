@@ -191,8 +191,8 @@ func BenchmarkOffRamp_Execute(b *testing.B) {
 // --- Blockchain Registry lookup benchmark ---
 
 func BenchmarkRegistryGetClient(b *testing.B) {
-	reg := newFakeChainRegistry("tron", "ethereum", "base", "solana")
-	chains := []string{"tron", "ethereum", "base", "solana"}
+	reg := newFakeChainRegistry(domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana)
+	chains := []domain.CryptoChain{domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -399,8 +399,8 @@ func TestThroughput_OffRampQuote_PeakTPS(t *testing.T) {
 }
 
 func TestThroughput_RegistryLookup_PeakTPS(t *testing.T) {
-	reg := newFakeChainRegistry("tron", "ethereum", "base", "solana")
-	chains := []string{"tron", "ethereum", "base", "solana"}
+	reg := newFakeChainRegistry(domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana)
+	chains := []domain.CryptoChain{domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana}
 
 	const targetTPS = 50000 // registry must be 10x faster than request path
 	const duration = 3 * time.Second
@@ -446,7 +446,7 @@ func newBenchOnRampProvider() (*OnRampProvider, *fakeChainRegistry) {
 		FailureRate:    0,
 		CurrencyDelays: benchFastDelays(),
 	})
-	chainReg := newFakeChainRegistry("tron", "ethereum", "base", "solana")
+	chainReg := newFakeChainRegistry(domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana)
 	walletMgr := newFakeWalletManager()
 	p := NewOnRampProvider(fxOracle, fiatSim, chainReg, walletMgr, DefaultOnRampConfig())
 	return p, chainReg

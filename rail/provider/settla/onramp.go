@@ -30,22 +30,19 @@ const (
 // stablecoinChain maps a stablecoin symbol to the chain and contract address used
 // for testnet delivery.
 type stablecoinChain struct {
-	Chain    string // e.g. "tron", "ethereum"
-	Token    string // contract address; empty = native
-	WalletCh wallet.Chain
+	Chain    domain.CryptoChain // e.g. domain.ChainTron, domain.ChainEthereum
+	Token    string             // contract address; empty = native
 }
 
 // defaultStablecoinChains is the testnet mapping of stablecoin → chain info.
 var defaultStablecoinChains = map[string]stablecoinChain{
 	"USDT": {
-		Chain:    "tron",
-		Token:    "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj", // Nile TRC20 USDT
-		WalletCh: wallet.ChainTron,
+		Chain: domain.ChainTron,
+		Token: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj", // Nile TRC20 USDT
 	},
 	"USDC": {
-		Chain:    "ethereum",
-		Token:    "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // Sepolia USDC
-		WalletCh: wallet.ChainEthereum,
+		Chain: domain.ChainEthereum,
+		Token: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // Sepolia USDC
 	},
 }
 
@@ -72,9 +69,8 @@ type onRampTx struct {
 	amount       decimal.Decimal
 	fromCurrency string
 	toCurrency   string
-	chain        string
+	chain        domain.CryptoChain
 	token        string
-	walletChain  wallet.Chain
 	cryptoAmount decimal.Decimal
 	fromAddr     string // system wallet address (sender)
 	toAddr       string // recipient address
@@ -88,7 +84,7 @@ type onRampTx struct {
 
 // chainRegistryIface abstracts blockchain.Registry for testability.
 type chainRegistryIface interface {
-	GetClient(chain string) (domain.BlockchainClient, error)
+	GetClient(chain domain.CryptoChain) (domain.BlockchainClient, error)
 }
 
 // walletManagerIface abstracts wallet.Manager for testability.
@@ -303,7 +299,7 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 	cryptoAmount := req.Amount.Mul(rate).Mul(spreadMultiplier).Round(6)
 
 	// Resolve system hot wallet address (used as sender and, for testnet, recipient).
-	sysWallet, err := p.walletMgr.GetSystemWallet(stablecoin.WalletCh)
+	sysWallet, err := p.walletMgr.GetSystemWallet(stablecoin.Chain)
 	if err != nil {
 		return nil, fmt.Errorf("settla-onramp: getting system wallet for %s: %w", stablecoin.Chain, err)
 	}
@@ -325,9 +321,8 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 		toCurrency:   string(req.ToCurrency),
 		chain:        stablecoin.Chain,
 		token:        stablecoin.Token,
-		walletChain:  stablecoin.WalletCh,
 		cryptoAmount: cryptoAmount,
-		fromAddr:     wallet.SystemWalletPath("hot", stablecoin.WalletCh),
+		fromAddr:     wallet.SystemWalletPath("hot", stablecoin.Chain),
 		toAddr:       sysWallet.Address,
 		status:       onRampStatusPending,
 		createdAt:    now,
@@ -516,7 +511,7 @@ func (p *OnRampProvider) toProviderTx(tx *onRampTx) *domain.ProviderTx {
 	metadata := map[string]string{
 		"fiat_tx_id":   tx.fiatTxID,
 		"fiat_ref":     tx.fiatRef,
-		"chain":        tx.chain,
+		"chain":        string(tx.chain),
 		"from_address": tx.fromAddr, // system wallet address (sender)
 		"to_address":   tx.toAddr,   // recipient address
 		"token":        tx.token,

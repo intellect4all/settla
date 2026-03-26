@@ -37,9 +37,10 @@ const (
 type offRampRecord struct {
 	ID             string
 	Status         offRampTxStatus
-	Chain          string
-	DepositAddress string // system wallet address where user sends crypto
-	TxHash         string // on-chain confirmation tx hash (if available)
+	Chain          domain.CryptoChain
+	DepositAddress string // per-transaction wallet address for crypto receipt
+	SourceTxHash   string // settlement blockchain tx hash from upstream (for verification)
+	TxHash         string // verified on-chain tx hash (may equal SourceTxHash)
 	ExplorerURL    string
 	FiatTxID       string // ID in the fiat simulator
 	Amount         decimal.Decimal
@@ -51,13 +52,21 @@ type offRampRecord struct {
 	UpdatedAt      time.Time
 }
 
-// OffRampProvider implements domain.OffRampProvider using simulated crypto
-// receipt (reads system wallet address) and simulated fiat payout.
+// offRampWalletManager abstracts wallet.Manager for testability.
+type offRampWalletManager interface {
+	GetSystemWallet(chain wallet.Chain) (*wallet.Wallet, error)
+	DeriveTransactionWallet(chain wallet.Chain, txReference string) (*wallet.Wallet, error)
+}
+
+// OffRampProvider implements domain.OffRampProvider using on-chain tx hash
+// verification for crypto receipt and simulated fiat payout.
+// Each off-ramp transaction receives a unique per-transaction deposit address
+// derived from the HD wallet to prevent address reuse.
 type OffRampProvider struct {
 	fxOracle  *FXOracle
 	fiatSim   *FiatSimulator
-	registry  *blockchain.Registry
-	walletMgr *wallet.Manager
+	registry  chainRegistryIface
+	walletMgr offRampWalletManager
 	logger    *slog.Logger
 	ctx       context.Context    // parent context for background goroutines
 	cancel    context.CancelFunc // cancels ctx on shutdown
@@ -74,8 +83,8 @@ var _ domain.OffRampProvider = (*OffRampProvider)(nil)
 func NewOffRampProvider(
 	fxOracle *FXOracle,
 	fiatSim *FiatSimulator,
-	registry *blockchain.Registry,
-	walletMgr *wallet.Manager,
+	registry chainRegistryIface,
+	walletMgr offRampWalletManager,
 	logger *slog.Logger,
 ) *OffRampProvider {
 	if logger == nil {
@@ -218,7 +227,7 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 		p.mu.RUnlock()
 	}
 
-	// PROV-8: Fetch a fresh rate and reject if it has moved more than the allowed slippage.
+	// Fetch a fresh rate and reject if it has moved more than the allowed slippage.
 	if req.QuotedRate.IsPositive() {
 		liveRate, err := p.fxOracle.GetRate("USD", string(req.ToCurrency))
 		if err != nil {
@@ -229,9 +238,11 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 		}
 	}
 
-	// Determine chain and get system hot wallet deposit address.
+	// Determine chain and derive a per-transaction deposit address.
+	// Each off-ramp tx gets its own HD-derived address to prevent address reuse
+	// and enable unambiguous attribution of incoming on-chain deposits.
 	chain := preferredChainForToken(string(req.FromCurrency))
-	depositAddress, err := p.systemWalletAddress(chain)
+	depositAddress, err := p.deriveDepositAddress(chain, req.Reference)
 	if err != nil {
 		return nil, fmt.Errorf("settla-offramp: getting deposit address for chain %s: %w", chain, err)
 	}
@@ -244,6 +255,7 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 		Status:         offRampStatusPending,
 		Chain:          chain,
 		DepositAddress: depositAddress,
+		SourceTxHash:   req.SourceTxHash,
 		Amount:         req.Amount,
 		FromCurrency:   string(req.FromCurrency),
 		ToCurrency:     string(req.ToCurrency),
@@ -294,9 +306,16 @@ func (p *OffRampProvider) runOffRamp(txID string, req domain.OffRampRequest) {
 	// Step 1: Mark as receiving — waiting for on-chain deposit.
 	p.updateStatus(txID, offRampStatusReceiving)
 
-	// Step 2: Simulate crypto receipt. In testnet mode we verify the system
-	// wallet has non-zero balance; if not accessible we simulate receipt directly.
-	txHash, explorerURL := p.verifyCryptoReceipt(p.ctx, req.FromCurrency, chain, req.Amount)
+	// Step 2: Verify crypto receipt. When a source tx hash is available (from
+	// the upstream blockchain worker), verify the specific transaction on-chain.
+	// Otherwise fall back to simulated receipt for testnet/demo flows.
+	p.mu.RLock()
+	sourceTxHash := ""
+	if rec, ok := p.txs[txID]; ok {
+		sourceTxHash = rec.SourceTxHash
+	}
+	p.mu.RUnlock()
+	txHash, explorerURL := p.verifyCryptoReceipt(p.ctx, sourceTxHash, chain)
 
 	p.mu.Lock()
 	if rec, ok := p.txs[txID]; ok {
@@ -350,42 +369,45 @@ func (p *OffRampProvider) runOffRamp(txID string, req domain.OffRampRequest) {
 	)
 }
 
-// verifyCryptoReceipt checks the system wallet balance on-chain. If the check
-// fails (testnet RPC unavailable, insufficient balance, etc.), we simulate
-// receipt with a fixed hash so the flow can still complete end-to-end.
-func (p *OffRampProvider) verifyCryptoReceipt(ctx context.Context, token domain.Currency, chain string, amount decimal.Decimal) (txHash, explorerURL string) {
-	// Simulate receipt delay (1–3s to model on-chain confirmation wait).
-	// Use select so we can bail out early if the context is cancelled.
-	select {
-	case <-time.After(1500 * time.Millisecond):
-	case <-ctx.Done():
-		return "", ""
-	}
+// offRampVerifyMaxWait is the maximum time to wait for on-chain tx verification.
+// Shorter than defaultMaxWait because the settlement tx should already be
+// confirmed by the time the off-ramp provider checks it.
+const offRampVerifyMaxWait = 2 * time.Minute
 
-	var client domain.BlockchainClient
-	var err error
-	if p.registry != nil {
-		client, err = p.registry.GetClient(chain)
-	} else {
-		err = fmt.Errorf("no registry configured")
-	}
-	if err == nil {
-		depositAddr, addrErr := p.systemWalletAddress(chain)
-		if addrErr == nil {
-			tokenContract := tokenContractForChain(string(token), chain)
-			balCtx, balCancel := context.WithTimeout(p.ctx, 30*time.Second)
-			defer balCancel()
-			balance, balErr := client.GetBalance(balCtx, depositAddr, tokenContract)
-			if balErr == nil && balance.GreaterThanOrEqual(amount) {
-				// Real on-chain receipt confirmed — return a synthetic hash to
-				// represent the receipt event (no on-chain tx initiated by us here).
-				syntheticHash := "offramp-receipt-" + uuid.New().String()
-				return syntheticHash, blockchain.ExplorerURL(chain, depositAddr)
+// verifyCryptoReceipt verifies receipt of the settlement stablecoin transaction.
+// When a source tx hash is provided, it verifies the specific transaction on-chain
+// using GetTransaction with polling. Otherwise falls back to simulated receipt.
+func (p *OffRampProvider) verifyCryptoReceipt(ctx context.Context, sourceTxHash string, chain domain.CryptoChain) (txHash, explorerURL string) {
+	// If we have a source tx hash, verify the specific transaction on-chain.
+	if sourceTxHash != "" && p.registry != nil {
+		client, err := p.registry.GetClient(chain)
+		if err == nil {
+			verifyErr := waitWithBackoff(ctx, func() (bool, error) {
+				chainTx, txErr := client.GetTransaction(ctx, sourceTxHash)
+				if txErr != nil {
+					return false, nil // RPC error, retry
+				}
+				switch chainTx.Status {
+				case "confirmed", "CONFIRMED", "SUCCESS":
+					return true, nil
+				case "failed", "FAILED", "REVERT":
+					return false, fmt.Errorf("settla-offramp: source transaction %s failed on chain", sourceTxHash)
+				}
+				return false, nil // still pending, keep polling
+			}, offRampVerifyMaxWait)
+
+			if verifyErr == nil {
+				return sourceTxHash, blockchain.ExplorerURL(chain, sourceTxHash)
 			}
+			p.logger.Warn("settla-offramp: on-chain tx verification failed, falling back to simulation",
+				"source_tx_hash", sourceTxHash,
+				"chain", chain,
+				"error", verifyErr,
+			)
 		}
 	}
 
-	// Fall back: simulate receipt with a deterministic hash.
+	// Fallback: simulate receipt (no source hash, or chain client unavailable).
 	simHash := "sim-offramp-" + uuid.New().String()
 	return simHash, blockchain.ExplorerURL(chain, simHash)
 }
@@ -444,11 +466,25 @@ func (p *OffRampProvider) updateStatusWithReason(txID string, status offRampTxSt
 	p.mu.Unlock()
 }
 
-func (p *OffRampProvider) systemWalletAddress(chain string) (string, error) {
-	if p.walletMgr == nil {
-		return "sim-deposit-addr-" + chain, nil
+// deriveDepositAddress returns a per-transaction deposit address when possible,
+// falling back to the system hot wallet if no wallet manager or reference is available.
+func (p *OffRampProvider) deriveDepositAddress(chain domain.CryptoChain, reference string) (string, error) {
+	if p.walletMgr != nil && reference != "" {
+		w, err := p.walletMgr.DeriveTransactionWallet(chain, reference)
+		if err == nil {
+			return w.Address, nil
+		}
+		p.logger.Warn("settla-offramp: failed to derive per-tx wallet, falling back to system wallet",
+			"chain", chain, "reference", reference, "error", err)
 	}
-	w, err := p.walletMgr.GetSystemWallet(wallet.Chain(chain))
+	return p.systemWalletAddress(chain)
+}
+
+func (p *OffRampProvider) systemWalletAddress(chain domain.CryptoChain) (string, error) {
+	if p.walletMgr == nil {
+		return "sim-deposit-addr-" + string(chain), nil
+	}
+	w, err := p.walletMgr.GetSystemWallet(chain)
 	if err != nil {
 		return "", err
 	}
@@ -471,13 +507,14 @@ func (p *OffRampProvider) toProviderTx(rec *offRampRecord) *domain.ProviderTx {
 		status = "COMPLETED"
 	}
 
-	sysAddr, _ := p.systemWalletAddress(rec.Chain)
 	metadata := map[string]string{
-		"chain":           rec.Chain,
+		"chain":           string(rec.Chain),
 		"deposit_address": rec.DepositAddress,
-		"from_address":    sysAddr, // system wallet that receives the crypto
 		"from_currency":   rec.FromCurrency,
 		"to_currency":     rec.ToCurrency,
+	}
+	if rec.SourceTxHash != "" {
+		metadata["source_tx_hash"] = rec.SourceTxHash
 	}
 	if rec.TxHash != "" {
 		metadata["tx_hash"] = rec.TxHash
@@ -519,31 +556,14 @@ func isSupportedFiat(currency string) bool {
 
 // preferredChainForToken returns the preferred chain for a stablecoin.
 // USDT defaults to Tron (cheapest fees), USDC defaults to Base Sepolia.
-func preferredChainForToken(token string) string {
+func preferredChainForToken(token string) domain.CryptoChain {
 	switch token {
 	case "USDT":
-		return "tron"
+		return domain.ChainTron
 	case "USDC":
-		return "base"
+		return domain.ChainBase
 	default:
-		return "tron"
-	}
-}
-
-// tokenContractForChain returns the testnet token contract address for a
-// given token on a specific chain.
-func tokenContractForChain(token, chain string) string {
-	switch chain + ":" + token {
-	case "tron:USDT":
-		return "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj"
-	case "ethereum:USDC":
-		return "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
-	case "base:USDC":
-		return "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-	case "solana:USDC":
-		return "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-	default:
-		return ""
+		return domain.ChainTron
 	}
 }
 
@@ -551,15 +571,15 @@ func tokenContractForChain(token, chain string) string {
 func estimatedPayoutSeconds(currency string) int {
 	switch currency {
 	case "NGN":
-		return 5  // NIP instant
+		return 5 // NIP instant
 	case "GBP":
-		return 8  // Faster Payments
+		return 8 // Faster Payments
 	case "USD":
 		return 20 // ACH
 	case "EUR":
-		return 8  // SEPA Instant
+		return 8 // SEPA Instant
 	case "GHS":
-		return 8  // GhIPSS
+		return 8 // GhIPSS
 	default:
 		return 15
 	}

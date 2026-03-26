@@ -17,14 +17,14 @@ import (
 
 // fakeBlockchainClient is a minimal mock of domain.BlockchainClient.
 type fakeBlockchainClient struct {
-	chain   string
+	chain   domain.CryptoChain
 	sendErr error
 
 	mu      sync.Mutex
 	sentTxs []domain.TxRequest
 }
 
-func (f *fakeBlockchainClient) Chain() string { return f.chain }
+func (f *fakeBlockchainClient) Chain() domain.CryptoChain { return f.chain }
 func (f *fakeBlockchainClient) GetBalance(_ context.Context, _, _ string) (decimal.Decimal, error) {
 	return decimal.NewFromInt(1000), nil
 }
@@ -39,7 +39,7 @@ func (f *fakeBlockchainClient) SendTransaction(_ context.Context, req domain.TxR
 	f.sentTxs = append(f.sentTxs, req)
 	f.mu.Unlock()
 	return &domain.ChainTx{
-		Hash:   "fake-tx-hash-" + f.chain,
+		Hash:   "fake-tx-hash-" + string(f.chain),
 		Status: "PENDING",
 	}, nil
 }
@@ -52,18 +52,18 @@ func (f *fakeBlockchainClient) SubscribeTransactions(_ context.Context, _ string
 
 // fakeChainRegistry implements chainRegistryIface using a map of fakeBlockchainClients.
 type fakeChainRegistry struct {
-	clients map[string]*fakeBlockchainClient
+	clients map[domain.CryptoChain]*fakeBlockchainClient
 }
 
-func newFakeChainRegistry(chains ...string) *fakeChainRegistry {
-	r := &fakeChainRegistry{clients: make(map[string]*fakeBlockchainClient)}
+func newFakeChainRegistry(chains ...domain.CryptoChain) *fakeChainRegistry {
+	r := &fakeChainRegistry{clients: make(map[domain.CryptoChain]*fakeBlockchainClient)}
 	for _, c := range chains {
 		r.clients[c] = &fakeBlockchainClient{chain: c}
 	}
 	return r
 }
 
-func (r *fakeChainRegistry) GetClient(chain string) (domain.BlockchainClient, error) {
+func (r *fakeChainRegistry) GetClient(chain domain.CryptoChain) (domain.BlockchainClient, error) {
 	c, ok := r.clients[chain]
 	if !ok {
 		return nil, fmt.Errorf("fakeRegistry: unknown chain %s", chain)
@@ -109,7 +109,7 @@ func newTestOnRampProvider(failureRate float64) (*OnRampProvider, *fakeChainRegi
 		"GHS": {10 * time.Millisecond, 20 * time.Millisecond},
 	}
 	fiatSim := NewFiatSimulator(SimulatorConfig{FailureRate: failureRate, CurrencyDelays: delays})
-	chainReg := newFakeChainRegistry("tron", "ethereum", "base", "solana")
+	chainReg := newFakeChainRegistry(domain.ChainTron, domain.ChainEthereum, domain.ChainBase, domain.ChainSolana)
 	walletMgr := newFakeWalletManager()
 
 	p := NewOnRampProvider(fxOracle, fiatSim, chainReg, walletMgr, DefaultOnRampConfig())
@@ -319,7 +319,7 @@ func TestExecute_FullLifecycle_Success(t *testing.T) {
 	}
 
 	// Verify the blockchain client received a SendTransaction call.
-	tronClient := chainReg.clients["tron"]
+	tronClient := chainReg.clients[domain.ChainTron]
 	if len(tronClient.sentTxs) == 0 {
 		t.Error("expected at least one SendTransaction call on tron client")
 	}
@@ -349,7 +349,7 @@ func TestExecute_FullLifecycle_USDCOnEthereum(t *testing.T) {
 	if final.Metadata["chain"] != "ethereum" {
 		t.Errorf("chain: got %q, want ethereum", final.Metadata["chain"])
 	}
-	ethClient := chainReg.clients["ethereum"]
+	ethClient := chainReg.clients[domain.ChainEthereum]
 	if len(ethClient.sentTxs) == 0 {
 		t.Error("expected at least one SendTransaction call on ethereum client")
 	}
@@ -377,7 +377,7 @@ func TestExecute_FullLifecycle_FiatFails(t *testing.T) {
 func TestExecute_FullLifecycle_BlockchainFails(t *testing.T) {
 	p, chainReg := newTestOnRampProvider(0)
 	// Inject a blockchain send error.
-	chainReg.clients["tron"].sendErr = fmt.Errorf("rpc timeout")
+	chainReg.clients[domain.ChainTron].sendErr = fmt.Errorf("rpc timeout")
 
 	tx, err := p.Execute(context.Background(), domain.OnRampRequest{
 		Amount:       decimal.NewFromInt(100),
