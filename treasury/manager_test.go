@@ -42,6 +42,18 @@ func (s *mockStore) LoadAllPositions(_ context.Context) ([]domain.Position, erro
 	return s.positions, nil
 }
 
+func (s *mockStore) LoadPositionsPaginated(_ context.Context, limit, offset int32) ([]domain.Position, error) {
+	start := int(offset)
+	if start >= len(s.positions) {
+		return nil, nil
+	}
+	end := start + int(limit)
+	if end > len(s.positions) {
+		end = len(s.positions)
+	}
+	return s.positions[start:end], nil
+}
+
 func (s *mockStore) UpdatePosition(_ context.Context, id uuid.UUID, balance, locked decimal.Decimal) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1304,6 +1316,387 @@ func TestUpdateBalanceRejectsNegativeAvailable(t *testing.T) {
 	}
 }
 
+// --- PositionCount ---
+
+func TestPositionCount(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 10000, 0),
+			testPosition(tenantID, domain.CurrencyNGN, "bank:ngn", 50000, 0),
+			testPosition(uuid.New(), domain.CurrencyUSD, "bank:usd", 20000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+
+	if got := m.PositionCount(); got != 3 {
+		t.Errorf("PositionCount: got %d, want 3", got)
+	}
+}
+
+func TestPositionCountEmpty(t *testing.T) {
+	store := &mockStore{}
+	m := newTestManager(t, store)
+
+	if got := m.PositionCount(); got != 0 {
+		t.Errorf("PositionCount: got %d, want 0", got)
+	}
+}
+
+// --- CleanupIdempotencyMap ---
+
+func TestCleanupIdempotencyMap(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 100000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Make several reserves with unique references to populate idempotency map.
+	for i := 0; i < 10; i++ {
+		ref := uuid.New()
+		_ = m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(1), ref)
+	}
+
+	// Cleanup with zero maxAge should remove all entries.
+	m.cleanupIdempotencyMap(0)
+
+	// Verify cleanup worked: reserve with a previously-used reference should succeed
+	// as a new reservation (not an idempotent hit). But since we used unique refs,
+	// we can verify the map was cleaned by checking a fresh reserve still works.
+	ref := uuid.New()
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(1), ref)
+	if err != nil {
+		t.Fatalf("Reserve after cleanup: %v", err)
+	}
+}
+
+func TestCleanupIdempotencyMap_KeepsRecent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 100000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	ref := uuid.New()
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), ref)
+
+	// Cleanup with 1-hour maxAge should keep the entry we just created.
+	m.cleanupIdempotencyMap(1 * time.Hour)
+
+	// Idempotent reserve should return nil (skipped).
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), ref)
+	if err != nil {
+		t.Fatalf("idempotent reserve should succeed after cleanup with long maxAge: %v", err)
+	}
+}
+
+// --- CleanupOldReserveOps ---
+
+func TestCleanupOldReserveOps(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 100000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Create a reserve to generate ops.
+	ref := uuid.New()
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), ref)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	// Flush to write ops.
+	m.flushOnce()
+
+	// Verify ops exist.
+	store.mu.Lock()
+	opCount := len(store.ops)
+	store.mu.Unlock()
+	if opCount == 0 {
+		t.Fatal("expected ops to be logged")
+	}
+
+	// Cleanup old ops. Since they were just created, none should be removed.
+	m.cleanupOldReserveOps()
+
+	store.mu.Lock()
+	afterCleanup := len(store.ops)
+	store.mu.Unlock()
+	if afterCleanup != opCount {
+		t.Errorf("expected %d ops after cleanup (too recent to remove), got %d", opCount, afterCleanup)
+	}
+}
+
+// --- PublishLiquidityAlert ---
+
+func TestPublishLiquidityAlert(t *testing.T) {
+	tenantID := uuid.New()
+	pos := testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 10000, 0)
+	pos.MinBalance = decimal.NewFromInt(5000)
+
+	store := &mockStore{
+		positions: []domain.Position{pos},
+	}
+	pub := &mockPublisher{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(store, pub, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+
+	// Reserve enough to trigger low liquidity.
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(6000), uuid.New())
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	// Check that a liquidity alert was published.
+	pub.mu.Lock()
+	alerts := len(pub.events)
+	var alertType string
+	if alerts > 0 {
+		alertType = pub.events[0].Type
+	}
+	pub.mu.Unlock()
+
+	if alerts == 0 {
+		t.Fatal("expected liquidity alert to be published when available < MinBalance")
+	}
+	if alertType != domain.EventLiquidityAlert {
+		t.Errorf("expected event type %s, got %s", domain.EventLiquidityAlert, alertType)
+	}
+}
+
+func TestPublishLiquidityAlert_NilPublisher(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 10000, 0),
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// nil publisher — should not panic
+	m := NewManager(store, nil, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), uuid.New())
+	if err != nil {
+		t.Fatalf("Reserve with nil publisher should not fail: %v", err)
+	}
+}
+
+// --- FlushBatch ---
+
+type batchMockStore struct {
+	mockStore
+	batchCalled bool
+	batchErr    error
+}
+
+func (s *batchMockStore) BatchUpdatePositions(_ context.Context, updates []PositionUpdate) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batchCalled = true
+	if s.batchErr != nil {
+		return s.batchErr
+	}
+	for _, u := range updates {
+		s.updates = append(s.updates, updateRecord{ID: u.ID, Balance: u.Balance, Locked: u.Locked})
+	}
+	return nil
+}
+
+func TestFlushBatch_Success(t *testing.T) {
+	tenantID := uuid.New()
+	pos := testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 10000, 0)
+	bStore := &batchMockStore{
+		mockStore: mockStore{positions: []domain.Position{pos}},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(bStore, nil, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+
+	// Reserve to mark position dirty.
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), uuid.New())
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	// Flush should use batch path.
+	m.flushOnce()
+
+	bStore.mu.Lock()
+	called := bStore.batchCalled
+	updateCount := len(bStore.updates)
+	bStore.mu.Unlock()
+
+	if !called {
+		t.Error("expected BatchUpdatePositions to be called")
+	}
+	if updateCount == 0 {
+		t.Error("expected at least one update")
+	}
+}
+
+func TestFlushBatch_Error_RetriesNextCycle(t *testing.T) {
+	tenantID := uuid.New()
+	pos := testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 10000, 0)
+	bStore := &batchMockStore{
+		mockStore: mockStore{positions: []domain.Position{pos}},
+		batchErr:  context.DeadlineExceeded,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(bStore, nil, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+
+	err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), uuid.New())
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	// First flush fails.
+	m.flushOnce()
+
+	// Position should still be dirty (re-added to dirty set).
+	dirty := m.dirtyPositions()
+	if len(dirty) == 0 {
+		t.Error("expected position to remain dirty after batch flush failure")
+	}
+
+	// Fix the error and flush again.
+	bStore.mu.Lock()
+	bStore.batchErr = nil
+	bStore.mu.Unlock()
+
+	m.flushOnce()
+
+	dirty = m.dirtyPositions()
+	if len(dirty) != 0 {
+		t.Errorf("expected no dirty positions after successful retry, got %d", len(dirty))
+	}
+}
+
+// --- UpdateBalance concurrent with Reserve ---
+
+func TestUpdateBalanceConcurrentWithReserve(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:gbp", 100000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 200)
+
+	// Run concurrent reserves.
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(10), uuid.New()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	// Run concurrent UpdateBalance calls.
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Set to a high value to avoid "below committed" errors.
+			if err := m.UpdateBalance(ctx, tenantID, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(200000)); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	// Some reserves may fail due to insufficient funds, that's expected.
+	// The test verifies no panics or data races.
+	for err := range errs {
+		_ = err // acceptable failures
+	}
+}
+
+// --- FlushIndividual Error Path ---
+
+type failingUpdateStore struct {
+	mockStore
+	failPositionID uuid.UUID
+}
+
+func (s *failingUpdateStore) UpdatePosition(_ context.Context, id uuid.UUID, balance, locked decimal.Decimal) error {
+	if id == s.failPositionID {
+		return context.DeadlineExceeded
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updates = append(s.updates, updateRecord{ID: id, Balance: balance, Locked: locked})
+	return nil
+}
+
+func TestFlushIndividual_PartialFailure(t *testing.T) {
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+	posA := testPosition(tenantA, domain.CurrencyGBP, "bank:gbp", 10000, 0)
+	posB := testPosition(tenantB, domain.CurrencyNGN, "bank:ngn", 50000, 0)
+
+	fStore := &failingUpdateStore{
+		mockStore:      mockStore{positions: []domain.Position{posA, posB}},
+		failPositionID: posA.ID,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(fStore, nil, logger, nil)
+	ctx := context.Background()
+	_ = m.LoadPositions(ctx)
+
+	// Reserve on both positions to mark dirty.
+	_ = m.Reserve(ctx, tenantA, domain.CurrencyGBP, "bank:gbp", decimal.NewFromInt(100), uuid.New())
+	_ = m.Reserve(ctx, tenantB, domain.CurrencyNGN, "bank:ngn", decimal.NewFromInt(100), uuid.New())
+
+	// Flush — posA should fail, posB should succeed.
+	m.flushOnce()
+
+	// posA should remain dirty.
+	dirty := m.dirtyPositions()
+	foundDirtyA := false
+	for _, ps := range dirty {
+		if ps.TenantID == tenantA {
+			foundDirtyA = true
+		}
+	}
+	if !foundDirtyA {
+		t.Error("expected position A to remain dirty after flush failure")
+	}
+
+	// posB should have been flushed.
+	fStore.mu.Lock()
+	updateCount := len(fStore.updates)
+	fStore.mu.Unlock()
+	if updateCount == 0 {
+		t.Error("expected position B to be flushed successfully")
+	}
+}
+
 // --- Benchmark ---
 
 func BenchmarkReserve(b *testing.B) {
@@ -1335,4 +1728,513 @@ func BenchmarkReserve(b *testing.B) {
 			_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", amount, uuid.New())
 		}
 	})
+}
+
+// ── CreditBalance tests ─────────────────────────────────────────────────────
+
+func TestCreditBalance(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	err := m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(3000), uuid.New(), "deposit_session")
+	if err != nil {
+		t.Fatalf("CreditBalance: %v", err)
+	}
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(8000)) {
+		t.Errorf("expected balance 8000 after credit, got %s", pos.Balance)
+	}
+	if !pos.Available().Equal(decimal.NewFromInt(8000)) {
+		t.Errorf("expected available 8000 after credit, got %s", pos.Available())
+	}
+}
+
+func TestCreditBalanceIdempotent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	ref := uuid.New()
+	_ = m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1000), ref, "deposit_session")
+	_ = m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1000), ref, "deposit_session")
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(6000)) {
+		t.Errorf("expected balance 6000 (single credit), got %s", pos.Balance)
+	}
+}
+
+func TestCreditBalanceConcurrent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 0, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	const n = 100
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			_ = m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(100), uuid.New(), "deposit_session")
+		}()
+	}
+	wg.Wait()
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	expected := decimal.NewFromInt(int64(n) * 100)
+	if !pos.Balance.Equal(expected) {
+		t.Errorf("expected balance %s after %d concurrent credits, got %s", expected, n, pos.Balance)
+	}
+}
+
+func TestCreditBalanceRejectsNonPositive(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	err := m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.Zero, uuid.New(), "test")
+	if err == nil {
+		t.Error("expected error for zero credit amount")
+	}
+
+	err = m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(-1), uuid.New(), "test")
+	if err == nil {
+		t.Error("expected error for negative credit amount")
+	}
+}
+
+func TestCreditBalancePositionNotFound(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	err := m.CreditBalance(ctx, tenantID, domain.CurrencyGBP, "bank:barclays", decimal.NewFromInt(1000), uuid.New(), "test")
+	if err == nil {
+		t.Error("expected error for non-existent position")
+	}
+}
+
+// ── DebitBalance tests ──────────────────────────────────────────────────────
+
+func TestDebitBalance(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	err := m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), uuid.New(), "position_transaction")
+	if err != nil {
+		t.Fatalf("DebitBalance: %v", err)
+	}
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(3000)) {
+		t.Errorf("expected balance 3000 after debit, got %s", pos.Balance)
+	}
+}
+
+func TestDebitBalanceIdempotent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	ref := uuid.New()
+	_ = m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1000), ref, "position_transaction")
+	_ = m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1000), ref, "position_transaction")
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(4000)) {
+		t.Errorf("expected balance 4000 (single debit), got %s", pos.Balance)
+	}
+}
+
+func TestDebitBalanceInsufficientFunds(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	err := m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(6000), uuid.New(), "test")
+	if err == nil {
+		t.Error("expected error for debit exceeding available balance")
+	}
+}
+
+func TestDebitBalanceRespectsReserved(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Reserve 3000 → available = 2000
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(3000), uuid.New())
+
+	// Try to debit 3000 (more than available 2000)
+	err := m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(3000), uuid.New(), "test")
+	if err == nil {
+		t.Error("expected error for debit exceeding available (balance minus reserved)")
+	}
+
+	// Debit 2000 should succeed (exactly available)
+	err = m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), uuid.New(), "test")
+	if err != nil {
+		t.Fatalf("DebitBalance for available amount: %v", err)
+	}
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(3000)) {
+		t.Errorf("expected balance 3000, got %s", pos.Balance)
+	}
+}
+
+func TestDebitBalanceConcurrent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 10000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	const n = 100
+	var wg sync.WaitGroup
+	var successCount int64
+	var mu sync.Mutex
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			err := m.DebitBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(100), uuid.New(), "test")
+			if err == nil {
+				mu.Lock()
+				successCount++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	expectedBalance := decimal.NewFromInt(10000 - successCount*100)
+	if !pos.Balance.Equal(expectedBalance) {
+		t.Errorf("expected balance %s (%d successful debits), got %s", expectedBalance, successCount, pos.Balance)
+	}
+	if successCount != 100 {
+		t.Errorf("expected all 100 debits to succeed with 10000 balance, got %d", successCount)
+	}
+}
+
+// ── ConsumeReservation tests ────────────────────────────────────────────────
+
+func TestConsumeReservation(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Reserve first
+	reserveRef := uuid.New()
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), reserveRef)
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Available().Equal(decimal.NewFromInt(3000)) {
+		t.Fatalf("expected available 3000 after reserve, got %s", pos.Available())
+	}
+
+	// Consume the reservation
+	consumeRef := uuid.New()
+	err := m.ConsumeReservation(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), consumeRef)
+	if err != nil {
+		t.Fatalf("ConsumeReservation: %v", err)
+	}
+
+	pos, _ = m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	// Balance should decrease by 2000 (from 5000 to 3000)
+	if !pos.Balance.Equal(decimal.NewFromInt(3000)) {
+		t.Errorf("expected balance 3000 after consume, got %s", pos.Balance)
+	}
+	// Reserved should be 0
+	if !pos.Locked.Equal(decimal.Zero) {
+		t.Errorf("expected locked 0 after consume, got %s", pos.Locked)
+	}
+	// Available should equal balance (3000)
+	if !pos.Available().Equal(decimal.NewFromInt(3000)) {
+		t.Errorf("expected available 3000 after consume, got %s", pos.Available())
+	}
+}
+
+func TestConsumeReservationIdempotent(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), uuid.New())
+
+	ref := uuid.New()
+	_ = m.ConsumeReservation(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), ref)
+	_ = m.ConsumeReservation(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), ref)
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(3000)) {
+		t.Errorf("expected balance 3000 (single consume), got %s", pos.Balance)
+	}
+}
+
+func TestConsumeReservationInsufficientReserved(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 5000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Reserve only 1000
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1000), uuid.New())
+
+	// Try to consume 2000 (more than reserved)
+	err := m.ConsumeReservation(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(2000), uuid.New())
+	if err == nil {
+		t.Error("expected error for consume exceeding reserved amount")
+	}
+	if !strings.Contains(err.Error(), "insufficient reserved") {
+		t.Errorf("expected 'insufficient reserved' error, got: %v", err)
+	}
+}
+
+func TestConsumeReservationTransferLifecycle(t *testing.T) {
+	// Simulate the full transfer lifecycle:
+	// Credit → Reserve → Consume → verify balance decreased correctly
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyGBP, "bank:barclays", 0, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Step 1: Tenant deposits 10,000 GBP
+	err := m.CreditBalance(ctx, tenantID, domain.CurrencyGBP, "bank:barclays", decimal.NewFromInt(10000), uuid.New(), "deposit_session")
+	if err != nil {
+		t.Fatalf("CreditBalance: %v", err)
+	}
+
+	// Step 2: Transfer reserves 3,000 GBP
+	reserveRef := uuid.New()
+	err = m.Reserve(ctx, tenantID, domain.CurrencyGBP, "bank:barclays", decimal.NewFromInt(3000), reserveRef)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyGBP, "bank:barclays")
+	if !pos.Balance.Equal(decimal.NewFromInt(10000)) {
+		t.Errorf("balance should still be 10000 after reserve, got %s", pos.Balance)
+	}
+	if !pos.Available().Equal(decimal.NewFromInt(7000)) {
+		t.Errorf("available should be 7000 after reserve, got %s", pos.Available())
+	}
+
+	// Step 3: Transfer completes → consume the reservation
+	consumeRef := uuid.New()
+	err = m.ConsumeReservation(ctx, tenantID, domain.CurrencyGBP, "bank:barclays", decimal.NewFromInt(3000), consumeRef)
+	if err != nil {
+		t.Fatalf("ConsumeReservation: %v", err)
+	}
+
+	pos, _ = m.GetPosition(ctx, tenantID, domain.CurrencyGBP, "bank:barclays")
+	if !pos.Balance.Equal(decimal.NewFromInt(7000)) {
+		t.Errorf("balance should be 7000 after consume, got %s", pos.Balance)
+	}
+	if !pos.Available().Equal(decimal.NewFromInt(7000)) {
+		t.Errorf("available should be 7000 after consume, got %s", pos.Available())
+	}
+}
+
+func TestConsumeReservationFailedTransferRelease(t *testing.T) {
+	// Verify that failed transfers use Release (not Consume) and balance stays unchanged
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 10000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Reserve 5000
+	reserveRef := uuid.New()
+	_ = m.Reserve(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(5000), reserveRef)
+
+	// Transfer fails → release (not consume)
+	releaseRef := uuid.New()
+	err := m.Release(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(5000), releaseRef)
+	if err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	// Balance should be unchanged (10000)
+	if !pos.Balance.Equal(decimal.NewFromInt(10000)) {
+		t.Errorf("balance should remain 10000 after release, got %s", pos.Balance)
+	}
+	if !pos.Available().Equal(decimal.NewFromInt(10000)) {
+		t.Errorf("available should be 10000 after release, got %s", pos.Available())
+	}
+}
+
+func TestQueueEventNonBlocking(t *testing.T) {
+	tenantID := uuid.New()
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 100000, 0),
+		},
+	}
+	m := newTestManager(t, store)
+	ctx := context.Background()
+
+	// Fill the event channel to capacity (should not block or panic)
+	for range 200 {
+		_ = m.CreditBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", decimal.NewFromInt(1), uuid.New(), "test")
+	}
+
+	// Verify balance is correct despite potential channel overflow
+	pos, _ := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if !pos.Balance.Equal(decimal.NewFromInt(100200)) {
+		t.Errorf("expected balance 100200, got %s", pos.Balance)
+	}
+}
+
+// TestReplayWithLargeOpBacklog verifies that crash recovery replay of >10K
+// uncommitted ops completes quickly. Before the fix, each op beyond the
+// pendingOps channel capacity (10,000) would block for 1s, causing startup
+// to take hours. The fix sets replaying=true during replay so logOp() skips
+// channel enqueue entirely.
+func TestReplayWithLargeOpBacklog(t *testing.T) {
+	const numOps = 15_000
+
+	tenantID := uuid.New()
+
+	// Build a store with positions that have enough balance to cover all reserves.
+	// Each reserve is $1, so we need at least $15,000 available.
+	store := &mockStore{
+		positions: []domain.Position{
+			testPosition(tenantID, domain.CurrencyUSD, "bank:chase", 100_000, 0),
+		},
+	}
+
+	// Pre-populate the store's ops slice with 15,000 uncommitted reserve ops.
+	// Each op reserves $1 with a unique reference (so idempotency doesn't collapse them).
+	ops := make([]ReserveOp, numOps)
+	for i := range ops {
+		ops[i] = ReserveOp{
+			ID:        uuid.New(),
+			TenantID:  tenantID,
+			Currency:  domain.CurrencyUSD,
+			Location:  "bank:chase",
+			Amount:    decimal.NewFromInt(1),
+			Reference: uuid.New(),
+			OpType:    OpReserve,
+			CreatedAt: time.Now().UTC(),
+		}
+	}
+	store.ops = ops
+
+	// Create the manager but do NOT call newTestManager — we need to control
+	// LoadPositions timing ourselves.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pub := &mockPublisher{}
+	m := NewManager(store, pub, logger, nil, WithFlushInterval(50*time.Millisecond))
+
+	ctx := context.Background()
+
+	// LoadPositions must complete within 5 seconds. Before the fix, 15K ops
+	// with a 1s timeout each on channel send would take >4 hours.
+	done := make(chan error, 1)
+	go func() {
+		done <- m.LoadPositions(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPositions failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPositions blocked for >5s — replay likely deadlocked on pendingOps channel")
+	}
+
+	// Verify that reserves were actually applied to the in-memory position.
+	pos, err := m.GetPosition(ctx, tenantID, domain.CurrencyUSD, "bank:chase")
+	if err != nil {
+		t.Fatalf("GetPosition: %v", err)
+	}
+
+	// All 15,000 ops should have been replayed as reserves ($1 each).
+	// Balance stays 100,000; locked increases by 15,000.
+	expectedAvailable := decimal.NewFromInt(100_000 - numOps)
+	if !pos.Available().Equal(expectedAvailable) {
+		t.Errorf("expected available %s, got %s (balance=%s, locked=%s)",
+			expectedAvailable, pos.Available(), pos.Balance, pos.Locked)
+	}
+
+	expectedLocked := decimal.NewFromInt(numOps)
+	if !pos.Locked.Equal(expectedLocked) {
+		t.Errorf("expected locked %s, got %s", expectedLocked, pos.Locked)
+	}
 }
