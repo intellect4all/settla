@@ -9,6 +9,7 @@ import (
 // and persists dirty positions to Postgres. Call Stop to shut down gracefully.
 func (m *Manager) Start() {
 	go m.flushLoop()
+	m.startEventWriter()
 }
 
 // Stop signals the flush goroutine to exit, performs a final flush, and
@@ -16,6 +17,7 @@ func (m *Manager) Start() {
 func (m *Manager) Stop() {
 	close(m.stopCh)
 	<-m.doneCh
+	<-m.eventWriterDone
 }
 
 // idempotencyCleanupInterval defines how often old idempotency entries are purged.
@@ -101,51 +103,7 @@ func (m *Manager) flushOnce() {
 		return
 	}
 
-	flushed := 0
-	hadError := false
-	var failedPositionIDs []string
-	for _, ps := range dirty {
-		balance := fromMicro(ps.balanceMicro.Load())
-		// Flush only committed locked — NOT reserved. Reserved amounts are
-		// reconstructed from reserve_ops on crash recovery. This prevents
-		// double-counting: if we flushed locked+reserved and then replayed
-		// reserve ops on restart, the reserved amount would be counted twice.
-		locked := fromMicro(ps.lockedMicro.Load())
-
-		if err := m.store.UpdatePosition(ctx, ps.ID, balance, locked); err != nil {
-			hadError = true
-			failedPositionIDs = append(failedPositionIDs, ps.ID.String())
-			m.logger.Error("settla-treasury: flush position update failed",
-				"position_id", ps.ID,
-				"tenant_id", ps.TenantID,
-				"currency", ps.Currency,
-				"location", ps.Location,
-				"error", err,
-			)
-			// Don't clear dirty flag — retry next interval.
-			continue
-		}
-
-		if err := m.store.RecordHistory(ctx, ps.ID, ps.TenantID, balance, locked, "flush"); err != nil {
-			m.logger.Error("settla-treasury: flush history write failed",
-				"position_id", ps.ID,
-				"tenant_id", ps.TenantID,
-				"error", err,
-			)
-			// Non-fatal: position was updated, history is best-effort.
-		}
-
-		ps.dirty.Store(false)
-		flushed++
-
-		// Update treasury gauges.
-		if m.metrics != nil {
-			balF, _ := balance.Float64()
-			lockedF, _ := locked.Float64()
-			m.metrics.TreasuryBalance.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(balF)
-			m.metrics.TreasuryLocked.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(lockedF)
-		}
-	}
+	flushed, hadError, failedPositionIDs := m.flushDirtyPositions(ctx, dirty)
 
 	// Track consecutive flush failures for persistent DB outage detection.
 	// Store failing position IDs so Reserve can include them in rejection errors.
@@ -187,6 +145,110 @@ func (m *Manager) flushOnce() {
 			"total_dirty", len(dirty),
 		)
 	}
+}
+
+// flushDirtyPositions persists dirty positions to the database. Uses BatchStore
+// if available (single round-trip), otherwise falls back to individual updates.
+func (m *Manager) flushDirtyPositions(ctx context.Context, dirty []*PositionState) (flushed int, hadError bool, failedPositionIDs []string) {
+	if batchStore, ok := m.store.(BatchStore); ok {
+		return m.flushBatch(ctx, batchStore, dirty)
+	}
+	return m.flushIndividual(ctx, dirty)
+}
+
+// flushBatch writes all dirty positions in a single batch upsert.
+// On failure, all positions are re-added to the dirty set for retry.
+func (m *Manager) flushBatch(ctx context.Context, batchStore BatchStore, dirty []*PositionState) (flushed int, hadError bool, failedPositionIDs []string) {
+	updates := make([]PositionUpdate, len(dirty))
+	for i, ps := range dirty {
+		updates[i] = PositionUpdate{
+			ID:       ps.ID,
+			TenantID: ps.TenantID,
+			Balance:  fromMicro(ps.balanceMicro.Load()),
+			Locked:   fromMicro(ps.lockedMicro.Load()),
+		}
+	}
+
+	if err := batchStore.BatchUpdatePositions(ctx, updates); err != nil {
+		m.logger.Error("settla-treasury: batch flush failed",
+			"dirty_count", len(dirty),
+			"error", err,
+		)
+		// Re-add all to dirty set for retry.
+		for _, ps := range dirty {
+			m.markDirty(ps)
+			failedPositionIDs = append(failedPositionIDs, ps.ID.String())
+		}
+		return 0, true, failedPositionIDs
+	}
+
+	// Batch succeeded — clear dirty flags and record history.
+	for i, ps := range dirty {
+		ps.dirty.Store(false)
+
+		if err := m.store.RecordHistory(ctx, ps.ID, ps.TenantID, updates[i].Balance, updates[i].Locked, "flush"); err != nil {
+			m.logger.Error("settla-treasury: flush history write failed",
+				"position_id", ps.ID,
+				"tenant_id", ps.TenantID,
+				"error", err,
+			)
+		}
+
+		if m.metrics != nil {
+			balF, _ := updates[i].Balance.Float64()
+			lockedF, _ := updates[i].Locked.Float64()
+			m.metrics.TreasuryBalance.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(balF)
+			m.metrics.TreasuryLocked.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(lockedF)
+		}
+	}
+
+	return len(dirty), false, nil
+}
+
+// flushIndividual writes dirty positions one at a time (legacy path).
+func (m *Manager) flushIndividual(ctx context.Context, dirty []*PositionState) (flushed int, hadError bool, failedPositionIDs []string) {
+	for _, ps := range dirty {
+		balance := fromMicro(ps.balanceMicro.Load())
+		// Flush only committed locked — NOT reserved. Reserved amounts are
+		// reconstructed from reserve_ops on crash recovery. This prevents
+		// double-counting: if we flushed locked+reserved and then replayed
+		// reserve ops on restart, the reserved amount would be counted twice.
+		locked := fromMicro(ps.lockedMicro.Load())
+
+		if err := m.store.UpdatePosition(ctx, ps.ID, balance, locked); err != nil {
+			hadError = true
+			failedPositionIDs = append(failedPositionIDs, ps.ID.String())
+			m.logger.Error("settla-treasury: flush position update failed",
+				"position_id", ps.ID,
+				"tenant_id", ps.TenantID,
+				"currency", ps.Currency,
+				"location", ps.Location,
+				"error", err,
+			)
+			// Re-add to dirty set so it retries next flush cycle.
+			m.markDirty(ps)
+			continue
+		}
+
+		if err := m.store.RecordHistory(ctx, ps.ID, ps.TenantID, balance, locked, "flush"); err != nil {
+			m.logger.Error("settla-treasury: flush history write failed",
+				"position_id", ps.ID,
+				"tenant_id", ps.TenantID,
+				"error", err,
+			)
+		}
+
+		ps.dirty.Store(false)
+		flushed++
+
+		if m.metrics != nil {
+			balF, _ := balance.Float64()
+			lockedF, _ := locked.Float64()
+			m.metrics.TreasuryBalance.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(balF)
+			m.metrics.TreasuryLocked.WithLabelValues(ps.TenantID.String(), string(ps.Currency), ps.Location).Set(lockedF)
+		}
+	}
+	return flushed, hadError, failedPositionIDs
 }
 
 // cleanupOldReserveOps removes old completed/matched reserve ops from the DB.
