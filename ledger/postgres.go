@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/shopspring/decimal"
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/store/ledgerdb"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 )
 
 // pgBackend implements the Postgres read path for the CQRS read model.
@@ -57,7 +57,7 @@ func (pg *pgBackend) GetEntries(ctx context.Context, accountCode string, from, t
 			ID:        row.ID,
 			AccountID: row.AccountID,
 			Posting: domain.Posting{
-				AccountCode: accountCode,
+				AccountCode: domain.AccountCode(accountCode),
 				EntryType:   domain.EntryType(row.EntryType),
 				Amount:      numericToDecimal(row.Amount),
 				Currency:    domain.Currency(row.Currency),
@@ -68,14 +68,11 @@ func (pg *pgBackend) GetEntries(ctx context.Context, accountCode string, from, t
 	return entries, nil
 }
 
-// GetJournalEntryWithLines loads a journal entry and its lines from Postgres.
+// GetJournalEntryWithLines loads a journal entry and its lines from Postgres
+// using a single JOIN query (no N+1 account lookups).
 // Used by ReverseEntry to build the reversal.
 func (pg *pgBackend) GetJournalEntryWithLines(ctx context.Context, entryID uuid.UUID) (*domain.JournalEntry, error) {
-	// journal_entries is partitioned by posted_at — we need to search.
-	// Use idempotency key lookup or scan recent partitions.
-	// For reversal, we use ListJournalEntriesByReference as a fallback pattern,
-	// but the direct approach is to query entry_lines by journal_entry_id.
-	lines, err := pg.q.ListEntryLinesByJournal(ctx, entryID)
+	lines, err := pg.q.ListEntryLinesWithAccountByJournal(ctx, entryID)
 	if err != nil {
 		return nil, fmt.Errorf("settla-ledger: loading entry lines for %s: %w", entryID, err)
 	}
@@ -85,20 +82,14 @@ func (pg *pgBackend) GetJournalEntryWithLines(ctx context.Context, entryID uuid.
 
 	domainLines := make([]domain.EntryLine, len(lines))
 	for i, line := range lines {
-		// Resolve account ID → code for the reversal.
-		account, err := pg.q.GetAccount(ctx, line.AccountID)
-		if err != nil {
-			return nil, fmt.Errorf("settla-ledger: resolving account %s: %w", line.AccountID, err)
-		}
 		domainLines[i] = domain.EntryLine{
 			ID:        line.ID,
 			AccountID: line.AccountID,
 			Posting: domain.Posting{
-				AccountCode: account.Code,
+				AccountCode: domain.AccountCode(line.AccountCode),
 				EntryType:   domain.EntryType(line.EntryType),
 				Amount:      numericToDecimal(line.Amount),
 				Currency:    domain.Currency(line.Currency),
-				Description: line.Description.String,
 			},
 		}
 	}
@@ -124,7 +115,7 @@ func (pg *pgBackend) SyncJournalEntry(ctx context.Context, entry domain.JournalE
 
 	_, err := pg.q.CreateJournalEntry(ctx, ledgerdb.CreateJournalEntryParams{
 		TenantID:       uuidToPgtype(entry.TenantID),
-		IdempotencyKey: textToPgtype(entry.IdempotencyKey),
+		IdempotencyKey: textToPgtype(string(entry.IdempotencyKey)),
 		EffectiveDate:  dateToPgtype(entry.EffectiveDate),
 		Description:    entry.Description,
 		ReferenceType:  textToPgtype(entry.ReferenceType),
@@ -141,7 +132,7 @@ func (pg *pgBackend) SyncJournalEntry(ctx context.Context, entry domain.JournalE
 		// Resolve account code → ID for storage.
 		accountID := line.AccountID
 		if accountID == uuid.Nil && line.AccountCode != "" {
-			account, err := pg.q.GetAccountByCode(ctx, line.AccountCode)
+			account, err := pg.q.GetAccountByCode(ctx, string(line.AccountCode))
 			if err != nil {
 				pg.logger.Warn("account not found for sync, skipping line",
 					"account_code", line.AccountCode,

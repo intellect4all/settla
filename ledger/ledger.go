@@ -149,7 +149,7 @@ func (s *Service) PostEntries(ctx context.Context, entry domain.JournalEntry) (*
 	// Ensure all referenced accounts exist in TigerBeetle.
 	codes := make([]string, len(entry.Lines))
 	for i, line := range entry.Lines {
-		codes[i] = line.AccountCode
+		codes[i] = string(line.AccountCode)
 	}
 	if err := s.tb.EnsureAccounts(ctx, codes); err != nil {
 		return nil, fmt.Errorf("settla-ledger: ensuring accounts: %w", err)
@@ -290,7 +290,7 @@ func (s *Service) ReverseEntry(ctx context.Context, entryID uuid.UUID, reason st
 	reversal := domain.JournalEntry{
 		ID:             reversalID,
 		TenantID:       original.TenantID,
-		IdempotencyKey: fmt.Sprintf("reversal:%s", entryID),
+		IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("reversal:%s", entryID)),
 		PostedAt:       time.Now().UTC(),
 		EffectiveDate:  time.Now().UTC(),
 		Description:    fmt.Sprintf("Reversal of %s: %s", entryID, reason),
