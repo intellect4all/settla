@@ -393,3 +393,132 @@ func BenchmarkUpdateBalance(b *testing.B) {
 		_ = m.UpdateBalance(ctx, tenantID, domain.CurrencyUSD, "bank:chase", newBalance)
 	}
 }
+
+// BenchmarkReserve_100KTenants measures Reserve throughput with 100K tenants
+// (~500K positions). Validates that CAS performance and map lookups scale.
+//
+// Target: Reserve latency unchanged vs single-tenant (<1μs per reserve)
+func BenchmarkReserve_100KTenants(b *testing.B) {
+	const numTenants = 100_000
+	const positionsPerTenant = 5
+
+	positions := make([]domain.Position, 0, numTenants*positionsPerTenant)
+	tenantIDs := make([]uuid.UUID, numTenants)
+
+	currencies := []domain.Currency{domain.CurrencyUSD, domain.CurrencyGBP, domain.CurrencyEUR, domain.CurrencyNGN, domain.Currency("USDT")}
+	locations := []string{"bank:a", "bank:b", "crypto:tron", "crypto:eth", "crypto:sol"}
+
+	for i := 0; i < numTenants; i++ {
+		tenantIDs[i] = uuid.New()
+		for j := 0; j < positionsPerTenant; j++ {
+			positions = append(positions, testPosition(tenantIDs[i], currencies[j], locations[j], 1000000, 0))
+		}
+	}
+
+	m, _ := setupBenchmarkManager(b, positions)
+	ctx := context.Background()
+	amount := decimal.NewFromInt(1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			tid := tenantIDs[i%numTenants]
+			ci := i % positionsPerTenant
+			ps, _ := m.getPosition(tid, currencies[ci], locations[ci])
+			if ps != nil && ps.reservedMicro.Load() > ps.balanceMicro.Load()-int64(1000000) {
+				ps.reservedMicro.Store(0)
+			}
+			_ = m.Reserve(ctx, tid, currencies[ci], locations[ci], amount, uuid.New())
+			i++
+		}
+	})
+}
+
+// BenchmarkGetPositions_100KTenants measures tenant position lookup with 100K tenants.
+// Validates the per-tenant index is O(tenant positions) not O(all positions).
+//
+// Target: <1μs per lookup (same as single-tenant)
+func BenchmarkGetPositions_100KTenants(b *testing.B) {
+	const numTenants = 100_000
+	const positionsPerTenant = 5
+
+	positions := make([]domain.Position, 0, numTenants*positionsPerTenant)
+	tenantIDs := make([]uuid.UUID, numTenants)
+
+	currencies := []domain.Currency{domain.CurrencyUSD, domain.CurrencyGBP, domain.CurrencyEUR, domain.CurrencyNGN, domain.Currency("USDT")}
+	locations := []string{"bank:a", "bank:b", "crypto:tron", "crypto:eth", "crypto:sol"}
+
+	for i := 0; i < numTenants; i++ {
+		tenantIDs[i] = uuid.New()
+		for j := 0; j < positionsPerTenant; j++ {
+			positions = append(positions, testPosition(tenantIDs[i], currencies[j], locations[j], 1000000, 0))
+		}
+	}
+
+	m, _ := setupBenchmarkManager(b, positions)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = m.GetPositions(ctx, tenantIDs[i%numTenants])
+	}
+}
+
+// BenchmarkFlush_DirtySet measures flush performance when only a small fraction
+// of 500K positions are dirty. Validates O(dirty) not O(all).
+//
+// Target: <5ms to flush 1000 dirty out of 500K total
+func BenchmarkFlush_DirtySet(b *testing.B) {
+	const numTenants = 100_000
+	const positionsPerTenant = 5
+	const dirtyCount = 1000
+
+	positions := make([]domain.Position, 0, numTenants*positionsPerTenant)
+	tenantIDs := make([]uuid.UUID, numTenants)
+
+	currencies := []domain.Currency{domain.CurrencyUSD, domain.CurrencyGBP, domain.CurrencyEUR, domain.CurrencyNGN, domain.Currency("USDT")}
+	locations := []string{"bank:a", "bank:b", "crypto:tron", "crypto:eth", "crypto:sol"}
+
+	for i := 0; i < numTenants; i++ {
+		tenantIDs[i] = uuid.New()
+		for j := 0; j < positionsPerTenant; j++ {
+			positions = append(positions, testPosition(tenantIDs[i], currencies[j], locations[j], 1000000, 0))
+		}
+	}
+
+	store := &mockStore{positions: positions}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pub := &mockPublisher{}
+	m := NewManager(store, pub, logger, nil, WithFlushInterval(1*time.Hour))
+
+	ctx := context.Background()
+	if err := m.LoadPositions(ctx); err != nil {
+		b.Fatalf("LoadPositions: %v", err)
+	}
+
+	// Pre-select positions to mark dirty each iteration.
+	dirtyTenants := tenantIDs[:dirtyCount]
+	amount := decimal.NewFromInt(1)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		store.mu.Lock()
+		store.updates = nil
+		store.mu.Unlock()
+		// Mark dirtyCount positions as dirty via Reserve.
+		for _, tid := range dirtyTenants {
+			_ = m.Reserve(ctx, tid, domain.CurrencyUSD, "bank:a", amount, uuid.New())
+		}
+		b.StartTimer()
+
+		m.flushOnce()
+	}
+}
