@@ -100,6 +100,15 @@ func (s *InMemoryProviderTransferStore) DeleteProviderTransaction(_ context.Cont
 	return nil
 }
 
+// SwitchRoute atomically deletes the provider transaction and updates the route.
+// In the in-memory store this is inherently atomic under the mutex.
+func (s *InMemoryProviderTransferStore) SwitchRoute(_ context.Context, transferID uuid.UUID, txType string, _, _, _ string, _ domain.Currency) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.txs, s.key(transferID, txType))
+	return nil
+}
+
 // Compile-time check.
 var _ ProviderTransferStore = (*InMemoryProviderTransferStore)(nil)
 

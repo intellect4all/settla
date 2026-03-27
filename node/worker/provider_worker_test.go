@@ -136,6 +136,14 @@ func (m *mockProviderTransferStore) DeleteProviderTransaction(_ context.Context,
 	return nil
 }
 
+func (m *mockProviderTransferStore) SwitchRoute(_ context.Context, transferID uuid.UUID, txType string, _, _, _ string, _ domain.Currency) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, providerStoreCall{"SwitchRoute", transferID, txType})
+	delete(m.txs, m.key(transferID, txType))
+	return nil
+}
+
 func (m *mockProviderTransferStore) setTx(transferID uuid.UUID, txType string, tx *domain.ProviderTx) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -629,23 +637,16 @@ func TestProviderWorker_OnRamp_FallbackSuccess(t *testing.T) {
 		t.Errorf("expected HandleOnRampResult, got %s", engineCalls[0].method)
 	}
 
-	// Should have DeleteProviderTransaction + UpdateTransferRoute calls
+	// Should have SwitchRoute call (atomic delete + route update)
 	storeCalls := store.getCalls()
-	hasDelete := false
-	hasRouteUpdate := false
+	hasSwitchRoute := false
 	for _, c := range storeCalls {
-		if c.method == "DeleteProviderTransaction" && c.txType == "onramp" {
-			hasDelete = true
-		}
-		if c.method == "UpdateTransferRoute" {
-			hasRouteUpdate = true
+		if c.method == "SwitchRoute" && c.txType == "onramp" {
+			hasSwitchRoute = true
 		}
 	}
-	if !hasDelete {
-		t.Error("expected DeleteProviderTransaction call for fallback")
-	}
-	if !hasRouteUpdate {
-		t.Error("expected UpdateTransferRoute call for fallback")
+	if !hasSwitchRoute {
+		t.Error("expected SwitchRoute call for fallback")
 	}
 }
 
@@ -787,16 +788,16 @@ func TestProviderWorker_OffRamp_FallbackSuccess(t *testing.T) {
 		t.Errorf("expected HandleOffRampResult, got %s", engineCalls[0].method)
 	}
 
-	// Should have DeleteProviderTransaction call
+	// Should have SwitchRoute call (atomic delete + route update)
 	storeCalls := store.getCalls()
-	hasDelete := false
+	hasSwitchRoute := false
 	for _, c := range storeCalls {
-		if c.method == "DeleteProviderTransaction" && c.txType == "offramp" {
-			hasDelete = true
+		if c.method == "SwitchRoute" && c.txType == "offramp" {
+			hasSwitchRoute = true
 		}
 	}
-	if !hasDelete {
-		t.Error("expected DeleteProviderTransaction call for off-ramp fallback")
+	if !hasSwitchRoute {
+		t.Error("expected SwitchRoute call for off-ramp fallback")
 	}
 }
 

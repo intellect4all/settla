@@ -40,6 +40,24 @@ type ProviderTransferStore interface {
 	// DeleteProviderTransaction removes a provider transaction record, allowing the
 	// fallback provider to re-claim the slot.
 	DeleteProviderTransaction(ctx context.Context, transferID uuid.UUID, txType string) error
+	// SwitchRoute atomically deletes the current provider transaction and updates
+	// the transfer's route to use a fallback provider. This prevents partial
+	// failures where the delete succeeds but the route update fails.
+	SwitchRoute(ctx context.Context, transferID uuid.UUID, txType string,
+		onRampProvider, offRampProvider, chain string, stableCoin domain.Currency) error
+}
+
+// ProviderCBConfig holds per-provider circuit breaker settings.
+// Loaded from factory.ProviderConfig at construction time.
+type ProviderCBConfig struct {
+	CBFailures int // failure threshold (default: 15)
+	CBResetMs  int // reset timeout in ms (default: 10000)
+	CBHalfOpen int // max half-open concurrent (default: 2)
+}
+
+// DefaultProviderCBConfig returns the default circuit breaker settings.
+func DefaultProviderCBConfig() ProviderCBConfig {
+	return ProviderCBConfig{CBFailures: 15, CBResetMs: 10000, CBHalfOpen: 2}
 }
 
 // ProviderWorker consumes provider intent messages from NATS and executes
@@ -59,6 +77,7 @@ type ProviderWorker struct {
 }
 
 // NewProviderWorker creates a provider worker that subscribes to the providers stream.
+// providerCBConfigs is optional — pass nil to use default circuit breaker settings.
 func NewProviderWorker(
 	partition int,
 	onRampProviders map[string]domain.OnRampProvider,
@@ -67,24 +86,27 @@ func NewProviderWorker(
 	engine SettlementEngine,
 	client *messaging.Client,
 	logger *slog.Logger,
+	providerCBConfigs map[string]ProviderCBConfig,
 	opts ...messaging.SubscriberOption,
 ) *ProviderWorker {
 	onRampCBs := make(map[string]*resilience.CircuitBreaker)
 	for id := range onRampProviders {
+		cfg := lookupCBConfig(providerCBConfigs, id)
 		onRampCBs[id] = resilience.NewCircuitBreaker(
 			"provider-onramp-"+id,
-			resilience.WithFailureThreshold(15),
-			resilience.WithResetTimeout(10*time.Second),
-			resilience.WithHalfOpenMax(2),
+			resilience.WithFailureThreshold(cfg.CBFailures),
+			resilience.WithResetTimeout(time.Duration(cfg.CBResetMs)*time.Millisecond),
+			resilience.WithHalfOpenMax(cfg.CBHalfOpen),
 		)
 	}
 	offRampCBs := make(map[string]*resilience.CircuitBreaker)
 	for id := range offRampProviders {
+		cfg := lookupCBConfig(providerCBConfigs, id)
 		offRampCBs[id] = resilience.NewCircuitBreaker(
 			"provider-offramp-"+id,
-			resilience.WithFailureThreshold(15),
-			resilience.WithResetTimeout(10*time.Second),
-			resilience.WithHalfOpenMax(2),
+			resilience.WithFailureThreshold(cfg.CBFailures),
+			resilience.WithResetTimeout(time.Duration(cfg.CBResetMs)*time.Millisecond),
+			resilience.WithHalfOpenMax(cfg.CBHalfOpen),
 		)
 	}
 
@@ -107,6 +129,17 @@ func NewProviderWorker(
 		offRampCBs: offRampCBs,
 		partition:  partition,
 	}
+}
+
+// lookupCBConfig returns the circuit breaker config for a provider, falling
+// back to defaults if not found or configs is nil.
+func lookupCBConfig(configs map[string]ProviderCBConfig, id string) ProviderCBConfig {
+	if configs != nil {
+		if cfg, ok := configs[id]; ok {
+			return cfg
+		}
+	}
+	return DefaultProviderCBConfig()
 }
 
 // Start begins consuming provider intent messages. Blocks until ctx is cancelled.
@@ -235,7 +268,7 @@ func (w *ProviderWorker) handleOnRamp(ctx context.Context, event domain.Event) e
 		claimID, err := w.transferStore.ClaimProviderTransaction(claimCtx, ClaimProviderTransactionParams{
 			TenantID:   payload.TenantID,
 			TransferID: payload.TransferID,
-			TxType:     "onramp",
+			TxType:     string(domain.ProviderTxTypeOnRamp),
 			Provider:   payload.ProviderID,
 		})
 		claimCancel()
@@ -255,7 +288,7 @@ func (w *ProviderWorker) handleOnRamp(ctx context.Context, event domain.Event) e
 				"transfer_id", payload.TransferID,
 			)
 			failedTx := &domain.ProviderTx{Status: "failed"}
-			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "onramp", failedTx)
+			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOnRamp), failedTx)
 			result := domain.IntentResult{
 				Success:   false,
 				Error:     fmt.Sprintf("unknown on-ramp provider: %s", payload.ProviderID),
@@ -305,13 +338,10 @@ func (w *ProviderWorker) handleOnRamp(ctx context.Context, event domain.Event) e
 					"remaining_alternatives", len(remaining),
 				)
 
-				if err := w.transferStore.DeleteProviderTransaction(ctx, payload.TransferID, "onramp"); err != nil {
-					w.logger.Warn("settla-provider-worker: failed to delete provider tx for fallback",
-						"transfer_id", payload.TransferID, "error", err)
-				}
-				if err := w.transferStore.UpdateTransferRoute(ctx, payload.TransferID,
-					alt.ProviderID, alt.OffRampProvider, alt.Chain, alt.StableCoin); err != nil {
-					w.logger.Warn("settla-provider-worker: failed to update transfer route for fallback",
+				if err := w.transferStore.SwitchRoute(ctx, payload.TransferID,
+					string(domain.ProviderTxTypeOnRamp),
+					alt.ProviderID, alt.OffRampProvider, string(alt.Chain), alt.StableCoin); err != nil {
+					w.logger.Warn("settla-provider-worker: failed to switch route for on-ramp fallback",
 						"transfer_id", payload.TransferID, "error", err)
 					// Fall through to report failure to engine
 				} else {
@@ -324,7 +354,7 @@ func (w *ProviderWorker) handleOnRamp(ctx context.Context, event domain.Event) e
 			}
 
 			failedTx := &domain.ProviderTx{Status: "failed"}
-			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "onramp", failedTx)
+			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOnRamp), failedTx)
 
 			result := domain.IntentResult{
 				Success:   false,
@@ -342,14 +372,14 @@ func (w *ProviderWorker) handleOnRamp(ctx context.Context, event domain.Event) e
 		}
 
 		// Record the transaction result
-		if err := w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "onramp", tx); err != nil {
+		if err := w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOnRamp), tx); err != nil {
 			w.logger.Warn("settla-provider-worker: failed to record provider tx, continuing",
 				"transfer_id", payload.TransferID,
 				"error", err,
 			)
 		}
 
-		if tx.Status == "pending" {
+		if tx.Status == string(domain.ProviderTxStatusPending) {
 			w.logger.Info("settla-provider-worker: on-ramp pending, awaiting webhook",
 				"transfer_id", payload.TransferID,
 				"provider_tx_id", tx.ID,
@@ -406,7 +436,7 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 		claimID, err := w.transferStore.ClaimProviderTransaction(claimCtx, ClaimProviderTransactionParams{
 			TenantID:   payload.TenantID,
 			TransferID: payload.TransferID,
-			TxType:     "offramp",
+			TxType:     string(domain.ProviderTxTypeOffRamp),
 			Provider:   payload.ProviderID,
 		})
 		claimCancel()
@@ -426,7 +456,7 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 				"transfer_id", payload.TransferID,
 			)
 			failedTx := &domain.ProviderTx{Status: "failed"}
-			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "offramp", failedTx)
+			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOffRamp), failedTx)
 			result := domain.IntentResult{
 				Success:   false,
 				Error:     fmt.Sprintf("unknown off-ramp provider: %s", payload.ProviderID),
@@ -450,6 +480,7 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 			Recipient:    payload.Recipient,
 			Reference:    payload.Reference,
 			QuotedRate:   payload.QuotedRate,
+			SourceTxHash: payload.SourceTxHash,
 		})
 		callCancel()
 
@@ -477,13 +508,10 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 					"remaining_alternatives", len(remaining),
 				)
 
-				if err := w.transferStore.DeleteProviderTransaction(ctx, payload.TransferID, "offramp"); err != nil {
-					w.logger.Warn("settla-provider-worker: failed to delete provider tx for fallback",
-						"transfer_id", payload.TransferID, "error", err)
-				}
-				if err := w.transferStore.UpdateTransferRoute(ctx, payload.TransferID,
+				if err := w.transferStore.SwitchRoute(ctx, payload.TransferID,
+					string(domain.ProviderTxTypeOffRamp),
 					"", alt.ProviderID, "", ""); err != nil {
-					w.logger.Warn("settla-provider-worker: failed to update transfer route for off-ramp fallback",
+					w.logger.Warn("settla-provider-worker: failed to switch route for off-ramp fallback",
 						"transfer_id", payload.TransferID, "error", err)
 				} else {
 					// Iterate with the fallback provider instead of recursing
@@ -494,7 +522,7 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 			}
 
 			failedTx := &domain.ProviderTx{Status: "failed"}
-			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "offramp", failedTx)
+			_ = w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOffRamp), failedTx)
 
 			result := domain.IntentResult{
 				Success:   false,
@@ -511,14 +539,14 @@ func (w *ProviderWorker) handleOffRamp(ctx context.Context, event domain.Event) 
 			return nil
 		}
 
-		if err := w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, "offramp", tx); err != nil {
+		if err := w.transferStore.UpdateProviderTransaction(ctx, payload.TransferID, string(domain.ProviderTxTypeOffRamp), tx); err != nil {
 			w.logger.Warn("settla-provider-worker: failed to record provider tx, continuing",
 				"transfer_id", payload.TransferID,
 				"error", err,
 			)
 		}
 
-		if tx.Status == "pending" {
+		if tx.Status == string(domain.ProviderTxStatusPending) {
 			w.logger.Info("settla-provider-worker: off-ramp pending, awaiting webhook",
 				"transfer_id", payload.TransferID,
 				"provider_tx_id", tx.ID,
