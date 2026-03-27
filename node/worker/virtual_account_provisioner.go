@@ -6,40 +6,42 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/intellect4all/settla/domain"
 )
 
 // VirtualAccountProvisionerStore abstracts the store operations for provisioning.
 type VirtualAccountProvisionerStore interface {
-	ListVirtualAccountsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.VirtualAccountPool, error)
+	CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) (map[string]int64, error)
 }
+
+// TenantIterator iterates over active tenants in batches.
+// Satisfied by *cache.TenantIndex.ForEach or domain.ForEachTenantBatch.
+type TenantIterator func(ctx context.Context, batchSize int32, fn func(ids []uuid.UUID) error) error
 
 // VirtualAccountProvisioner periodically checks the virtual account pool levels
 // and provisions new accounts when below the low watermark.
 type VirtualAccountProvisioner struct {
-	store        VirtualAccountProvisionerStore
-	partnerReg   BankingPartnerRegistry
-	tenantLister func(ctx context.Context) ([]uuid.UUID, error)
-	logger       *slog.Logger
-	lowWatermark int
-	pollInterval time.Duration
+	store         VirtualAccountProvisionerStore
+	partnerReg    BankingPartnerRegistry
+	tenantForEach TenantIterator
+	logger        *slog.Logger
+	lowWatermark  int
+	pollInterval  time.Duration
 }
 
 // NewVirtualAccountProvisioner creates a provisioner with default settings.
 func NewVirtualAccountProvisioner(
 	store VirtualAccountProvisionerStore,
 	partnerReg BankingPartnerRegistry,
-	tenantLister func(ctx context.Context) ([]uuid.UUID, error),
+	tenantForEach TenantIterator,
 	logger *slog.Logger,
 ) *VirtualAccountProvisioner {
 	return &VirtualAccountProvisioner{
-		store:        store,
-		partnerReg:   partnerReg,
-		tenantLister: tenantLister,
-		logger:       logger.With("module", "virtual-account-provisioner"),
-		lowWatermark: 10,
-		pollInterval: 60 * time.Second,
+		store:         store,
+		partnerReg:    partnerReg,
+		tenantForEach: tenantForEach,
+		logger:        logger.With("module", "virtual-account-provisioner"),
+		lowWatermark:  10,
+		pollInterval:  60 * time.Second,
 	}
 }
 
@@ -69,45 +71,34 @@ func (p *VirtualAccountProvisioner) poll(ctx context.Context) {
 		return // no banking partners configured
 	}
 
-	tenants, err := p.tenantLister(ctx)
-	if err != nil {
-		p.logger.Error("settla-provisioner: failed to list tenants", "error", err)
-		return
-	}
-
-	for _, tenantID := range tenants {
-		accounts, err := p.store.ListVirtualAccountsByTenant(ctx, tenantID)
-		if err != nil {
-			p.logger.Error("settla-provisioner: failed to list accounts",
-				"tenant_id", tenantID, "error", err)
-			continue
-		}
-
-		// Count available accounts by currency
-		availableByCurrency := make(map[string]int)
-		currencies := make(map[string]bool)
-		for _, a := range accounts {
-			currencies[string(a.Currency)] = true
-			if a.Available {
-				availableByCurrency[string(a.Currency)]++
-			}
-		}
-
-		for currency := range currencies {
-			avail := availableByCurrency[currency]
-			if avail >= p.lowWatermark {
+	err := p.tenantForEach(ctx, 500, func(ids []uuid.UUID) error {
+		for _, tenantID := range ids {
+			availableByCurrency, err := p.store.CountAvailableVirtualAccountsByCurrency(ctx, tenantID)
+			if err != nil {
+				p.logger.Error("settla-provisioner: failed to count available accounts",
+					"tenant_id", tenantID, "error", err)
 				continue
 			}
 
-			needed := p.lowWatermark - avail
-			p.logger.Info("settla-provisioner: pool below watermark",
-				"tenant_id", tenantID,
-				"currency", currency,
-				"available", avail,
-				"needed", needed,
-			)
+			for currency, avail := range availableByCurrency {
+				if avail >= int64(p.lowWatermark) {
+					continue
+				}
 
-			// Provision via banking partner and insert into pool once tenant+currency mapping is configured.
+				needed := int64(p.lowWatermark) - avail
+				p.logger.Info("settla-provisioner: pool below watermark",
+					"tenant_id", tenantID,
+					"currency", currency,
+					"available", avail,
+					"needed", needed,
+				)
+
+				// Provision via banking partner and insert into pool once tenant+currency mapping is configured.
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		p.logger.Error("settla-provisioner: tenant iteration failed", "error", err)
 	}
 }

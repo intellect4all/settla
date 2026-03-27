@@ -6,7 +6,6 @@ import (
 )
 
 // LogEmailSender is a development EmailSender that logs emails instead of sending them.
-// Replace with a real implementation (SendGrid, Resend, AWS SES) for production.
 type LogEmailSender struct {
 	logger *slog.Logger
 }
