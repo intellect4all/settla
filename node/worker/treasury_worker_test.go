@@ -62,6 +62,15 @@ func (m *mockTreasury) GetPosition(ctx context.Context, tenantID uuid.UUID, curr
 func (m *mockTreasury) GetLiquidityReport(ctx context.Context, tenantID uuid.UUID) (*domain.LiquidityReport, error) {
 	return nil, nil
 }
+func (m *mockTreasury) CreditBalance(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (m *mockTreasury) DebitBalance(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (m *mockTreasury) ConsumeReservation(_ context.Context, _ uuid.UUID, _ domain.Currency, _ string, _ decimal.Decimal, _ uuid.UUID) error {
+	return nil
+}
 
 func (m *mockTreasury) getCalls() []treasuryCall {
 	m.mu.Lock()

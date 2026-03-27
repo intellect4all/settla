@@ -67,6 +67,12 @@ func (w *TreasuryWorker) handleEvent(ctx context.Context, event domain.Event) er
 		return w.handleReserve(ctx, event)
 	case domain.IntentTreasuryRelease:
 		return w.handleRelease(ctx, event)
+	case domain.IntentTreasuryConsume:
+		return w.handleConsume(ctx, event)
+	case domain.IntentPositionCredit:
+		return w.handlePositionCredit(ctx, event)
+	case domain.IntentPositionDebit:
+		return w.handlePositionDebit(ctx, event)
 	default:
 		w.logger.Debug("settla-treasury-worker: unhandled event type, skipping",
 			"event_type", event.Type,
@@ -167,6 +173,136 @@ func (w *TreasuryWorker) handleRelease(ctx context.Context, event domain.Event) 
 		"tenant_id", payload.TenantID,
 	)
 	return w.publishResult(ctx, payload.TransferID, payload.TenantID, domain.EventTreasuryReleased, "")
+}
+
+// handleConsume executes a treasury consume (reserve consumption on transfer completion).
+func (w *TreasuryWorker) handleConsume(ctx context.Context, event domain.Event) error {
+	payload, err := unmarshalEventData[domain.TreasuryConsumePayload](event)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: failed to unmarshal consume payload",
+			"event_id", event.ID,
+			"error", err,
+		)
+		return nil // ACK — malformed payload
+	}
+
+	w.logger.Info("settla-treasury-worker: executing consume",
+		"transfer_id", payload.TransferID,
+		"tenant_id", payload.TenantID,
+		"currency", payload.Currency,
+		"amount", payload.Amount.String(),
+	)
+
+	err = w.treasury.ConsumeReservation(
+		ctx,
+		payload.TenantID,
+		payload.Currency,
+		payload.Location,
+		payload.Amount,
+		payload.TransferID,
+	)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: consume failed",
+			"transfer_id", payload.TransferID,
+			"tenant_id", payload.TenantID,
+			"error", err,
+		)
+		return w.publishResult(ctx, payload.TransferID, payload.TenantID, domain.EventTreasuryFailed, err.Error())
+	}
+
+	w.logger.Info("settla-treasury-worker: consume succeeded",
+		"transfer_id", payload.TransferID,
+		"tenant_id", payload.TenantID,
+	)
+	return w.publishResult(ctx, payload.TransferID, payload.TenantID, domain.EventTreasuryConsumed, "")
+}
+
+// handlePositionCredit executes a position credit (deposit, top-up, compensation).
+func (w *TreasuryWorker) handlePositionCredit(ctx context.Context, event domain.Event) error {
+	payload, err := unmarshalEventData[domain.PositionCreditPayload](event)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: failed to unmarshal position credit payload",
+			"event_id", event.ID,
+			"error", err,
+		)
+		return nil // ACK — malformed payload
+	}
+
+	w.logger.Info("settla-treasury-worker: executing position credit",
+		"tenant_id", payload.TenantID,
+		"currency", payload.Currency,
+		"amount", payload.Amount.String(),
+		"location", payload.Location,
+		"ref_type", payload.RefType,
+	)
+
+	err = w.treasury.CreditBalance(
+		ctx,
+		payload.TenantID,
+		payload.Currency,
+		payload.Location,
+		payload.Amount,
+		payload.Reference,
+		payload.RefType,
+	)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: position credit failed",
+			"tenant_id", payload.TenantID,
+			"reference", payload.Reference,
+			"error", err,
+		)
+		return w.publishResult(ctx, payload.Reference, payload.TenantID, domain.EventTreasuryFailed, err.Error())
+	}
+
+	w.logger.Info("settla-treasury-worker: position credit succeeded",
+		"tenant_id", payload.TenantID,
+		"reference", payload.Reference,
+	)
+	return w.publishResult(ctx, payload.Reference, payload.TenantID, domain.EventPositionCredited, "")
+}
+
+// handlePositionDebit executes a position debit (withdrawal, rebalance).
+func (w *TreasuryWorker) handlePositionDebit(ctx context.Context, event domain.Event) error {
+	payload, err := unmarshalEventData[domain.PositionDebitPayload](event)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: failed to unmarshal position debit payload",
+			"event_id", event.ID,
+			"error", err,
+		)
+		return nil // ACK — malformed payload
+	}
+
+	w.logger.Info("settla-treasury-worker: executing position debit",
+		"tenant_id", payload.TenantID,
+		"currency", payload.Currency,
+		"amount", payload.Amount.String(),
+		"location", payload.Location,
+		"ref_type", payload.RefType,
+	)
+
+	err = w.treasury.DebitBalance(
+		ctx,
+		payload.TenantID,
+		payload.Currency,
+		payload.Location,
+		payload.Amount,
+		payload.Reference,
+		payload.RefType,
+	)
+	if err != nil {
+		w.logger.Error("settla-treasury-worker: position debit failed",
+			"tenant_id", payload.TenantID,
+			"reference", payload.Reference,
+			"error", err,
+		)
+		return w.publishResult(ctx, payload.Reference, payload.TenantID, domain.EventTreasuryFailed, err.Error())
+	}
+
+	w.logger.Info("settla-treasury-worker: position debit succeeded",
+		"tenant_id", payload.TenantID,
+		"reference", payload.Reference,
+	)
+	return w.publishResult(ctx, payload.Reference, payload.TenantID, domain.EventPositionDebited, "")
 }
 
 // publishResult publishes a treasury result event to NATS for the transfer worker.
