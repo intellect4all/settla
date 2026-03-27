@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +48,7 @@ var _ BankDepositEngine = (*bankdeposit.Engine)(nil)
 type BankDepositWorker struct {
 	partition    int
 	engine       BankDepositEngine
+	treasury     domain.TreasuryManager
 	recycler     BankDepositAccountRecycler
 	inboundStore BankDepositInboundStore
 	partnerReg   BankingPartnerRegistry
@@ -60,6 +62,7 @@ type BankDepositWorker struct {
 func NewBankDepositWorker(
 	partition int,
 	engine BankDepositEngine,
+	treasury domain.TreasuryManager,
 	recycler BankDepositAccountRecycler,
 	inboundStore BankDepositInboundStore,
 	partnerReg BankingPartnerRegistry,
@@ -72,6 +75,7 @@ func NewBankDepositWorker(
 	return &BankDepositWorker{
 		partition:    partition,
 		engine:       engine,
+		treasury:     treasury,
 		recycler:     recycler,
 		inboundStore: inboundStore,
 		partnerReg:   partnerReg,
@@ -176,17 +180,48 @@ func (w *BankDepositWorker) handleCreditResult(ctx context.Context, event domain
 		return nil // ACK — malformed payload
 	}
 
-	w.logger.Info("settla-bank-deposit-worker: handling credit result",
+	w.logger.Info("settla-bank-deposit-worker: handling credit",
 		"session_id", payload.SessionID,
 		"tenant_id", payload.TenantID,
+		"currency", payload.Currency,
+		"net_amount", payload.NetAmount.String(),
 	)
 
-	// The credit intent is an outgoing instruction. When the credit has been
-	// performed externally (by ledger/treasury), the result is fed back here.
-	// For now, we auto-succeed (the actual credit worker would handle the
-	// ledger+treasury calls and report success/failure).
-	result := domain.IntentResult{
-		Success: true,
+	// Derive treasury position location from currency.
+	location := fmt.Sprintf("bank:%s", strings.ToLower(string(payload.Currency)))
+
+	// Credit the tenant's treasury position with the net amount (gross minus fees).
+	err = w.treasury.CreditBalance(
+		ctx,
+		payload.TenantID,
+		payload.Currency,
+		location,
+		payload.NetAmount,
+		payload.SessionID,
+		"bank_deposit",
+	)
+
+	var result domain.IntentResult
+	if err != nil {
+		w.logger.Error("settla-bank-deposit-worker: treasury credit failed",
+			"session_id", payload.SessionID,
+			"tenant_id", payload.TenantID,
+			"error", err,
+		)
+		result = domain.IntentResult{
+			Success: false,
+			Error:   fmt.Sprintf("treasury credit failed: %v", err),
+		}
+	} else {
+		w.logger.Info("settla-bank-deposit-worker: treasury credit succeeded",
+			"session_id", payload.SessionID,
+			"tenant_id", payload.TenantID,
+			"amount", payload.NetAmount.String(),
+			"location", location,
+		)
+		result = domain.IntentResult{
+			Success: true,
+		}
 	}
 
 	if err := w.engine.HandleCreditResult(ctx, payload.TenantID, payload.SessionID, result); err != nil {

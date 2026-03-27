@@ -2,7 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -27,6 +29,7 @@ var _ DepositEngine = (*deposit.Engine)(nil)
 type DepositWorker struct {
 	partition  int
 	engine     DepositEngine
+	treasury   domain.TreasuryManager
 	subscriber *messaging.StreamSubscriber
 	logger     *slog.Logger
 }
@@ -35,6 +38,7 @@ type DepositWorker struct {
 func NewDepositWorker(
 	partition int,
 	engine DepositEngine,
+	treasury domain.TreasuryManager,
 	client *messaging.Client,
 	logger *slog.Logger,
 	opts ...messaging.SubscriberOption,
@@ -43,6 +47,7 @@ func NewDepositWorker(
 	return &DepositWorker{
 		partition: partition,
 		engine:    engine,
+		treasury:  treasury,
 		subscriber: messaging.NewStreamSubscriber(
 			client,
 			messaging.StreamCryptoDeposits,
@@ -142,17 +147,50 @@ func (w *DepositWorker) handleCreditResult(ctx context.Context, event domain.Eve
 		return nil // ACK — malformed payload
 	}
 
-	w.logger.Info("settla-deposit-worker: handling credit result",
+	w.logger.Info("settla-deposit-worker: handling credit",
 		"session_id", payload.SessionID,
 		"tenant_id", payload.TenantID,
+		"chain", payload.Chain,
+		"token", payload.Token,
+		"net_amount", payload.NetAmount.String(),
 	)
 
-	// The credit intent is an outgoing instruction. When the credit has been
-	// performed externally (by ledger/treasury), the result is fed back here.
-	// For now, we auto-succeed (the actual credit worker would handle the
-	// ledger+treasury calls and report success/failure).
-	result := domain.IntentResult{
-		Success: true,
+	// Derive treasury position location from chain + token.
+	location := fmt.Sprintf("crypto:%s:%s", strings.ToLower(string(payload.Chain)), strings.ToLower(payload.Token))
+	currency := domain.Currency(strings.ToUpper(payload.Token))
+
+	// Credit the tenant's treasury position with the net amount (gross minus fees).
+	err = w.treasury.CreditBalance(
+		ctx,
+		payload.TenantID,
+		currency,
+		location,
+		payload.NetAmount,
+		payload.SessionID, // idempotency reference
+		"deposit_session",
+	)
+
+	var result domain.IntentResult
+	if err != nil {
+		w.logger.Error("settla-deposit-worker: treasury credit failed",
+			"session_id", payload.SessionID,
+			"tenant_id", payload.TenantID,
+			"error", err,
+		)
+		result = domain.IntentResult{
+			Success: false,
+			Error:   fmt.Sprintf("treasury credit failed: %v", err),
+		}
+	} else {
+		w.logger.Info("settla-deposit-worker: treasury credit succeeded",
+			"session_id", payload.SessionID,
+			"tenant_id", payload.TenantID,
+			"amount", payload.NetAmount.String(),
+			"location", location,
+		)
+		result = domain.IntentResult{
+			Success: true,
+		}
 	}
 
 	return w.engine.HandleCreditResult(ctx, payload.TenantID, payload.SessionID, result)
