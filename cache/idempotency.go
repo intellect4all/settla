@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,7 +42,7 @@ func idemKey(tenantID uuid.UUID, key string) string {
 func (ic *IdempotencyCache) Check(ctx context.Context, tenantID uuid.UUID, key string) (string, error) {
 	rk := idemKey(tenantID, key)
 	val, err := ic.redis.Get(ctx, rk)
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return "", nil
 	}
 	if err != nil {

@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/intellect4all/settla/domain"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -42,7 +43,7 @@ func quoteKey(tenantID, quoteID uuid.UUID) string {
 func (qc *QuoteCache) Get(ctx context.Context, tenantID, quoteID uuid.UUID) (*domain.Quote, error) {
 	key := quoteKey(tenantID, quoteID)
 	data, err := qc.redis.Get(ctx, key)
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {

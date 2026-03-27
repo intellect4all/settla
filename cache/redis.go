@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,9 +13,11 @@ import (
 
 // RedisConfig holds connection parameters for the Redis client.
 type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr          string
+	Password      string
+	DB            int
+	UseTLS        bool
+	TLSSkipVerify bool
 }
 
 // SentinelConfig holds connection parameters for a Redis Sentinel cluster.
@@ -30,8 +33,10 @@ type SentinelConfig struct {
 	// At least 2 of the 3 sentinels must be reachable for quorum-based failover.
 	SentinelAddrs string
 
-	Password string
-	DB       int
+	Password      string
+	DB            int
+	UseTLS        bool
+	TLSSkipVerify bool
 }
 
 // RedisCache wraps a Redis client for L2 caching.
@@ -41,7 +46,7 @@ type RedisCache struct {
 
 // NewRedisCache creates a Redis cache from the given config.
 func NewRedisCache(cfg RedisConfig) *RedisCache {
-	client := redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:         cfg.Addr,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
@@ -49,7 +54,11 @@ func NewRedisCache(cfg RedisConfig) *RedisCache {
 		MinIdleConns: 10,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
-	})
+	}
+	if cfg.UseTLS || strings.HasPrefix(cfg.Addr, "rediss://") {
+		opts.TLSConfig = &tls.Config{InsecureSkipVerify: cfg.TLSSkipVerify}
+	}
+	client := redis.NewClient(opts)
 	return &RedisCache{client: client}
 }
 
@@ -66,7 +75,7 @@ func NewRedisCacheFromSentinel(cfg SentinelConfig) *RedisCache {
 	for i, a := range addrs {
 		addrs[i] = strings.TrimSpace(a)
 	}
-	client := redis.NewFailoverClient(&redis.FailoverOptions{
+	opts := &redis.FailoverOptions{
 		MasterName:    cfg.MasterName,
 		SentinelAddrs: addrs,
 		Password:      cfg.Password,
@@ -75,7 +84,11 @@ func NewRedisCacheFromSentinel(cfg SentinelConfig) *RedisCache {
 		MinIdleConns:  10,
 		ReadTimeout:   2 * time.Second,
 		WriteTimeout:  2 * time.Second,
-	})
+	}
+	if cfg.UseTLS {
+		opts.TLSConfig = &tls.Config{InsecureSkipVerify: cfg.TLSSkipVerify}
+	}
+	client := redis.NewFailoverClient(opts)
 	return &RedisCache{client: client}
 }
 
@@ -129,6 +142,28 @@ func (r *RedisCache) SetJSON(ctx context.Context, key string, value any, ttl tim
 	return r.client.Set(ctx, key, data, ttl).Err()
 }
 
+// IncrByFloat atomically increments a key's value by the given float amount.
+// If the key does not exist it is set to 0 before performing the increment.
+// Returns the new value after the increment.
+func (r *RedisCache) IncrByFloat(ctx context.Context, key string, value float64) (float64, error) {
+	return r.client.IncrByFloat(ctx, key, value).Result()
+}
+
+// GetFloat retrieves a key's value as a float64. Returns 0 and redis.Nil if
+// the key does not exist.
+func (r *RedisCache) GetFloat(ctx context.Context, key string) (float64, error) {
+	val, err := r.client.Get(ctx, key).Float64()
+	if err != nil {
+		return 0, err
+	}
+	return val, nil
+}
+
+// SetFloat stores a float64 value with a TTL.
+func (r *RedisCache) SetFloat(ctx context.Context, key string, value float64, ttl time.Duration) error {
+	return r.client.Set(ctx, key, value, ttl).Err()
+}
+
 // Client returns the underlying redis.Client for advanced operations
 // (e.g., sorted set commands in the rate limiter).
 func (r *RedisCache) Client() *redis.Client {
@@ -138,4 +173,24 @@ func (r *RedisCache) Client() *redis.Client {
 // Close closes the Redis connection.
 func (r *RedisCache) Close() error {
 	return r.client.Close()
+}
+
+// ParseRedisURL parses a Redis URL (redis://[:password@]host:port[/db]) into
+// go-redis Options. Returns nil if the URL is empty or invalid.
+func ParseRedisURL(rawURL string) (*redis.Options, error) {
+	if rawURL == "" {
+		return nil, nil
+	}
+	return redis.ParseURL(rawURL)
+}
+
+// NewRedisClientFromOpts creates a bare *redis.Client from Options.
+// Use this when you need the client directly (e.g., for TenantIndex)
+// rather than wrapped in RedisCache.
+func NewRedisClientFromOpts(opts *redis.Options) *redis.Client {
+	opts.PoolSize = 50
+	opts.MinIdleConns = 10
+	opts.ReadTimeout = 2 * time.Second
+	opts.WriteTimeout = 2 * time.Second
+	return redis.NewClient(opts)
 }
