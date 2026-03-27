@@ -247,7 +247,7 @@ func ParseERC20TransferLog(log ethLog, tokenDecimals int32) (ERC20Transfer, erro
 // ParseEVMTransfer converts an ERC20Transfer into a domain IncomingTransaction.
 func ParseEVMTransfer(t ERC20Transfer, chain string) domain.IncomingTransaction {
 	return domain.IncomingTransaction{
-		Chain:         chain,
+		Chain:         domain.CryptoChain(chain),
 		TxHash:        t.TxHash,
 		FromAddress:   t.From,
 		ToAddress:     t.To,

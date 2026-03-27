@@ -52,7 +52,7 @@ func (m *mockOutboxWriter) WriteDetectedTx(_ context.Context, dtx *domain.Deposi
 	dtx.ID = uuid.New()
 	m.writtenTxs = append(m.writtenTxs, dtx)
 	m.writtenEntries = append(m.writtenEntries, entries)
-	m.existingTxs[dtx.Chain+":"+dtx.TxHash] = dtx
+	m.existingTxs[string(dtx.Chain)+":"+dtx.TxHash] = dtx
 	return nil
 }
 

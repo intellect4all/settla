@@ -221,7 +221,7 @@ func (p *EVMPoller) scanTransfers(ctx context.Context, addrSnap map[string]Addre
 // looks up the session, and writes the deposit tx + outbox entry atomically.
 func (p *EVMPoller) processIncomingTx(ctx context.Context, incoming domain.IncomingTransaction) error {
 	// Idempotency: check if already recorded
-	existing, err := p.outboxWriter.GetDepositTxByHash(ctx, incoming.Chain, incoming.TxHash)
+	existing, err := p.outboxWriter.GetDepositTxByHash(ctx, string(incoming.Chain), incoming.TxHash)
 	if err == nil && existing != nil {
 		return nil // already processed
 	}
@@ -233,7 +233,7 @@ func (p *EVMPoller) processIncomingTx(ctx context.Context, incoming domain.Incom
 	}
 
 	// Verify the token is one we're watching
-	_, tokenOK := p.tokens.LookupByContract(incoming.Chain, incoming.TokenContract)
+	_, tokenOK := p.tokens.LookupByContract(string(incoming.Chain), incoming.TokenContract)
 	if !tokenOK {
 		p.logger.Debug("settla-evm-poller: ignoring transfer for unwatched token",
 			"tx_hash", incoming.TxHash,

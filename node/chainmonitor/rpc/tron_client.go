@@ -100,7 +100,7 @@ func ParseTRC20Transfer(t TRC20Transfer, chain string) domain.IncomingTransactio
 	}
 
 	return domain.IncomingTransaction{
-		Chain:         chain,
+		Chain:         domain.CryptoChain(chain),
 		TxHash:        t.TransactionID,
 		FromAddress:   t.From,
 		ToAddress:     t.To,

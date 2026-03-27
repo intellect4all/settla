@@ -40,9 +40,9 @@ func (r *TokenRegistry) Reload(tokens []domain.Token) {
 		if !t.IsActive {
 			continue
 		}
-		key := tokenKey(t.Chain, t.ContractAddress)
+		key := tokenKey(string(t.Chain), t.ContractAddress)
 		m.byContract[key] = t
-		m.byChain[t.Chain] = append(m.byChain[t.Chain], t)
+		m.byChain[string(t.Chain)] = append(m.byChain[string(t.Chain)], t)
 	}
 	r.data.Store(m)
 }
