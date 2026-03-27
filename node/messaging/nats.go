@@ -98,6 +98,11 @@ type Client struct {
 	// routed to the dead letter queue. Labels: source_stream, event_type.
 	// When nil, DLQ counting is silently skipped.
 	DLQCounter *prometheus.CounterVec
+
+	// Authentication fields (set via WithNATSToken or WithNATSUserInfo).
+	natsToken    string
+	natsUser     string
+	natsPassword string
 }
 
 // ClientOption configures the NATS client.
@@ -110,12 +115,33 @@ func WithReplicas(n int) ClientOption {
 	}
 }
 
+// WithNATSToken configures token-based authentication for the NATS connection.
+func WithNATSToken(token string) ClientOption {
+	return func(c *Client) { c.natsToken = token }
+}
+
+// WithNATSUserInfo configures username/password authentication for the NATS connection.
+func WithNATSUserInfo(user, password string) ClientOption {
+	return func(c *Client) { c.natsUser = user; c.natsPassword = password }
+}
+
 // NewClient connects to NATS, initialises JetStream, and creates all 7 streams.
 func NewClient(url string, numPartitions int, logger *slog.Logger, opts ...ClientOption) (*Client, error) {
-	nc, err := nats.Connect(url,
+	// Apply options first to collect auth credentials before connecting.
+	c := &Client{
+		Logger:        logger.With("module", "messaging"),
+		NumPartitions: numPartitions,
+		Replicas:      1, // default: dev mode
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	// Build NATS connection options including auth credentials.
+	natsOpts := []nats.Option{
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1), // unlimited reconnects
-		nats.ReconnectWait(2*time.Second),
+		nats.ReconnectWait(2 * time.Second),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			if err != nil {
 				logger.Warn("settla-messaging: NATS disconnected", "error", err)
@@ -124,7 +150,14 @@ func NewClient(url string, numPartitions int, logger *slog.Logger, opts ...Clien
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			logger.Info("settla-messaging: NATS reconnected", "url", nc.ConnectedUrl())
 		}),
-	)
+	}
+	if c.natsToken != "" {
+		natsOpts = append(natsOpts, nats.Token(c.natsToken))
+	} else if c.natsUser != "" {
+		natsOpts = append(natsOpts, nats.UserInfo(c.natsUser, c.natsPassword))
+	}
+
+	nc, err := nats.Connect(url, natsOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("settla-messaging: connecting to NATS %s: %w", url, err)
 	}
@@ -135,18 +168,8 @@ func NewClient(url string, numPartitions int, logger *slog.Logger, opts ...Clien
 		return nil, fmt.Errorf("settla-messaging: creating JetStream context: %w", err)
 	}
 
-	c := &Client{
-		Conn:          nc,
-		JS:            js,
-		Logger:        logger.With("module", "messaging"),
-		NumPartitions: numPartitions,
-		Replicas:      1, // default: dev mode
-	}
-
-	for _, opt := range opts {
-		opt(c)
-	}
-
+	c.Conn = nc
+	c.JS = js
 	return c, nil
 }
 

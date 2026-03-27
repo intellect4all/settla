@@ -10,10 +10,10 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-func TestAllStreams_Returns11Streams(t *testing.T) {
+func TestAllStreams_Returns12Streams(t *testing.T) {
 	streams := AllStreams()
-	if len(streams) != 11 {
-		t.Fatalf("expected 11 streams (10 domain + DLQ), got %d", len(streams))
+	if len(streams) != 12 {
+		t.Fatalf("expected 12 streams (11 domain + DLQ), got %d", len(streams))
 	}
 
 	// Verify all expected stream names are present.
@@ -28,6 +28,7 @@ func TestAllStreams_Returns11Streams(t *testing.T) {
 		StreamCryptoDeposits:   false,
 		StreamEmails:           false,
 		StreamBankDeposits:     false,
+		StreamPositionEvents:   false,
 		StreamNameDLQ:          false,
 	}
 	for _, s := range streams {
@@ -77,8 +78,8 @@ func TestStreamSettings(t *testing.T) {
 	if StreamMaxMsgSize != 1_048_576 {
 		t.Errorf("StreamMaxMsgSize = %d, want 1048576", StreamMaxMsgSize)
 	}
-	if StreamDuplicateWindow != 5*time.Minute {
-		t.Errorf("StreamDuplicateWindow = %v, want 5m", StreamDuplicateWindow)
+	if StreamDuplicateWindow != 24*time.Hour {
+		t.Errorf("StreamDuplicateWindow = %v, want 24h", StreamDuplicateWindow)
 	}
 }
 
@@ -135,7 +136,7 @@ func TestStreamForSubject(t *testing.T) {
 		{"settla.provider.command.partition.0.onramp.initiated", StreamProviders},
 		{"settla.provider.inbound.partition.3.payment.received", StreamProviderWebhooks},
 		{"settla.ledger.partition.2.entry.created", StreamLedger},
-		{"settla.treasury.position.updated", StreamTreasury},
+		{"settla.treasury.partition.0.position.updated", StreamTreasury},
 		{"settla.blockchain.partition.0.tx.confirmed", StreamBlockchain},
 		{"settla.webhook.partition.3.transfer.completed", StreamWebhooks},
 		{"settla.deposit.partition.2.deposit.tx.detected", StreamCryptoDeposits},
@@ -175,8 +176,10 @@ func TestSubjectBuilders(t *testing.T) {
 	})
 
 	t.Run("TreasurySubject", func(t *testing.T) {
-		got := TreasurySubject("position.updated")
-		want := "settla.treasury.position.updated"
+		tenantID := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+		got := TreasurySubject(tenantID, 8, "position.updated")
+		partition := TenantPartition(tenantID, 8)
+		want := fmt.Sprintf("settla.treasury.partition.%d.position.updated", partition)
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -267,9 +270,9 @@ func TestSubjectForEventType_AllDomainEvents(t *testing.T) {
 		{domain.EventRefundInitiated, "settla.transfer.partition.", StreamTransfers},
 		{domain.EventRefundCompleted, "settla.transfer.partition.", StreamTransfers},
 
-		// Treasury events → SETTLA_TREASURY
-		{domain.EventPositionUpdated, "settla.treasury.", StreamTreasury},
-		{domain.EventLiquidityAlert, "settla.treasury.", StreamTreasury},
+		// Treasury events → SETTLA_TREASURY (partitioned)
+		{domain.EventPositionUpdated, "settla.treasury.partition.", StreamTreasury},
+		{domain.EventLiquidityAlert, "settla.treasury.partition.", StreamTreasury},
 
 		// Deposit events → SETTLA_CRYPTO_DEPOSITS (partitioned)
 		{domain.EventDepositSessionCreated, "settla.deposit.partition.", StreamCryptoDeposits},
@@ -346,7 +349,7 @@ func TestSubjectForEventType_StreamSpecificEvents(t *testing.T) {
 		want      string
 	}{
 		{"ledger.entry.created", fmt.Sprintf("settla.ledger.partition.%d.ledger.entry.created", partition)},
-		{"treasury.position.snapshot", "settla.treasury.treasury.position.snapshot"},
+		{"treasury.position.snapshot", fmt.Sprintf("settla.treasury.partition.%d.treasury.position.snapshot", partition)},
 		{"blockchain.tx.submitted", fmt.Sprintf("settla.blockchain.partition.%d.blockchain.tx.submitted", partition)},
 		{"webhook.delivery.completed", fmt.Sprintf("settla.webhook.partition.%d.webhook.delivery.completed", partition)},
 		{"deposit.session.created", fmt.Sprintf("settla.deposit.partition.%d.deposit.session.created", partition)},

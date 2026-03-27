@@ -20,6 +20,7 @@ const (
 	StreamCryptoDeposits   = "SETTLA_CRYPTO_DEPOSITS"
 	StreamEmails           = "SETTLA_EMAILS"
 	StreamBankDeposits     = "SETTLA_BANK_DEPOSITS"
+	StreamPositionEvents   = "SETTLA_POSITION_EVENTS"
 	StreamNameDLQ          = "SETTLA_DLQ"
 )
 
@@ -32,9 +33,11 @@ const (
 	StreamMaxMsgSize = 1_048_576
 
 	// StreamDuplicateWindow is the deduplication window for message IDs.
-	// 5 minutes covers relay crash-recovery scenarios where unpublished entries
-	// are re-polled and re-published after restart.
-	StreamDuplicateWindow = 5 * time.Minute
+	// 24 hours covers relay crash-recovery scenarios where the relay may be
+	// down for extended periods before restart. The previous 5-minute window
+	// was insufficient — a relay outage >5 minutes could cause double-processing
+	// of treasury reserves, provider calls, or ledger postings.
+	StreamDuplicateWindow = 24 * time.Hour
 )
 
 // StreamDefinition holds the configuration for a single stream.
@@ -65,7 +68,7 @@ func AllStreams() []StreamDefinition {
 		},
 		{
 			Name:     StreamTreasury,
-			Subjects: []string{"settla.treasury.>"},
+			Subjects: []string{"settla.treasury.partition.*.>"},
 		},
 		{
 			Name:     StreamBlockchain,
@@ -77,7 +80,10 @@ func AllStreams() []StreamDefinition {
 		},
 		{
 			Name:     StreamProviderWebhooks,
-			Subjects: []string{"settla.provider.inbound.partition.*.>"},
+			Subjects: []string{
+				"settla.provider.inbound.partition.*.>",
+				"settla.provider.inbound.raw", // raw webhooks before Go-side normalization
+			},
 		},
 		{
 			Name:     StreamCryptoDeposits,
@@ -90,6 +96,10 @@ func AllStreams() []StreamDefinition {
 		{
 			Name:     StreamBankDeposits,
 			Subjects: []string{"settla.bank_deposit.partition.*.>", "settla.inbound.bank.>"},
+		},
+		{
+			Name:     StreamPositionEvents,
+			Subjects: []string{"settla.position.event.>"},
 		},
 		{
 			// WorkQueue retention — dead letter queue for unprocessable messages.
@@ -156,7 +166,7 @@ func StreamForSubject(subject string) string {
 		return StreamProviders
 	case matchPrefix(subject, "settla.ledger.partition."):
 		return StreamLedger
-	case matchPrefix(subject, "settla.treasury."):
+	case matchPrefix(subject, "settla.treasury.partition."):
 		return StreamTreasury
 	case matchPrefix(subject, "settla.blockchain.partition."):
 		return StreamBlockchain
@@ -170,6 +180,8 @@ func StreamForSubject(subject string) string {
 		return StreamBankDeposits
 	case matchPrefix(subject, "settla.inbound.bank."):
 		return StreamBankDeposits
+	case matchPrefix(subject, "settla.position.event."):
+		return StreamPositionEvents
 	case matchPrefix(subject, "settla.dlq."):
 		return StreamNameDLQ
 	default:

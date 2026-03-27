@@ -43,10 +43,11 @@ func LedgerSubject(tenantID uuid.UUID, numPartitions int, eventType string) stri
 	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixLedger, partition, eventType)
 }
 
-// TreasurySubject builds the NATS subject for a treasury event.
-// Format: settla.treasury.{eventType}
-func TreasurySubject(eventType string) string {
-	return fmt.Sprintf("%s.%s", SubjectPrefixTreasury, eventType)
+// TreasurySubject builds the NATS subject for a treasury event, partitioned by tenant.
+// Format: settla.treasury.partition.{hash(tenantID)%N}.{eventType}
+func TreasurySubject(tenantID uuid.UUID, numPartitions int, eventType string) string {
+	partition := TenantPartition(tenantID, numPartitions)
+	return fmt.Sprintf("%s.partition.%d.%s", SubjectPrefixTreasury, partition, eventType)
 }
 
 // BlockchainSubject builds the NATS subject for a blockchain event, partitioned by tenant.
@@ -128,7 +129,7 @@ func SubjectForEventType(eventType string, tenantID uuid.UUID, numPartitions int
 		return LedgerSubject(tenantID, numPartitions, eventType)
 
 	case "treasury", "position", "liquidity":
-		return TreasurySubject(eventType)
+		return TreasurySubject(tenantID, numPartitions, eventType)
 
 	case "blockchain":
 		return BlockchainSubject(tenantID, numPartitions, eventType)
