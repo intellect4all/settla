@@ -79,12 +79,13 @@ func TestWebhookWorker_DeliverSuccess(t *testing.T) {
 	}
 
 	w := &WebhookWorker{
-		tenantStore: store,
-		httpClient:  server.Client(),
-		defaultCB:   webhookTestCB(),
-		logger:      webhookTestLogger(),
-		httpSem:   make(chan struct{}, 100),
-		tenantSem: newTenantSemaphore(10),
+		tenantStore:      store,
+		httpClient:       server.Client(),
+		defaultCB:        webhookTestCB(),
+		logger:           webhookTestLogger(),
+		httpSem:          make(chan struct{}, 100),
+		tenantSem:        newTenantSemaphore(10),
+		allowPrivateURLs: true,
 	}
 
 	payload := domain.WebhookDeliverPayload{
@@ -152,12 +153,13 @@ func TestWebhookWorker_DeliverNon2xx_ReturnsError(t *testing.T) {
 	}
 
 	w := &WebhookWorker{
-		tenantStore: store,
-		httpClient:  server.Client(),
-		defaultCB:   webhookTestCB(),
-		logger:      webhookTestLogger(),
-		httpSem:   make(chan struct{}, 100),
-		tenantSem: newTenantSemaphore(10),
+		tenantStore:      store,
+		httpClient:       server.Client(),
+		defaultCB:        webhookTestCB(),
+		logger:           webhookTestLogger(),
+		httpSem:          make(chan struct{}, 100),
+		tenantSem:        newTenantSemaphore(10),
+		allowPrivateURLs: true,
 	}
 
 	payload := domain.WebhookDeliverPayload{

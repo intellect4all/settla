@@ -156,7 +156,7 @@ func TestWebhookDLQ(t *testing.T) {
 		resilience.WithResetTimeout(30*time.Second),
 	)
 
-	ww := NewWebhookWorker(partition, tenantStore, nc, logger, cb, nil)
+	ww := NewWebhookWorker(partition, tenantStore, nc, logger, cb, &WebhookWorkerConfig{AllowPrivateURLs: true})
 
 	// Start the webhook worker's subscriber with the custom consumer.
 	subCtx, subCancel := context.WithCancel(ctx)

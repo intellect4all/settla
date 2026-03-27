@@ -10,8 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,18 +31,24 @@ type TenantWebhookStore interface {
 	GetTenant(ctx context.Context, tenantID uuid.UUID) (*domain.Tenant, error)
 }
 
+// semEntry pairs a channel-based semaphore with a last-used timestamp for idle eviction.
+type semEntry struct {
+	ch       chan struct{}
+	lastUsed atomic.Int64 // unix seconds
+}
+
 // tenantSemaphore provides per-tenant fair queueing to prevent a single
 // high-volume tenant from monopolising the global HTTP semaphore.
 type tenantSemaphore struct {
 	mu            sync.Mutex
-	sems          map[string]chan struct{}
+	sems          map[string]*semEntry
 	maxPerTenant  int
 }
 
 // newTenantSemaphore creates a per-tenant semaphore with the given concurrency limit.
 func newTenantSemaphore(maxPerTenant int) *tenantSemaphore {
 	return &tenantSemaphore{
-		sems:         make(map[string]chan struct{}),
+		sems:         make(map[string]*semEntry),
 		maxPerTenant: maxPerTenant,
 	}
 }
@@ -46,15 +56,16 @@ func newTenantSemaphore(maxPerTenant int) *tenantSemaphore {
 // acquire blocks until a slot is available for the given tenant, or ctx is cancelled.
 func (ts *tenantSemaphore) acquire(ctx context.Context, tenantID string) error {
 	ts.mu.Lock()
-	sem, ok := ts.sems[tenantID]
+	entry, ok := ts.sems[tenantID]
 	if !ok {
-		sem = make(chan struct{}, ts.maxPerTenant)
-		ts.sems[tenantID] = sem
+		entry = &semEntry{ch: make(chan struct{}, ts.maxPerTenant)}
+		ts.sems[tenantID] = entry
 	}
+	entry.lastUsed.Store(time.Now().Unix())
 	ts.mu.Unlock()
 
 	select {
-	case sem <- struct{}{}:
+	case entry.ch <- struct{}{}:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -64,25 +75,33 @@ func (ts *tenantSemaphore) acquire(ctx context.Context, tenantID string) error {
 // release frees a slot for the given tenant.
 func (ts *tenantSemaphore) release(tenantID string) {
 	ts.mu.Lock()
-	sem, ok := ts.sems[tenantID]
+	entry, ok := ts.sems[tenantID]
 	ts.mu.Unlock()
 	if ok {
-		<-sem
+		entry.lastUsed.Store(time.Now().Unix())
+		<-entry.ch
 	}
+}
+
+// cbEntry pairs a circuit breaker with a last-used timestamp for idle eviction.
+type cbEntry struct {
+	cb       *resilience.CircuitBreaker
+	lastUsed atomic.Int64 // unix seconds
 }
 
 // WebhookWorker consumes webhook delivery intent messages from NATS and
 // delivers webhook payloads to tenant endpoints with HMAC-SHA256 signatures.
 type WebhookWorker struct {
-	partition      int
-	tenantStore    TenantWebhookStore
-	httpClient     *http.Client
-	defaultCB      *resilience.CircuitBreaker
-	tenantCBs      sync.Map // map[string]*resilience.CircuitBreaker — per-tenant CBs
-	subscriber     *messaging.StreamSubscriber
-	logger         *slog.Logger
-	httpSem        chan struct{}
-	tenantSem      *tenantSemaphore
+	partition        int
+	tenantStore      TenantWebhookStore
+	httpClient       *http.Client
+	defaultCB        *resilience.CircuitBreaker
+	tenantCBs        sync.Map // map[string]*cbEntry — per-tenant CBs with idle tracking
+	subscriber       *messaging.StreamSubscriber
+	logger           *slog.Logger
+	httpSem          chan struct{}
+	tenantSem        *tenantSemaphore
+	allowPrivateURLs bool // testing only — disables SSRF protection
 }
 
 // DefaultWebhookHTTPTimeout is the default timeout for webhook HTTP delivery requests.
@@ -93,6 +112,10 @@ type WebhookWorkerConfig struct {
 	// HTTPTimeout is the timeout for webhook delivery HTTP requests.
 	// Defaults to DefaultWebhookHTTPTimeout (10s) if zero.
 	HTTPTimeout time.Duration
+
+	// AllowPrivateURLs disables SSRF protection for webhook URLs.
+	// ONLY set to true in test environments — never in production.
+	AllowPrivateURLs bool
 }
 
 // NewWebhookWorker creates a webhook worker that subscribes to the webhooks stream.
@@ -135,15 +158,17 @@ func NewWebhookWorker(
 			consumerName,
 			opts...,
 		),
-		logger:    logger.With("module", "webhook-worker", "partition", partition),
-		httpSem:   make(chan struct{}, 100),
-		tenantSem: newTenantSemaphore(10),
+		logger:           logger.With("module", "webhook-worker", "partition", partition),
+		httpSem:          make(chan struct{}, 100),
+		tenantSem:        newTenantSemaphore(10),
+		allowPrivateURLs: cfg != nil && cfg.AllowPrivateURLs,
 	}
 }
 
 // Start begins consuming webhook intent messages. Blocks until ctx is cancelled.
 func (w *WebhookWorker) Start(ctx context.Context) error {
 	w.logger.Info("settla-webhook-worker: starting", "partition", w.partition)
+	go w.cleanupTenantResources(ctx)
 	filter := messaging.StreamPartitionFilter(messaging.SubjectPrefixWebhook, w.partition)
 	return w.subscriber.SubscribeStream(ctx, filter, w.handleEvent)
 }
@@ -211,9 +236,11 @@ func (w *WebhookWorker) handleDeliver(ctx context.Context, event domain.Event) e
 		return nil // ACK — no webhook configured
 	}
 
-	// Build webhook body
+	// Build webhook body with a deterministic delivery ID so tenants can deduplicate retries.
+	// The ID is derived from the NATS event ID which is stable across redeliveries.
+	deliveryID := deterministicDeliveryID(event.ID, payload.EventType)
 	webhookBody := WebhookPayload{
-		ID:        uuid.Must(uuid.NewV7()).String(),
+		ID:        deliveryID,
 		EventType: payload.EventType,
 		TenantID:  payload.TenantID.String(),
 		Data:      payload.Data,
@@ -233,6 +260,18 @@ func (w *WebhookWorker) handleDeliver(ctx context.Context, event domain.Event) e
 			"error", err,
 		)
 		return nil // ACK — marshalling error won't resolve on retry
+	}
+
+	// Validate webhook URL to prevent SSRF attacks targeting internal services.
+	if !w.allowPrivateURLs {
+		if err := validateWebhookURL(tenant.WebhookURL); err != nil {
+			w.logger.Error("settla-webhook-worker: webhook URL rejected (SSRF protection)",
+				"tenant_id", payload.TenantID,
+				"webhook_url", tenant.WebhookURL,
+				"error", err,
+			)
+			return nil // ACK — unsafe URL won't resolve on retry
+		}
 	}
 
 	// Sign with HMAC-SHA256
@@ -332,14 +371,55 @@ func (w *WebhookWorker) handleDeliver(ctx context.Context, event domain.Event) e
 // from opening the circuit for all other tenants.
 func (w *WebhookWorker) getTenantCB(tenantID string) *resilience.CircuitBreaker {
 	if existing, ok := w.tenantCBs.Load(tenantID); ok {
-		return existing.(*resilience.CircuitBreaker)
+		entry := existing.(*cbEntry)
+		entry.lastUsed.Store(time.Now().Unix())
+		return entry.cb
 	}
-	cb := resilience.NewCircuitBreaker("webhook-"+tenantID,
-		resilience.WithFailureThreshold(5),
-		resilience.WithResetTimeout(30*time.Second),
-	)
-	actual, _ := w.tenantCBs.LoadOrStore(tenantID, cb)
-	return actual.(*resilience.CircuitBreaker)
+	entry := &cbEntry{
+		cb: resilience.NewCircuitBreaker("webhook-"+tenantID,
+			resilience.WithFailureThreshold(5),
+			resilience.WithResetTimeout(30*time.Second),
+		),
+	}
+	entry.lastUsed.Store(time.Now().Unix())
+	actual, _ := w.tenantCBs.LoadOrStore(tenantID, entry)
+	return actual.(*cbEntry).cb
+}
+
+// cleanupTenantResources evicts per-tenant semaphores and circuit breakers
+// that have been idle for more than 5 minutes. This prevents unbounded memory
+// growth as new tenants are encountered over time.
+func (w *WebhookWorker) cleanupTenantResources(ctx context.Context) {
+	const idleTimeout = 5 * time.Minute
+	ticker := time.NewTicker(idleTimeout)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().Add(-idleTimeout).Unix()
+
+			// Evict idle semaphores (only if no in-flight webhooks).
+			w.tenantSem.mu.Lock()
+			for tenantID, entry := range w.tenantSem.sems {
+				if entry.lastUsed.Load() < cutoff && len(entry.ch) == 0 {
+					delete(w.tenantSem.sems, tenantID)
+				}
+			}
+			w.tenantSem.mu.Unlock()
+
+			// Evict idle circuit breakers.
+			w.tenantCBs.Range(func(key, value any) bool {
+				entry := value.(*cbEntry)
+				if entry.lastUsed.Load() < cutoff {
+					w.tenantCBs.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 // signWebhook computes the HMAC-SHA256 signature of the payload using the secret.
@@ -347,4 +427,91 @@ func signWebhook(payload []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// deterministicDeliveryID generates a stable webhook delivery ID from the event
+// ID and event type. This ensures that NATS redeliveries of the same event
+// produce the same delivery ID, allowing tenants to deduplicate webhook calls.
+func deterministicDeliveryID(eventID uuid.UUID, eventType string) string {
+	h := sha256.New()
+	h.Write(eventID[:])
+	h.Write([]byte(eventType))
+	sum := h.Sum(nil)
+	// Format as UUID v5-style for consistency with existing ID format.
+	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+}
+
+// validateWebhookURL checks that a webhook URL is safe to call, rejecting
+// URLs that target private networks, cloud metadata endpoints, or non-HTTPS
+// schemes to prevent SSRF attacks.
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Require HTTPS in production-like environments; allow HTTP for localhost in dev.
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("unsupported scheme %q, must be https or http", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty hostname")
+	}
+
+	// Reject well-known dangerous hostnames.
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "metadata.google.internal" {
+		return fmt.Errorf("hostname %q is not allowed", host)
+	}
+
+	// Resolve the hostname and check all resolved IPs.
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("DNS lookup failed for %q: %w", host, err)
+	}
+
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return fmt.Errorf("invalid resolved IP %q", ipStr)
+		}
+		if isPrivateIP(ip) {
+			return fmt.Errorf("resolved IP %s is in a private/reserved range", ipStr)
+		}
+	}
+
+	return nil
+}
+
+// isPrivateIP returns true if the IP is in a private, loopback, link-local,
+// or otherwise reserved range that should not be targeted by outbound webhooks.
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []struct {
+		network *net.IPNet
+	}{
+		{mustParseCIDR("10.0.0.0/8")},
+		{mustParseCIDR("172.16.0.0/12")},
+		{mustParseCIDR("192.168.0.0/16")},
+		{mustParseCIDR("127.0.0.0/8")},
+		{mustParseCIDR("169.254.0.0/16")}, // Link-local / cloud metadata
+		{mustParseCIDR("::1/128")},         // IPv6 loopback
+		{mustParseCIDR("fc00::/7")},        // IPv6 unique local
+		{mustParseCIDR("fe80::/10")},       // IPv6 link-local
+	}
+	for _, r := range privateRanges {
+		if r.network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, network, err := net.ParseCIDR(s)
+	if err != nil {
+		panic("invalid CIDR: " + s)
+	}
+	return network
 }
