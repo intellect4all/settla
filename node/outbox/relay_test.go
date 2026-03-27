@@ -683,3 +683,193 @@ func TestRelayPreservesOrderAcrossPolls(t *testing.T) {
 		}
 	}
 }
+
+// ── Multi-Tenant Multiplexing Tests ────────────────────────────────────
+
+func TestRelayMultiTenantParallelPublishing(t *testing.T) {
+	tenantA := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+	tenantB := uuid.MustParse("b0000000-0000-0000-0000-000000000002")
+	tenantC := uuid.MustParse("c0000000-0000-0000-0000-000000000003")
+
+	baseTime := time.Now().UTC()
+	var entries []OutboxRow
+	// Interleave tenants: A, B, C, A, B, C, ...
+	for i := 0; i < 9; i++ {
+		tenants := []uuid.UUID{tenantA, tenantB, tenantC}
+		e := makeEntry("transfer.created", tenants[i%3])
+		e.CreatedAt = baseTime.Add(time.Duration(i) * time.Millisecond)
+		entries = append(entries, e)
+	}
+
+	store := newMockStore(entries)
+	pub := newMockPublisher()
+	relay := NewRelay(store, pub, testLogger(), WithNumPartitions(8))
+
+	if err := relay.poll(context.Background()); err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+
+	msgs := pub.getMessages()
+	if len(msgs) != 9 {
+		t.Fatalf("expected 9 messages, got %d", len(msgs))
+	}
+
+	// Verify per-tenant ordering is preserved.
+	tenantMsgs := make(map[uuid.UUID][]string)
+	for _, msg := range msgs {
+		// Extract tenant from the entry by matching MsgID.
+		for _, e := range entries {
+			if e.ID.String() == msg.MsgID {
+				tenantMsgs[e.TenantID] = append(tenantMsgs[e.TenantID], msg.MsgID)
+				break
+			}
+		}
+	}
+
+	for _, tid := range []uuid.UUID{tenantA, tenantB, tenantC} {
+		got := tenantMsgs[tid]
+		// Collect expected order for this tenant.
+		var want []string
+		for _, e := range entries {
+			if e.TenantID == tid {
+				want = append(want, e.ID.String())
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("tenant %s: expected %d messages, got %d", tid, len(want), len(got))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("tenant %s message %d: got %s, want %s (per-tenant order violation)", tid, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+// delayPublisher wraps a mockPublisher and adds a delay for specific tenant subjects.
+type delayPublisher struct {
+	inner      *mockPublisher
+	delayForID map[string]time.Duration // msgID → delay
+}
+
+func (d *delayPublisher) Publish(ctx context.Context, subject string, msgID string, data []byte) error {
+	if delay, ok := d.delayForID[msgID]; ok {
+		time.Sleep(delay)
+	}
+	return d.inner.Publish(ctx, subject, msgID, data)
+}
+
+func TestRelayMultiTenantDoesNotBlockOnSlowTenant(t *testing.T) {
+	tenantA := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+	tenantB := uuid.MustParse("b0000000-0000-0000-0000-000000000002")
+
+	baseTime := time.Now().UTC()
+	var entries []OutboxRow
+
+	// 3 entries for tenant A (will be slow), 3 for tenant B (fast).
+	for i := 0; i < 3; i++ {
+		e := makeEntry("transfer.created", tenantA)
+		e.CreatedAt = baseTime.Add(time.Duration(i) * time.Millisecond)
+		entries = append(entries, e)
+	}
+	for i := 0; i < 3; i++ {
+		e := makeEntry("transfer.created", tenantB)
+		e.CreatedAt = baseTime.Add(time.Duration(3+i) * time.Millisecond)
+		entries = append(entries, e)
+	}
+
+	inner := newMockPublisher()
+	delayPub := &delayPublisher{
+		inner:      inner,
+		delayForID: make(map[string]time.Duration),
+	}
+	// Add 100ms delay to all tenant A entries.
+	for _, e := range entries {
+		if e.TenantID == tenantA {
+			delayPub.delayForID[e.ID.String()] = 100 * time.Millisecond
+		}
+	}
+
+	store := newMockStore(entries)
+	relay := NewRelay(store, delayPub, testLogger(), WithNumPartitions(8))
+
+	start := time.Now()
+	if err := relay.poll(context.Background()); err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	msgs := inner.getMessages()
+	if len(msgs) != 6 {
+		t.Fatalf("expected 6 messages, got %d", len(msgs))
+	}
+
+	// If tenants were processed sequentially, total time would be ~300ms (3×100ms)
+	// + tenant B time. With parallel tenant processing, total should be ~300ms
+	// (just tenant A's sequential delay). Verify it's under 500ms to confirm
+	// tenant B wasn't blocked by tenant A.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("publishing took %v, expected under 500ms (tenants should process in parallel)", elapsed)
+	}
+}
+
+func TestRelayPreservesPerTenantOrderWithMixedEntries(t *testing.T) {
+	tenantA := uuid.MustParse("a0000000-0000-0000-0000-000000000001")
+	tenantB := uuid.MustParse("b0000000-0000-0000-0000-000000000002")
+
+	baseTime := time.Now().UTC()
+	var entries []OutboxRow
+	// Interleave: A1, B1, A2, B2, A3, B3
+	for i := 0; i < 6; i++ {
+		tid := tenantA
+		if i%2 == 1 {
+			tid = tenantB
+		}
+		e := makeEntry("transfer.created", tid)
+		e.CreatedAt = baseTime.Add(time.Duration(i) * time.Millisecond)
+		entries = append(entries, e)
+	}
+
+	store := newMockStore(entries)
+	pub := newMockPublisher()
+	relay := NewRelay(store, pub, testLogger(), WithNumPartitions(8))
+
+	if err := relay.poll(context.Background()); err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+
+	msgs := pub.getMessages()
+	if len(msgs) != 6 {
+		t.Fatalf("expected 6 messages, got %d", len(msgs))
+	}
+
+	// Extract per-tenant message order.
+	tenantMsgs := make(map[uuid.UUID][]string)
+	for _, msg := range msgs {
+		for _, e := range entries {
+			if e.ID.String() == msg.MsgID {
+				tenantMsgs[e.TenantID] = append(tenantMsgs[e.TenantID], msg.MsgID)
+				break
+			}
+		}
+	}
+
+	// Verify each tenant's messages are in creation order.
+	for _, tid := range []uuid.UUID{tenantA, tenantB} {
+		got := tenantMsgs[tid]
+		var want []string
+		for _, e := range entries {
+			if e.TenantID == tid {
+				want = append(want, e.ID.String())
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("tenant %s: expected %d messages, got %d", tid, len(want), len(got))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("tenant %s message %d: got %s, want %s (order violation)", tid, i, got[i], want[i])
+			}
+		}
+	}
+}

@@ -276,33 +276,46 @@ func (r *Relay) poll(ctx context.Context) error {
 
 const maxPublishConcurrency = 50
 
-// publishBatch publishes a batch of outbox entries to NATS concurrently.
+// publishBatch publishes a batch of outbox entries to NATS with per-tenant
+// sequential ordering. Entries for the same tenant are published in creation
+// order (required for correct NATS consumer processing), while different
+// tenants are published concurrently for throughput.
 func (r *Relay) publishBatch(ctx context.Context, entries []OutboxRow) {
-	sem := make(chan struct{}, maxPublishConcurrency)
-	var wg sync.WaitGroup
-
+	// Group entries by tenant, preserving order within each group.
+	groups := make(map[uuid.UUID][]OutboxRow)
+	var tenantOrder []uuid.UUID
 	for _, entry := range entries {
-		// Skip zero entries produced by MustNewOutboxEvent/MustNewOutboxIntent
-		// when an invalid event type is logged-and-returned instead of panicking.
 		if entry.ID == uuid.Nil {
 			r.logger.Warn("settla-outbox: skipping zero outbox entry (invalid event type at creation time)")
 			continue
 		}
+		if _, seen := groups[entry.TenantID]; !seen {
+			tenantOrder = append(tenantOrder, entry.TenantID)
+		}
+		groups[entry.TenantID] = append(groups[entry.TenantID], entry)
+	}
+
+	sem := make(chan struct{}, maxPublishConcurrency)
+	var wg sync.WaitGroup
+	for _, tid := range tenantOrder {
+		tenantEntries := groups[tid]
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(e OutboxRow) {
+		go func(batch []OutboxRow) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := r.publishEntry(ctx, e); err != nil {
-				r.logger.Warn("settla-outbox: failed to publish entry",
-					"entry_id", e.ID,
-					"event_type", e.EventType,
-					"tenant_id", e.TenantID,
-					"retry_count", e.RetryCount,
-					"error", err,
-				)
+			for _, e := range batch {
+				if err := r.publishEntry(ctx, e); err != nil {
+					r.logger.Warn("settla-outbox: failed to publish entry",
+						"entry_id", e.ID,
+						"event_type", e.EventType,
+						"tenant_id", e.TenantID,
+						"retry_count", e.RetryCount,
+						"error", err,
+					)
+				}
 			}
-		}(entry)
+		}(tenantEntries)
 	}
 	wg.Wait()
 }
