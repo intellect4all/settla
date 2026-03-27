@@ -41,7 +41,7 @@ func (s State) String() string {
 	}
 }
 
-// Sentinel errors returned by CircuitBreaker.
+// ErrCircuitOpen Sentinel errors returned by CircuitBreaker.
 var (
 	ErrCircuitOpen = errors.New("settla-resilience: circuit breaker is open")
 )
