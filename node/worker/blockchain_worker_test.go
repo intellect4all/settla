@@ -64,7 +64,7 @@ type mockBlockchainClient struct {
 	getErr   error
 }
 
-func (m *mockBlockchainClient) Chain() string { return m.chain }
+func (m *mockBlockchainClient) Chain() domain.CryptoChain { return domain.CryptoChain(m.chain) }
 func (m *mockBlockchainClient) GetBalance(ctx context.Context, address string, token string) (decimal.Decimal, error) {
 	return decimal.Zero, nil
 }

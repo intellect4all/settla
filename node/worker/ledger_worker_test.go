@@ -134,7 +134,7 @@ func TestLedgerWorker_PostSuccess(t *testing.T) {
 	if len(posts) != 1 {
 		t.Fatalf("expected 1 post call, got %d", len(posts))
 	}
-	if posts[0].IdempotencyKey != fmt.Sprintf("onramp:%s", transferID) {
+	if string(posts[0].IdempotencyKey) != fmt.Sprintf("onramp:%s", transferID) {
 		t.Errorf("expected idempotency key onramp:%s, got %s", transferID, posts[0].IdempotencyKey)
 	}
 	if len(posts[0].Lines) != 3 {
@@ -217,7 +217,7 @@ func TestLedgerWorker_ReverseSuccess(t *testing.T) {
 	if len(posts) != 1 {
 		t.Fatalf("expected 1 post call for reversal, got %d", len(posts))
 	}
-	if posts[0].IdempotencyKey != fmt.Sprintf("reverse:%s", transferID) {
+	if string(posts[0].IdempotencyKey) != fmt.Sprintf("reverse:%s", transferID) {
 		t.Errorf("expected idempotency key reverse:%s, got %s", transferID, posts[0].IdempotencyKey)
 	}
 	if posts[0].ReferenceType != "reversal" {
@@ -356,7 +356,7 @@ func TestLedgerWorker_PostIdempotency(t *testing.T) {
 		t.Fatalf("expected 2 post calls (TB handles idempotency), got %d", len(posts))
 	}
 	for _, post := range posts {
-		if post.IdempotencyKey != idempotencyKey {
+		if string(post.IdempotencyKey) != idempotencyKey {
 			t.Errorf("expected idempotency key %s, got %s", idempotencyKey, post.IdempotencyKey)
 		}
 	}

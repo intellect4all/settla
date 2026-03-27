@@ -206,7 +206,7 @@ func (w *BlockchainWorker) handleSend(ctx context.Context, event domain.Event) e
 		TenantID:   payload.TenantID,
 		TransferID: payload.TransferID,
 		TxType:     "blockchain",
-		Provider:   payload.Chain,
+		Provider:   string(payload.Chain),
 	})
 	claimCancel()
 	if err != nil {
@@ -226,7 +226,7 @@ func (w *BlockchainWorker) handleSend(ctx context.Context, event domain.Event) e
 		return nil
 	}
 
-	client, ok := w.blockchainClients[payload.Chain]
+	client, ok := w.blockchainClients[string(payload.Chain)]
 	if !ok {
 		w.logger.Error("settla-blockchain-worker: unknown chain",
 			"chain", payload.Chain,
@@ -250,7 +250,7 @@ func (w *BlockchainWorker) handleSend(ctx context.Context, event domain.Event) e
 	}
 
 	callCtx, callCancel := budget.Allocate(45 * time.Second)
-	chainTx, sendErr := w.executeBlockchain(callCtx, payload.Chain, client, domain.TxRequest{
+	chainTx, sendErr := w.executeBlockchain(callCtx, string(payload.Chain), client, domain.TxRequest{
 		From:   payload.From,
 		To:     payload.To,
 		Token:  payload.Token,
@@ -358,7 +358,7 @@ func (w *BlockchainWorker) handleSend(ctx context.Context, event domain.Event) e
 
 // checkPendingTx queries the chain for the current status of a pending transaction.
 func (w *BlockchainWorker) checkPendingTx(ctx context.Context, payload *domain.BlockchainSendPayload, existing *domain.ProviderTx) error {
-	client, ok := w.blockchainClients[payload.Chain]
+	client, ok := w.blockchainClients[string(payload.Chain)]
 	if !ok {
 		return fmt.Errorf("settla-blockchain-worker: unknown chain %s for pending tx check", payload.Chain)
 	}

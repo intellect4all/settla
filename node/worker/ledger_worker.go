@@ -94,7 +94,7 @@ func (w *LedgerWorker) handlePost(ctx context.Context, event domain.Event) error
 	entry := domain.JournalEntry{
 		ID:             uuid.Must(uuid.NewV7()),
 		TenantID:       &payload.TenantID,
-		IdempotencyKey: payload.IdempotencyKey,
+		IdempotencyKey: domain.IdempotencyKey(payload.IdempotencyKey),
 		PostedAt:       time.Now().UTC(),
 		EffectiveDate:  time.Now().UTC(),
 		Description:    payload.Description,
@@ -107,7 +107,7 @@ func (w *LedgerWorker) handlePost(ctx context.Context, event domain.Event) error
 		entry.Lines[i] = domain.EntryLine{
 			ID: uuid.Must(uuid.NewV7()),
 			Posting: domain.Posting{
-				AccountCode: line.AccountCode,
+				AccountCode: domain.AccountCode(line.AccountCode),
 				EntryType:   domain.EntryType(line.EntryType),
 				Amount:      line.Amount,
 				Currency:    domain.Currency(line.Currency),
@@ -163,7 +163,7 @@ func (w *LedgerWorker) handleReverse(ctx context.Context, event domain.Event) er
 	reversalEntry := domain.JournalEntry{
 		ID:             uuid.Must(uuid.NewV7()),
 		TenantID:       &payload.TenantID,
-		IdempotencyKey: reverseIdempotencyKey,
+		IdempotencyKey: domain.IdempotencyKey(reverseIdempotencyKey),
 		PostedAt:       time.Now().UTC(),
 		EffectiveDate:  time.Now().UTC(),
 		Description:    fmt.Sprintf("Reversal: %s", payload.Description),
@@ -182,7 +182,7 @@ func (w *LedgerWorker) handleReverse(ctx context.Context, event domain.Event) er
 		reversalEntry.Lines[i] = domain.EntryLine{
 			ID: uuid.Must(uuid.NewV7()),
 			Posting: domain.Posting{
-				AccountCode: line.AccountCode,
+				AccountCode: domain.AccountCode(line.AccountCode),
 				EntryType:   reversedType,
 				Amount:      line.Amount,
 				Currency:    domain.Currency(line.Currency),
