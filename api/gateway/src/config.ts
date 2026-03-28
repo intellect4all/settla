@@ -21,6 +21,10 @@ export const config = {
   // gRPC connection to settla-server
   grpcUrl: process.env.SETTLA_SERVER_GRPC_URL || "localhost:9090",
   grpcPoolSize: Number(process.env.SETTLA_GRPC_POOL_SIZE) || 50,
+  grpcTls: process.env.SETTLA_GRPC_TLS === "true",
+  grpcCaCertPath: process.env.SETTLA_GRPC_CA_CERT || "",
+  grpcCertPath: process.env.SETTLA_GRPC_CERT || "",
+  grpcKeyPath: process.env.SETTLA_GRPC_KEY || "",
 
   // Per-service gRPC deadlines (milliseconds)
   grpcDeadlineMs: {

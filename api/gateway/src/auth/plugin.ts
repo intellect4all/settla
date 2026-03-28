@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fp from "fastify-plugin";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { Redis } from "ioredis";
@@ -61,6 +61,51 @@ const publicRateLimitCleanupTimer = setInterval(() => {
   }
 }, 30_000);
 publicRateLimitCleanupTimer.unref();
+
+/**
+ * Per-IP rate limiter for failed authentication attempts.
+ * Limits to 10 failures per 60-second window per source IP to prevent
+ * API key brute-force enumeration attacks.
+ */
+const AUTH_FAILURE_RATE_LIMIT = 10;
+const AUTH_FAILURE_WINDOW_MS = 60_000;
+
+interface AuthFailureEntry {
+  count: number;
+  windowStart: number;
+}
+const authFailureRateLimitMap = new Map<string, AuthFailureEntry>();
+
+// Cleanup stale auth failure entries every 60s
+const authFailureCleanupTimer = setInterval(() => {
+  const cutoff = Date.now() - 120_000;
+  for (const [key, entry] of authFailureRateLimitMap) {
+    if (entry.windowStart < cutoff) {
+      authFailureRateLimitMap.delete(key);
+    }
+  }
+}, 60_000);
+authFailureCleanupTimer.unref();
+
+function checkAuthFailureRateLimit(ip: string): boolean {
+  const now = Date.now();
+  let entry = authFailureRateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart >= AUTH_FAILURE_WINDOW_MS) {
+    return false; // no failures in current window
+  }
+  return entry.count >= AUTH_FAILURE_RATE_LIMIT;
+}
+
+function recordAuthFailure(ip: string): void {
+  const now = Date.now();
+  let entry = authFailureRateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart >= AUTH_FAILURE_WINDOW_MS) {
+    entry = { count: 1, windowStart: now };
+    authFailureRateLimitMap.set(ip, entry);
+  } else {
+    entry.count++;
+  }
+}
 
 export interface AuthPluginOpts {
   cache: TenantAuthCache;
@@ -230,9 +275,25 @@ export const authPlugin = fp(async function authPluginInner(
         return;
       }
 
+      // Check per-IP auth failure rate limit before processing credentials.
+      if (checkAuthFailureRateLimit(request.ip)) {
+        app.log.warn(
+          { ip: request.ip, path: request.url },
+          "auth: too many failed auth attempts from IP",
+        );
+        return reply
+          .status(429)
+          .header("Retry-After", "60")
+          .send({
+            error: "TOO_MANY_AUTH_FAILURES",
+            message: "Too many failed authentication attempts. Try again later.",
+          });
+      }
+
       const authHeader = request.headers.authorization;
 
       if (!authHeader || (!authHeader.startsWith("Bearer ") && !authHeader.startsWith("bearer "))) {
+        recordAuthFailure(request.ip);
         app.log.warn(
           { ip: request.ip, userAgent: request.headers["user-agent"], path: request.url },
           "auth: missing or invalid Authorization header",
@@ -279,6 +340,7 @@ export const authPlugin = fp(async function authPluginInner(
         if (!auth) {
           const resolved = await resolveTenant(keyHash);
           if (!resolved) {
+            recordAuthFailure(request.ip);
             app.log.warn(
               { ip: request.ip, userAgent: request.headers["user-agent"], path: request.url },
               "auth: invalid API key",
@@ -418,7 +480,32 @@ export const authPlugin = fp(async function authPluginInner(
   );
 });
 
-/** SHA-256 hash of an API key. Keys are never stored raw. */
+/**
+ * Hash an API key for storage/lookup. Uses HMAC-SHA256 when
+ * SETTLA_API_KEY_HMAC_SECRET is set, plain SHA-256 otherwise.
+ * Keys are never stored raw.
+ */
+const API_KEY_HMAC_SECRET = process.env.SETTLA_API_KEY_HMAC_SECRET || "";
+
+// Warn at startup if HMAC secret is not configured — API key hashes will use
+// plain SHA-256 which is weaker against database breach + rainbow table attacks.
+if (!API_KEY_HMAC_SECRET) {
+  const env = process.env.SETTLA_ENV || process.env.NODE_ENV || "development";
+  if (env === "production") {
+    console.error(
+      "FATAL: SETTLA_API_KEY_HMAC_SECRET is required in production — refusing to start with plain SHA-256 API key hashing",
+    );
+    process.exit(1);
+  } else {
+    console.warn(
+      "WARNING: SETTLA_API_KEY_HMAC_SECRET is not set — API keys hashed with plain SHA-256 (not safe for production)",
+    );
+  }
+}
+
 export function hashApiKey(key: string): string {
+  if (API_KEY_HMAC_SECRET) {
+    return createHmac("sha256", API_KEY_HMAC_SECRET).update(key).digest("hex");
+  }
   return createHash("sha256").update(key).digest("hex");
 }

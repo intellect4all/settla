@@ -1,6 +1,19 @@
 import * as grpc from "@grpc/grpc-js";
+import * as fs from "node:fs";
 
 export type CircuitBreakerState = "closed" | "open" | "half-open";
+
+/** Options for configuring TLS on the gRPC connection pool. */
+export interface GrpcPoolTlsOptions {
+  /** Enable TLS for gRPC connections. */
+  tls?: boolean;
+  /** Path to the CA certificate file (PEM). */
+  caCertPath?: string;
+  /** Path to the client certificate file (PEM) for mTLS. */
+  certPath?: string;
+  /** Path to the client private key file (PEM) for mTLS. */
+  keyPath?: string;
+}
 
 /**
  * GrpcPool maintains a pool of persistent gRPC channels to settla-server.
@@ -34,13 +47,34 @@ export class GrpcPool {
   private halfOpenSuccesses = 0;
   private halfOpenThreshold: number;
 
-  constructor(target: string, poolSize: number, failureThreshold = 5, cooldownMs = 10_000, halfOpenThreshold = 3) {
+  constructor(
+    target: string,
+    poolSize: number,
+    failureThreshold = 5,
+    cooldownMs = 10_000,
+    halfOpenThreshold = 3,
+    tlsOptions?: GrpcPoolTlsOptions,
+  ) {
     this.target = target;
     this.poolSize = poolSize;
-    this.credentials = grpc.credentials.createInsecure();
     this.failureThreshold = failureThreshold;
     this.cooldownMs = cooldownMs;
     this.halfOpenThreshold = halfOpenThreshold;
+
+    if (tlsOptions?.tls) {
+      const rootCerts = tlsOptions.caCertPath
+        ? fs.readFileSync(tlsOptions.caCertPath)
+        : null;
+      const clientKey = tlsOptions.keyPath
+        ? fs.readFileSync(tlsOptions.keyPath)
+        : null;
+      const clientCert = tlsOptions.certPath
+        ? fs.readFileSync(tlsOptions.certPath)
+        : null;
+      this.credentials = grpc.credentials.createSsl(rootCerts, clientKey, clientCert);
+    } else {
+      this.credentials = grpc.credentials.createInsecure();
+    }
   }
 
   /** Initialise all channels in the pool. */

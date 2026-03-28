@@ -28,6 +28,7 @@ import { healthRoutes } from "./routes/health.js";
 import { quoteRoutes } from "./routes/quotes.js";
 import { transferRoutes } from "./routes/transfers.js";
 import { treasuryRoutes } from "./routes/treasury.js";
+import { treasurySseRoutes } from "./routes/treasury-sse.js";
 import { ledgerRoutes } from "./routes/ledger.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { routeRoutes } from "./routes/routes.js";
@@ -225,17 +226,30 @@ export async function buildApp(deps?: {
   }
 
   let grpcClient: SettlaGrpcClient;
+  let grpcPool: GrpcPool | null = null;
   if (deps?.grpc) {
     grpcClient = deps.grpc;
   } else {
-    const pool = new GrpcPool(config.grpcUrl, config.grpcPoolSize);
-    pool.start();
-    grpcClient = new SettlaGrpcClient(pool);
+    grpcPool = new GrpcPool(
+      config.grpcUrl,
+      config.grpcPoolSize,
+      undefined, // failureThreshold
+      undefined, // cooldownMs
+      undefined, // halfOpenThreshold
+      {
+        tls: config.grpcTls,
+        caCertPath: config.grpcCaCertPath || undefined,
+        certPath: config.grpcCertPath || undefined,
+        keyPath: config.grpcKeyPath || undefined,
+      },
+    );
+    grpcPool.start();
+    grpcClient = new SettlaGrpcClient(grpcPool);
 
     server.addHook("onClose", async () => {
       // Drain in-flight gRPC requests before closing channels
-      await pool.drain();
-      await pool.close();
+      await grpcPool!.drain();
+      await grpcPool!.close();
     });
   }
 
@@ -305,10 +319,11 @@ export async function buildApp(deps?: {
   });
 
   // ── Routes ──────────────────────────────────────────────────────────────
-  await server.register(healthRoutes);
+  await server.register(healthRoutes, { grpcPool, redis });
   await server.register(quoteRoutes, { grpc: grpcClient });
   await server.register(transferRoutes, { grpc: grpcClient, redis });
   await server.register(treasuryRoutes, { grpc: grpcClient });
+  await server.register(treasurySseRoutes, { grpc: grpcClient });
   await server.register(ledgerRoutes, { grpc: grpcClient });
   await server.register(routeRoutes, { grpc: grpcClient });
   // Pass invalidateAuthCache so the revoke route can flush caches

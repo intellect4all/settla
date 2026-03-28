@@ -297,6 +297,54 @@ export class SettlaGrpcClient {
     return this.callTreasury("getLiquidityReport", req, requestId);
   }
 
+  requestTopUp(req: {
+    tenantId: string;
+    currency: string;
+    location: string;
+    amount: string;
+    method: string;
+  }, requestId?: string): Promise<any> {
+    return this.callTreasury("requestTopUp", req, requestId);
+  }
+
+  requestWithdrawal(req: {
+    tenantId: string;
+    currency: string;
+    location: string;
+    amount: string;
+    method: string;
+    destination: string;
+  }, requestId?: string): Promise<any> {
+    return this.callTreasury("requestWithdrawal", req, requestId);
+  }
+
+  getPositionTransaction(req: {
+    tenantId: string;
+    transactionId: string;
+  }, requestId?: string): Promise<any> {
+    return this.callTreasury("getPositionTransaction", req, requestId);
+  }
+
+  listPositionTransactions(req: {
+    tenantId: string;
+    limit?: number;
+    offset?: number;
+  }, requestId?: string): Promise<any> {
+    return this.callTreasury("listPositionTransactions", req, requestId);
+  }
+
+  getPositionEventHistory(req: {
+    tenantId: string;
+    currency: string;
+    location: string;
+    from?: { seconds: number; nanos: number };
+    to?: { seconds: number; nanos: number };
+    limit?: number;
+    offset?: number;
+  }, requestId?: string): Promise<any> {
+    return this.callTreasury("getPositionEventHistory", req, requestId);
+  }
+
   // ── Ledger Service ────────────────────────────────────────────────────
 
   getAccounts(req: {
