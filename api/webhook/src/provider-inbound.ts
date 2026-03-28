@@ -6,57 +6,32 @@ import {
   StringCodec,
 } from "nats";
 import type { Logger } from "./logger.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { verifySignature } from "./signature.js";
 import { signatureFailuresTotal } from "./metrics.js";
 
 const sc = StringCodec();
 
-/**
- * Normalized provider webhook payload published to NATS for processing
- * by the InboundWebhookWorker (Go).
- */
-export interface ProviderWebhookPayload {
-  transfer_id: string;
-  tenant_id: string;
-  provider_id: string;
-  provider_ref: string;
-  status: string; // "completed" | "failed"
-  tx_hash?: string;
-  error?: string;
-  error_code?: string;
-  tx_type: string; // "onramp" | "offramp"
-}
-
-/**
- * Raw inbound webhook body from a provider. Each provider sends a different
- * format; the normalizer converts it to ProviderWebhookPayload.
- */
-interface RawProviderWebhook {
-  // Common fields most providers include
-  reference?: string;
-  external_id?: string;
-  status?: string;
-  tx_hash?: string;
-  error?: string;
-  error_code?: string;
-  type?: string; // "onramp" | "offramp"
-  transfer_id?: string;
-  tenant_id?: string;
-  [key: string]: unknown;
-}
-
 /** Default header used to carry the HMAC-SHA256 signature from a provider. */
 const DEFAULT_SIGNATURE_HEADER = "x-webhook-signature";
+
+/**
+ * NATS subject for raw inbound webhooks. The Go InboundWebhookWorker
+ * normalizes these using the provider's registered WebhookNormalizer.
+ */
+const RAW_WEBHOOK_SUBJECT = "settla.provider.inbound.raw";
+
+/**
+ * NATS event type for raw inbound webhooks.
+ */
+const RAW_WEBHOOK_EVENT_TYPE = "provider.inbound.raw";
 
 interface ProviderInboundConfig {
   natsUrl: string;
   /**
    * HMAC-SHA256 signing secrets keyed by providerSlug.
-   * When a secret is configured for a provider, any webhook that carries a
-   * signature header will be verified.  Webhooks with an invalid signature
-   * are rejected with 401.  Webhooks with no signature header log a warning
-   * but proceed (backward-compatibility).
+   * Webhooks with an invalid signature are rejected with 401.
+   * Webhooks with no configured secret are rejected with 403.
    */
   signingSecrets?: Record<string, string>;
   /**
@@ -68,9 +43,12 @@ interface ProviderInboundConfig {
 
 /**
  * Registers the POST /webhooks/providers/:providerSlug route on the Fastify
- * instance. This endpoint receives raw webhooks from payment providers,
- * normalizes the payload, and publishes to the SETTLA_PROVIDER_WEBHOOKS
- * NATS stream for async processing by InboundWebhookWorker.
+ * instance. This endpoint is a pure HTTP-to-NATS relay:
+ *
+ * 1. Verify HMAC-SHA256 signature using per-provider secret
+ * 2. Forward the raw body + provider slug + metadata to NATS
+ * 3. Normalization happens in Go (InboundWebhookWorker) using the provider's
+ *    registered WebhookNormalizer
  */
 export async function registerProviderInboundRoutes(
   server: FastifyInstance,
@@ -98,26 +76,23 @@ export async function registerProviderInboundRoutes(
   }
 
   // Parse the body as a raw buffer so we can compute HMAC over the exact
-  // bytes the provider sent, then also JSON-parse for normalization.
+  // bytes the provider sent.
   server.addContentTypeParser(
     "application/json",
     { parseAs: "buffer" },
     (_req, body, done) => {
-      try {
-        done(null, { raw: body as Buffer, parsed: JSON.parse((body as Buffer).toString()) });
-      } catch (err) {
-        done(err as Error, undefined);
-      }
+      done(null, body as Buffer);
     }
   );
 
   server.post<{
     Params: { providerSlug: string };
-    Body: { raw: Buffer; parsed: RawProviderWebhook };
+    Body: Buffer;
   }>(
     "/webhooks/providers/:providerSlug",
     async (request, reply) => {
       const { providerSlug } = request.params;
+      const rawBuffer = request.body;
 
       // Determine which header carries the signature for this provider
       const sigHeaderName =
@@ -127,6 +102,7 @@ export async function registerProviderInboundRoutes(
       logger.info("provider-inbound: received webhook", {
         provider: providerSlug,
         has_signature: !!signature,
+        body_size: rawBuffer.length,
       });
 
       // ── Signature verification ────────────────────────────────────────
@@ -141,7 +117,7 @@ export async function registerProviderInboundRoutes(
         return reply.status(401).send({ error: "missing signature" });
       }
 
-      const rawBody = request.body.raw.toString("utf8");
+      const rawBody = rawBuffer.toString("utf8");
       if (!verifySignature(rawBody, secret, signature)) {
         signatureFailuresTotal.inc({ provider: providerSlug });
         logger.warn("provider-inbound: invalid webhook signature", { providerSlug });
@@ -159,47 +135,38 @@ export async function registerProviderInboundRoutes(
         return reply.status(503).send({ error: "service unavailable" });
       }
 
-      const body = request.body?.parsed;
-      if (!body || typeof body !== "object") {
-        return reply.status(400).send({ error: "invalid request body" });
-      }
+      // Build idempotency key: provider slug + SHA-256 prefix of raw body.
+      // This ensures the same payload from the same provider is deduplicated.
+      const bodyHash = createHash("sha256").update(rawBuffer).digest("hex").slice(0, 32);
+      const idempotencyKey = `${providerSlug}-${bodyHash}`;
 
-      // Normalize the provider-specific payload into canonical format
-      const normalized = normalizePayload(providerSlug, body);
-      if (!normalized) {
-        logger.warn("provider-inbound: could not normalize webhook payload", {
-          provider: providerSlug,
-        });
-        return reply.status(400).send({ error: "could not normalize webhook payload" });
-      }
-
-      // Determine NATS subject based on tx_type
-      const eventType =
-        normalized.tx_type === "offramp"
-          ? "provider.inbound.offramp.webhook"
-          : "provider.inbound.onramp.webhook";
-
-      const natsSubject = `settla.provider.inbound.${eventType.split("provider.inbound.")[1]}`;
-
+      // Forward raw payload to NATS — normalization happens in Go.
       const event = {
         ID: randomUUID(),
-        TenantID: normalized.tenant_id,
-        Type: eventType,
+        Type: RAW_WEBHOOK_EVENT_TYPE,
         Timestamp: new Date().toISOString(),
-        Data: normalized,
+        Data: {
+          provider_slug: providerSlug,
+          raw_body: rawBuffer.toString("base64"),
+          idempotency_key: idempotencyKey,
+          http_headers: {
+            "content-type": request.headers["content-type"] ?? "",
+            "user-agent": request.headers["user-agent"] ?? "",
+          },
+          source_ip: request.ip,
+        },
       };
 
       try {
         const data = sc.encode(JSON.stringify(event));
-        await js.publish(natsSubject, data, {
-          msgID: `webhook-${providerSlug}-${normalized.transfer_id}-${normalized.status}`,
+        await js.publish(RAW_WEBHOOK_SUBJECT, data, {
+          msgID: idempotencyKey,
         });
 
-        logger.info("provider-inbound: published to NATS", {
+        logger.info("provider-inbound: published raw webhook to NATS", {
           provider: providerSlug,
-          subject: natsSubject,
-          transfer_id: normalized.transfer_id,
-          status: normalized.status,
+          subject: RAW_WEBHOOK_SUBJECT,
+          idempotency_key: idempotencyKey,
         });
 
         return reply.status(200).send({ ok: true });
@@ -222,63 +189,4 @@ export async function registerProviderInboundRoutes(
       }
     },
   };
-}
-
-/**
- * Normalizes a raw provider webhook into the canonical ProviderWebhookPayload.
- * Returns null if required fields are missing.
- */
-function normalizePayload(
-  providerSlug: string,
-  raw: RawProviderWebhook
-): ProviderWebhookPayload | null {
-  const transferId = raw.transfer_id ?? raw.reference;
-  const tenantId = raw.tenant_id;
-  const status = raw.status;
-
-  if (!transferId || !tenantId || !status) {
-    return null;
-  }
-
-  // Map provider-reported status to our canonical statuses
-  const normalizedStatus = normalizeStatus(status);
-  if (!normalizedStatus) {
-    return null;
-  }
-
-  return {
-    transfer_id: transferId,
-    tenant_id: tenantId,
-    provider_id: providerSlug,
-    provider_ref: raw.external_id ?? "",
-    status: normalizedStatus,
-    tx_hash: raw.tx_hash,
-    error: raw.error,
-    error_code: raw.error_code,
-    tx_type: raw.type ?? "onramp",
-  };
-}
-
-/**
- * Maps various provider status strings to our canonical "completed" or "failed".
- */
-function normalizeStatus(status: string): string | null {
-  const s = status.toLowerCase();
-  switch (s) {
-    case "completed":
-    case "success":
-    case "successful":
-    case "confirmed":
-      return "completed";
-    case "failed":
-    case "failure":
-    case "error":
-    case "rejected":
-    case "declined":
-      return "failed";
-    default:
-      // Unknown status — could be "pending" or provider-specific.
-      // We only process terminal statuses.
-      return null;
-  }
 }

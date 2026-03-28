@@ -1,14 +1,14 @@
 /**
- * Tests for provider inbound webhook signature verification.
+ * Tests for provider inbound webhook relay (signature verification + raw forwarding).
  *
  * Covers:
- *   1. Valid signature -> 200 accepted
+ *   1. Valid signature -> 200, raw payload published to NATS
  *   2. Invalid signature -> 401 rejected
- *   3. Missing signature (secret configured) -> warning logged, 200 accepted
- *   4. No secret configured (no sig) -> warning logged, 200 accepted
- *   5. No secret configured (sig present) -> 200 accepted (no verification)
- *   6. Custom signature header override -> respected
- *   7. NATS unavailable -> 503 (unchanged behaviour)
+ *   3. Missing signature -> 401 rejected
+ *   4. No secret configured -> 403 rejected
+ *   5. Custom signature header override -> respected
+ *   6. NATS unavailable -> 503
+ *   7. Published NATS payload is raw (base64 body + metadata, no normalization)
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -58,13 +58,10 @@ function buildLogger(): Logger & { warnings: string[]; errors: string[] } {
 const PROVIDER_SLUG = "test-provider";
 const SECRET = "whsec_test_signing_secret";
 
-/** Canonical valid payload that normalizePayload can handle */
+/** Sample webhook body — format doesn't matter since TS no longer normalizes. */
 const validBody = {
-  transfer_id: "transfer-uuid-001",
-  tenant_id: "tenant-uuid-001",
-  status: "completed",
-  type: "onramp",
-  external_id: "ext-ref-001",
+  event: "charge.success",
+  data: { reference: "ref-001", amount: 5000 },
 };
 
 async function buildServer(opts: {
@@ -102,7 +99,7 @@ async function buildServer(opts: {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("provider-inbound signature verification", () => {
+describe("provider-inbound webhook relay", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConnect.mockResolvedValue({
@@ -112,7 +109,7 @@ describe("provider-inbound signature verification", () => {
     mockPublish.mockResolvedValue(undefined);
   });
 
-  describe("when a signing secret IS configured", () => {
+  describe("signature verification", () => {
     it("accepts a request with a valid signature and returns 200", async () => {
       const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
@@ -140,7 +137,7 @@ describe("provider-inbound signature verification", () => {
     });
 
     it("rejects a request with an invalid signature with 401", async () => {
-      const { server, logger, teardown } = await buildServer({
+      const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
       });
 
@@ -162,16 +159,13 @@ describe("provider-inbound signature verification", () => {
         expect(JSON.parse(response.body)).toMatchObject({
           error: "invalid signature",
         });
-        expect(logger.errors).toContain(
-          "provider-inbound: webhook signature verification failed"
-        );
       } finally {
         await teardown();
       }
     });
 
-    it("logs a warning and proceeds (200) when signature header is absent", async () => {
-      const { server, logger, teardown } = await buildServer({
+    it("rejects with 401 when signature header is absent", async () => {
+      const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
       });
 
@@ -183,17 +177,35 @@ describe("provider-inbound signature verification", () => {
           payload: JSON.stringify(validBody),
         });
 
-        // backward-compat: missing sig is not a hard rejection
-        expect(response.statusCode).toBe(200);
-        expect(logger.warnings).toContain(
-          "provider-inbound: webhook received without signature"
-        );
+        expect(response.statusCode).toBe(401);
+        expect(JSON.parse(response.body)).toMatchObject({
+          error: "missing signature",
+        });
       } finally {
         await teardown();
       }
     });
 
-    it("rejects a tampered body even if the signature was valid for original body", async () => {
+    it("rejects with 403 when no secret is configured for provider", async () => {
+      const { server, teardown } = await buildServer({
+        signingSecrets: {},
+      });
+
+      try {
+        const response = await server.inject({
+          method: "POST",
+          url: `/webhooks/providers/${PROVIDER_SLUG}`,
+          headers: { "content-type": "application/json" },
+          payload: JSON.stringify(validBody),
+        });
+
+        expect(response.statusCode).toBe(403);
+      } finally {
+        await teardown();
+      }
+    });
+
+    it("rejects a tampered body even if signature was valid for original", async () => {
       const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
       });
@@ -201,9 +213,7 @@ describe("provider-inbound signature verification", () => {
       try {
         const originalBody = JSON.stringify(validBody);
         const sig = computeSignature(originalBody, SECRET);
-
-        // Send a different body but the signature of the original
-        const tamperedBody = JSON.stringify({ ...validBody, status: "failed" });
+        const tamperedBody = JSON.stringify({ ...validBody, event: "charge.failed" });
 
         const response = await server.inject({
           method: "POST",
@@ -222,59 +232,10 @@ describe("provider-inbound signature verification", () => {
     });
   });
 
-  describe("when NO signing secret is configured for the provider", () => {
-    it("accepts the request and logs a warning when no signature present", async () => {
-      const { server, logger, teardown } = await buildServer({
-        signingSecrets: {}, // no secret for PROVIDER_SLUG
-      });
-
-      try {
-        const response = await server.inject({
-          method: "POST",
-          url: `/webhooks/providers/${PROVIDER_SLUG}`,
-          headers: { "content-type": "application/json" },
-          payload: JSON.stringify(validBody),
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(logger.warnings).toContain(
-          "provider-inbound: webhook received without signature"
-        );
-      } finally {
-        await teardown();
-      }
-    });
-
-    it("accepts the request even when a signature header is present (no verification performed)", async () => {
-      const { server, teardown } = await buildServer({
-        signingSecrets: {},
-      });
-
-      try {
-        const body = JSON.stringify(validBody);
-        const sig = computeSignature(body, SECRET);
-
-        const response = await server.inject({
-          method: "POST",
-          url: `/webhooks/providers/${PROVIDER_SLUG}`,
-          headers: {
-            "content-type": "application/json",
-            "x-webhook-signature": sig,
-          },
-          payload: body,
-        });
-
-        expect(response.statusCode).toBe(200);
-      } finally {
-        await teardown();
-      }
-    });
-  });
-
-  describe("custom signature header override", () => {
+  describe("custom signature header", () => {
     const customHeader = "x-provider-hmac";
 
-    it("reads the signature from the configured custom header and accepts valid request", async () => {
+    it("reads signature from configured custom header", async () => {
       const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
         signatureHeaders: { [PROVIDER_SLUG]: customHeader },
@@ -295,24 +256,23 @@ describe("provider-inbound signature verification", () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(JSON.parse(response.body)).toMatchObject({ ok: true });
       } finally {
         await teardown();
       }
     });
+  });
 
-    it("treats default header as missing when a custom header is configured", async () => {
-      const { server, logger, teardown } = await buildServer({
+  describe("raw payload forwarding to NATS", () => {
+    it("publishes raw body as base64 with provider slug and metadata", async () => {
+      const { server, teardown } = await buildServer({
         signingSecrets: { [PROVIDER_SLUG]: SECRET },
-        signatureHeaders: { [PROVIDER_SLUG]: customHeader },
       });
 
       try {
         const body = JSON.stringify(validBody);
         const sig = computeSignature(body, SECRET);
 
-        // Signature in the wrong header — treated as absent
-        const response = await server.inject({
+        await server.inject({
           method: "POST",
           url: `/webhooks/providers/${PROVIDER_SLUG}`,
           headers: {
@@ -322,18 +282,31 @@ describe("provider-inbound signature verification", () => {
           payload: body,
         });
 
-        // Missing sig -> warning + proceed
-        expect(response.statusCode).toBe(200);
-        expect(logger.warnings).toContain(
-          "provider-inbound: webhook received without signature"
-        );
+        expect(mockPublish).toHaveBeenCalledTimes(1);
+
+        // Parse the published NATS message
+        const [subject, data, opts] = mockPublish.mock.calls[0];
+        expect(subject).toBe("settla.provider.inbound.raw");
+
+        const event = JSON.parse(data.toString());
+        expect(event.Type).toBe("provider.inbound.raw");
+        expect(event.Data.provider_slug).toBe(PROVIDER_SLUG);
+        expect(event.Data.idempotency_key).toMatch(new RegExp(`^${PROVIDER_SLUG}-[a-f0-9]{32}$`));
+        expect(event.Data.source_ip).toBeDefined();
+
+        // raw_body is base64 encoded
+        const decodedBody = Buffer.from(event.Data.raw_body, "base64").toString();
+        expect(JSON.parse(decodedBody)).toEqual(validBody);
+
+        // NATS msgID matches idempotency key
+        expect(opts.msgID).toBe(event.Data.idempotency_key);
       } finally {
         await teardown();
       }
     });
   });
 
-  describe("downstream error handling (unchanged behaviour)", () => {
+  describe("NATS unavailable", () => {
     it("returns 503 when NATS is unavailable", async () => {
       mockConnect.mockRejectedValueOnce(new Error("connection refused"));
 
@@ -342,17 +315,26 @@ describe("provider-inbound signature verification", () => {
 
       const { disconnect } = await registerProviderInboundRoutes(
         server,
-        { natsUrl: "nats://localhost:4222" },
+        {
+          natsUrl: "nats://localhost:4222",
+          signingSecrets: { [PROVIDER_SLUG]: SECRET },
+        },
         logger
       );
       await server.ready();
 
       try {
+        const body = JSON.stringify(validBody);
+        const sig = computeSignature(body, SECRET);
+
         const response = await server.inject({
           method: "POST",
           url: `/webhooks/providers/${PROVIDER_SLUG}`,
-          headers: { "content-type": "application/json" },
-          payload: JSON.stringify(validBody),
+          headers: {
+            "content-type": "application/json",
+            "x-webhook-signature": sig,
+          },
+          payload: body,
         });
 
         expect(response.statusCode).toBe(503);
@@ -375,7 +357,6 @@ describe("loadConfig providerSigningSecrets", () => {
       "PROVIDER_YELLOW_CARD_SIGNATURE_HEADER",
     ];
 
-    // Save originals and set test values
     for (const k of testKeys) {
       savedEnv[k] = process.env[k];
     }
@@ -383,8 +364,6 @@ describe("loadConfig providerSigningSecrets", () => {
     process.env.PROVIDER_KOTANI_PAY_WEBHOOK_SECRET = "secret-kp";
     process.env.PROVIDER_YELLOW_CARD_SIGNATURE_HEADER = "x-yc-signature";
 
-    // Reset module registry so the re-imported config.js re-evaluates
-    // loadConfig() against the updated process.env.
     vi.resetModules();
     const { loadConfig } = await import("../config.js");
 
@@ -394,7 +373,6 @@ describe("loadConfig providerSigningSecrets", () => {
     expect(cfg.providerSigningSecrets["kotani-pay"]).toBe("secret-kp");
     expect(cfg.providerSignatureHeaders["yellow-card"]).toBe("x-yc-signature");
 
-    // Restore env
     for (const k of testKeys) {
       if (savedEnv[k] === undefined) {
         delete process.env[k];
