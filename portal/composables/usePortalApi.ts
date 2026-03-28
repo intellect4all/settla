@@ -2,7 +2,7 @@ import type {
   TenantProfile, APIKeyInfo, CreateAPIKeyResponse, WebhookConfigResponse,
   DashboardMetrics, TransferStatsBucket, FeeReport,
   TransferListResponse, Transfer, TransferEvent,
-  Position, WebhookDeliveryInfo, WebhookDeliveryDetail,
+  Position, PositionTransaction, PositionEvent, WebhookDeliveryInfo, WebhookDeliveryDetail,
   WebhookDeliveryStats, WebhookSubscriptionsResponse, TestWebhookResult,
   StatusCount, CorridorMetric, LatencyPercentiles, VolumeComparison, ActivityItem,
   DepositSession, DepositSessionListResponse,
@@ -136,6 +136,37 @@ export function usePortalApi() {
 
   // Treasury
   const getPositions = () => request<{ positions: Position[] }>('/v1/treasury/positions')
+
+  const requestTopUp = (body: { currency: string; location: string; amount: string; method: string }) =>
+    request<{ transaction: PositionTransaction }>('/v1/treasury/topup', { method: 'POST', body: JSON.stringify(body) })
+
+  const requestWithdrawal = (body: { currency: string; location: string; amount: string; method: string; destination: string }) =>
+    request<{ transaction: PositionTransaction }>('/v1/treasury/withdraw', { method: 'POST', body: JSON.stringify(body) })
+
+  const listPositionTransactions = (params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams()
+    if (params?.limit) query.set('limit', String(params.limit))
+    if (params?.offset) query.set('offset', String(params.offset))
+    const qs = query.toString()
+    return request<{ transactions: PositionTransaction[]; totalCount: number }>(
+      `/v1/treasury/transactions${qs ? `?${qs}` : ''}`,
+    )
+  }
+
+  const getPositionTransaction = (id: string) =>
+    request<{ transaction: PositionTransaction }>(`/v1/treasury/transactions/${id}`)
+
+  const getPositionEventHistory = (currency: string, location: string, params?: { from?: string; to?: string; limit?: number; offset?: number }) => {
+    const query = new URLSearchParams()
+    if (params?.from) query.set('from', params.from)
+    if (params?.to) query.set('to', params.to)
+    if (params?.limit) query.set('limit', String(params.limit))
+    if (params?.offset) query.set('offset', String(params.offset))
+    const qs = query.toString()
+    return request<{ events: PositionEvent[]; totalCount: number }>(
+      `/v1/treasury/positions/${currency}/${location}/events${qs ? `?${qs}` : ''}`,
+    )
+  }
 
   // Webhook management
   const listWebhookDeliveries = (params?: {
@@ -315,6 +346,11 @@ export function usePortalApi() {
     getTransfer,
     getTransferEvents,
     getPositions,
+    requestTopUp,
+    requestWithdrawal,
+    listPositionTransactions,
+    getPositionTransaction,
+    getPositionEventHistory,
     listWebhookDeliveries,
     getWebhookDelivery,
     getWebhookDeliveryStats,

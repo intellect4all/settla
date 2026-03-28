@@ -180,6 +180,35 @@ export interface Position {
   updated_at: string
 }
 
+export interface PositionTransaction {
+  id: string
+  tenantId: string
+  type: 'TOP_UP' | 'WITHDRAWAL' | 'DEPOSIT_CREDIT' | 'INTERNAL_REBALANCE'
+  currency: string
+  location: string
+  amount: string
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+  method: string
+  destination: string
+  reference: string
+  failureReason: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PositionEvent {
+  id: string
+  positionId: string
+  tenantId: string
+  eventType: 'CREDIT' | 'DEBIT' | 'RESERVE' | 'RELEASE' | 'COMMIT' | 'CONSUME'
+  amount: string
+  balanceAfter: string
+  lockedAfter: string
+  referenceId: string
+  referenceType: string
+  recordedAt: string
+}
+
 export interface Column<T = any> {
   key: string
   label: string
