@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc/metadata"
 
 	pb "github.com/intellect4all/settla/gen/settla/v1"
 
@@ -117,10 +118,13 @@ func (m *mockPortalAuthStore) UpdateTenantMetadata(_ context.Context, tenantID u
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
+const testOpsAPIKey = "test-ops-api-key-for-unit-tests"
+
 func newTestServer(store *mockPortalAuthStore) *Server {
 	srv := &Server{
 		portalAuthStore: store,
 		jwtSecret:       []byte("test-jwt-secret-32-bytes-long!!!"),
+		opsAPIKey:       testOpsAPIKey,
 		logger:          slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 	return srv
@@ -135,7 +139,7 @@ func TestRegister_Success(t *testing.T) {
 	resp, err := srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Acme Fintech",
 		Email:       "alice@acme.example",
-		Password:    "strongpass123",
+		Password:    "Strongpass123",
 		DisplayName: "Alice",
 	})
 	if err != nil {
@@ -160,7 +164,7 @@ func TestRegister_Success(t *testing.T) {
 		t.Errorf("user role = %q, want OWNER", u.Role)
 	}
 	// Verify password was hashed
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte("strongpass123")); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte("Strongpass123")); err != nil {
 		t.Error("password hash doesn't match")
 	}
 	// Verify tenant was created with correct defaults
@@ -180,7 +184,7 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 	_, err := srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "First Co",
 		Email:       "dup@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 	if err != nil {
 		t.Fatalf("first Register() error: %v", err)
@@ -203,9 +207,11 @@ func TestRegister_ValidationErrors(t *testing.T) {
 		name string
 		req  *pb.RegisterRequest
 	}{
-		{"empty company", &pb.RegisterRequest{CompanyName: "", Email: "a@b.com", Password: "12345678"}},
-		{"empty email", &pb.RegisterRequest{CompanyName: "Co", Email: "", Password: "12345678"}},
+		{"empty company", &pb.RegisterRequest{CompanyName: "", Email: "a@b.com", Password: "Validpass1"}},
+		{"empty email", &pb.RegisterRequest{CompanyName: "Co", Email: "", Password: "Validpass1"}},
 		{"short password", &pb.RegisterRequest{CompanyName: "Co", Email: "a@b.com", Password: "short"}},
+		{"no uppercase", &pb.RegisterRequest{CompanyName: "Co", Email: "a@b.com", Password: "password123"}},
+		{"no digit", &pb.RegisterRequest{CompanyName: "Co", Email: "a@b.com", Password: "Passwordonly"}},
 	}
 
 	for _, tt := range tests {
@@ -226,7 +232,7 @@ func TestLogin_Success(t *testing.T) {
 	regResp, err := srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Login Corp",
 		Email:       "bob@login.example",
-		Password:    "securepass99",
+		Password:    "Securepass99",
 	})
 	if err != nil {
 		t.Fatalf("Register() error: %v", err)
@@ -239,7 +245,7 @@ func TestLogin_Success(t *testing.T) {
 	// Login
 	resp, err := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "bob@login.example",
-		Password: "securepass99",
+		Password: "Securepass99",
 	})
 	if err != nil {
 		t.Fatalf("Login() error: %v", err)
@@ -271,13 +277,13 @@ func TestLogin_WrongPassword(t *testing.T) {
 	_, _ = srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "WrongPass Co",
 		Email:       "wrong@pass.example",
-		Password:    "correctpass1",
+		Password:    "Correctpass1",
 	})
 	store.users["wrong@pass.example"].EmailVerified = true
 
 	_, err := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "wrong@pass.example",
-		Password: "wrongpassword",
+		Password: "Wrongpass123",
 	})
 	if err == nil {
 		t.Fatal("Login() should fail with wrong password")
@@ -291,13 +297,13 @@ func TestLogin_EmailNotVerified(t *testing.T) {
 	_, _ = srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Unverified Co",
 		Email:       "unverified@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 	// Don't verify email
 
 	_, err := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "unverified@example.com",
-		Password: "password123",
+		Password: "Password123",
 	})
 	if err == nil {
 		t.Fatal("Login() should fail when email is not verified")
@@ -309,7 +315,7 @@ func TestLogin_NonexistentUser(t *testing.T) {
 
 	_, err := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "nobody@nowhere.com",
-		Password: "password123",
+		Password: "Password123",
 	})
 	if err == nil {
 		t.Fatal("Login() should fail for nonexistent user")
@@ -323,7 +329,7 @@ func TestVerifyEmail(t *testing.T) {
 	_, _ = srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Verify Co",
 		Email:       "verify@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 
 	user := store.users["verify@example.com"]
@@ -358,13 +364,13 @@ func TestRefreshToken(t *testing.T) {
 	_, _ = srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Refresh Co",
 		Email:       "refresh@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 	store.users["refresh@example.com"].EmailVerified = true
 
 	loginResp, err := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "refresh@example.com",
-		Password: "password123",
+		Password: "Password123",
 	})
 	if err != nil {
 		t.Fatalf("Login() error: %v", err)
@@ -394,13 +400,13 @@ func TestRefreshToken_WithAccessToken(t *testing.T) {
 	_, _ = srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "BadRefresh Co",
 		Email:       "badrefresh@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 	store.users["badrefresh@example.com"].EmailVerified = true
 
 	loginResp, _ := srv.Login(context.Background(), &pb.LoginRequest{
 		Email:    "badrefresh@example.com",
-		Password: "password123",
+		Password: "Password123",
 	})
 
 	_, err := srv.RefreshToken(context.Background(), &pb.RefreshTokenRequest{
@@ -418,7 +424,7 @@ func TestSubmitKYB(t *testing.T) {
 	regResp, _ := srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "KYB Corp",
 		Email:       "kyb@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 
 	resp, err := srv.SubmitKYB(context.Background(), &pb.SubmitKYBRequest{
@@ -455,10 +461,12 @@ func TestApproveKYB(t *testing.T) {
 	regResp, _ := srv.Register(context.Background(), &pb.RegisterRequest{
 		CompanyName: "Approve Co",
 		Email:       "approve@example.com",
-		Password:    "password123",
+		Password:    "Password123",
 	})
 
-	resp, err := srv.ApproveKYB(context.Background(), &pb.ApproveKYBRequest{
+	// ApproveKYB requires ops API key via gRPC metadata.
+	approveCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-ops-api-key", testOpsAPIKey))
+	resp, err := srv.ApproveKYB(approveCtx, &pb.ApproveKYBRequest{
 		TenantId: regResp.TenantId,
 	})
 	if err != nil {
@@ -509,7 +517,7 @@ func TestFullOnboardingFlow(t *testing.T) {
 	regResp, err := srv.Register(ctx, &pb.RegisterRequest{
 		CompanyName: "FlowTest Ltd",
 		Email:       "flow@test.example",
-		Password:    "flowpass123",
+		Password:    "Flowpass123",
 		DisplayName: "Flow Tester",
 	})
 	if err != nil {
@@ -519,7 +527,7 @@ func TestFullOnboardingFlow(t *testing.T) {
 	// 2. Cannot login before email verification
 	_, err = srv.Login(ctx, &pb.LoginRequest{
 		Email:    "flow@test.example",
-		Password: "flowpass123",
+		Password: "Flowpass123",
 	})
 	if err == nil {
 		t.Fatal("Login should fail before email verification")
@@ -531,7 +539,7 @@ func TestFullOnboardingFlow(t *testing.T) {
 	// 4. Login
 	loginResp, err := srv.Login(ctx, &pb.LoginRequest{
 		Email:    "flow@test.example",
-		Password: "flowpass123",
+		Password: "Flowpass123",
 	})
 	if err != nil {
 		t.Fatalf("Login: %v", err)
@@ -556,8 +564,9 @@ func TestFullOnboardingFlow(t *testing.T) {
 		t.Errorf("expected IN_REVIEW, got %s", kybResp.KybStatus)
 	}
 
-	// 6. Approve KYB (admin action)
-	approveResp, err := srv.ApproveKYB(ctx, &pb.ApproveKYBRequest{
+	// 6. Approve KYB (admin action — requires ops API key in metadata)
+	opsCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("x-ops-api-key", testOpsAPIKey))
+	approveResp, err := srv.ApproveKYB(opsCtx, &pb.ApproveKYBRequest{
 		TenantId: regResp.TenantId,
 	})
 	if err != nil {

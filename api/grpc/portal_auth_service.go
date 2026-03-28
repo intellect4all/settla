@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -15,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
+	grpcmd "google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/intellect4all/settla/gen/settla/v1"
@@ -50,7 +53,7 @@ func WithJWTSecret(secret string) ServerOption {
 const (
 	accessTokenExpiry  = 15 * time.Minute
 	refreshTokenExpiry = 7 * 24 * time.Hour
-	emailTokenExpiry   = 24 * time.Hour
+	emailTokenExpiry   = 4 * time.Hour
 	bcryptCost         = 12
 )
 
@@ -79,8 +82,8 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	if err := validateNonEmpty("email", req.GetEmail()); err != nil {
 		return nil, err
 	}
-	if len(req.GetPassword()) < 8 {
-		return nil, status.Error(codes.InvalidArgument, "password must be at least 8 characters")
+	if err := validatePassword(req.GetPassword()); err != nil {
+		return nil, err
 	}
 	displayName := req.GetDisplayName()
 	if displayName == "" {
@@ -359,19 +362,22 @@ func (s *Server) SubmitKYB(ctx context.Context, req *pb.SubmitKYBRequest) (*pb.S
 		return nil, status.Errorf(codes.FailedPrecondition, "tenant must be in ONBOARDING status, current: %s", tenant.Status)
 	}
 
-	// Store KYB data in metadata JSONB
-	kybMetadata := fmt.Sprintf(
-		`{"kyb_registration_number":"%s","kyb_country":"%s","kyb_business_type":"%s","kyb_contact_name":"%s","kyb_contact_email":"%s","kyb_contact_phone":"%s","kyb_submitted_at":"%s"}`,
-		req.GetCompanyRegistrationNumber(),
-		req.GetCountry(),
-		req.GetBusinessType(),
-		req.GetContactName(),
-		req.GetContactEmail(),
-		req.GetContactPhone(),
-		time.Now().UTC().Format(time.RFC3339),
-	)
+	// Store KYB data in metadata JSONB — use json.Marshal to prevent injection.
+	kybData := map[string]string{
+		"kyb_registration_number": req.GetCompanyRegistrationNumber(),
+		"kyb_country":             req.GetCountry(),
+		"kyb_business_type":       req.GetBusinessType(),
+		"kyb_contact_name":        req.GetContactName(),
+		"kyb_contact_email":       req.GetContactEmail(),
+		"kyb_contact_phone":       req.GetContactPhone(),
+		"kyb_submitted_at":        time.Now().UTC().Format(time.RFC3339),
+	}
+	kybMetadata, err := json.Marshal(kybData)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to serialize KYB data")
+	}
 
-	if err := s.portalAuthStore.UpdateTenantMetadata(ctx, tenantID, []byte(kybMetadata)); err != nil {
+	if err := s.portalAuthStore.UpdateTenantMetadata(ctx, tenantID, kybMetadata); err != nil {
 		return nil, status.Error(codes.Internal, "failed to store KYB data")
 	}
 
@@ -388,6 +394,11 @@ func (s *Server) SubmitKYB(ctx context.Context, req *pb.SubmitKYBRequest) (*pb.S
 func (s *Server) ApproveKYB(ctx context.Context, req *pb.ApproveKYBRequest) (*pb.ApproveKYBResponse, error) {
 	if s.portalAuthStore == nil {
 		return nil, status.Error(codes.Unimplemented, "portal auth not configured")
+	}
+
+	// Require ops API key — this is a privileged admin action.
+	if err := s.requireOpsAPIKey(ctx); err != nil {
+		return nil, err
 	}
 
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
@@ -422,6 +433,30 @@ func (s *Server) ApproveKYB(ctx context.Context, req *pb.ApproveKYBRequest) (*pb
 	}, nil
 }
 
+// requireOpsAPIKey validates that the caller provided a valid ops API key via
+// the "x-ops-api-key" gRPC metadata header. Returns PermissionDenied if the
+// key is missing or invalid.
+func (s *Server) requireOpsAPIKey(ctx context.Context) error {
+	if s.opsAPIKey == "" {
+		return status.Error(codes.PermissionDenied, "ops API key not configured — admin actions are disabled")
+	}
+
+	md, ok := grpcmd.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	keys := md.Get("x-ops-api-key")
+	if len(keys) == 0 {
+		return status.Error(codes.Unauthenticated, "missing x-ops-api-key header")
+	}
+
+	if subtle.ConstantTimeCompare([]byte(keys[0]), []byte(s.opsAPIKey)) != 1 {
+		return status.Error(codes.PermissionDenied, "invalid ops API key")
+	}
+	return nil
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // JWT helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -433,6 +468,7 @@ func (s *Server) signToken(userID, tenantID, role, tokenType string, now time.Ti
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(expiry)),
 			Issuer:    "settla",
+			Audience:  jwt.ClaimStrings{"settla-portal"},
 		},
 		TenantID:  tenantID,
 		Role:      role,
