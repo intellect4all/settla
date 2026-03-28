@@ -91,8 +91,8 @@ func (s *Server) GetTransferAnalytics(ctx context.Context, req *pb.GetTransferAn
 	pbCorridors := make([]*pb.TransferAnalyticsCorridor, len(corridors))
 	for i, c := range corridors {
 		pbCorridors[i] = &pb.TransferAnalyticsCorridor{
-			SourceCurrency: c.SourceCurrency,
-			DestCurrency:   c.DestCurrency,
+			SourceCurrency: string(c.SourceCurrency),
+			DestCurrency:   string(c.DestCurrency),
 			TransferCount:  c.TransferCount,
 			VolumeUsd:      c.VolumeUSD.String(),
 			FeesUsd:        c.FeesUSD.String(),

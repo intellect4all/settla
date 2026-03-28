@@ -90,8 +90,8 @@ func (s *Server) GetCorridorMetrics(ctx context.Context, req *pb.GetCorridorMetr
 	pbCorridors := make([]*pb.CorridorMetric, len(corridors))
 	for i := range corridors {
 		pbCorridors[i] = &pb.CorridorMetric{
-			SourceCurrency: corridors[i].SourceCurrency,
-			DestCurrency:   corridors[i].DestCurrency,
+			SourceCurrency: string(corridors[i].SourceCurrency),
+			DestCurrency:   string(corridors[i].DestCurrency),
 			TransferCount:  corridors[i].TransferCount,
 			VolumeUsd:      corridors[i].VolumeUSD.String(),
 			FeesUsd:        corridors[i].FeesUSD.String(),
@@ -193,9 +193,9 @@ func (s *Server) GetRecentActivity(ctx context.Context, req *pb.GetRecentActivit
 			TransferId:     items[i].TransferID,
 			ExternalRef:    items[i].ExternalRef,
 			Status:         items[i].Status,
-			SourceCurrency: items[i].SourceCurrency,
+			SourceCurrency: string(items[i].SourceCurrency),
 			SourceAmount:   items[i].SourceAmount.String(),
-			DestCurrency:   items[i].DestCurrency,
+			DestCurrency:   string(items[i].DestCurrency),
 			DestAmount:     items[i].DestAmount.String(),
 			UpdatedAt:      timestamppb.New(items[i].UpdatedAt),
 			FailureReason:  items[i].FailureReason,
