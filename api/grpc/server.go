@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,25 +92,29 @@ type Server struct {
 	pb.UnimplementedPaymentLinkServiceServer
 	pb.UnimplementedAnalyticsServiceServer
 
-	engine             *core.Engine
-	depositEngine      *depositcore.Engine
-	bankDepositEngine  *bankdepositcore.Engine
-	treasury        domain.TreasuryManager
-	ledger          domain.Ledger
-	authStore       APIKeyValidator
-	portalStore     TenantPortalStore
-	portalAuthStore PortalAuthStore
-	webhookStore    WebhookManagementStore
-	analyticsStore     AnalyticsStore
-	extAnalyticsStore  ExtendedAnalyticsStore
-	exportStore        ExportStore
-	accountStore       AccountStore
-	bankingPartnerStore  BankingPartnerStore
-	paymentLinkService   *paymentlinkcore.Service
-	paymentLinkBaseURL   string
-	auditLogger          domain.AuditLogger
-	jwtSecret            []byte
-	logger               *slog.Logger
+	engine              *core.Engine
+	depositEngine       *depositcore.Engine
+	bankDepositEngine   *bankdepositcore.Engine
+	treasury            domain.TreasuryManager
+	ledger              domain.Ledger
+	authStore           APIKeyValidator
+	portalStore         TenantPortalStore
+	portalAuthStore     PortalAuthStore
+	webhookStore        WebhookManagementStore
+	analyticsStore      AnalyticsStore
+	extAnalyticsStore   ExtendedAnalyticsStore
+	exportStore         ExportStore
+	accountStore        AccountStore
+	bankingPartnerStore BankingPartnerStore
+	positionEngine      PositionEngine
+	positionEventStore  PositionEventStore
+	paymentLinkService  *paymentlinkcore.Service
+	paymentLinkBaseURL  string
+	auditLogger         domain.AuditLogger
+	jwtSecret           []byte
+	apiKeyHMACSecret    []byte
+	opsAPIKey           string
+	logger              *slog.Logger
 }
 
 // NewServer creates a gRPC server backed by the given domain services.
@@ -154,6 +159,19 @@ func WithAuthStore(v APIKeyValidator) ServerOption {
 // WithAuditLogger sets the audit logger for recording administrative actions.
 func WithAuditLogger(l domain.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
+}
+
+// WithAPIKeyHMACSecret sets the server-side secret used for HMAC-SHA256 API key
+// hashing. When set, API keys are hashed with HMAC(secret, rawKey) instead of
+// plain SHA-256, providing defense-in-depth if the key_hash database is leaked.
+func WithAPIKeyHMACSecret(secret []byte) ServerOption {
+	return func(s *Server) { s.apiKeyHMACSecret = secret }
+}
+
+// WithOpsAPIKey sets the ops API key used to authorize privileged gRPC methods
+// such as ApproveKYB. Must match SETTLA_OPS_API_KEY used by the ops HTTP endpoints.
+func WithOpsAPIKey(key string) ServerOption {
+	return func(s *Server) { s.opsAPIKey = key }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -465,25 +483,25 @@ func (s *Server) GetRoutingOptions(ctx context.Context, req *pb.GetRoutingOption
 	// Build routes: primary + alternatives
 	routes := make([]*pb.RoutingOption, 0, 1+len(result.Alternatives))
 	routes = append(routes, &pb.RoutingOption{
-		Provider:                    result.ProviderID,
-		OffRampProvider:             result.OffRampProvider,
-		Chain:                       result.BlockchainChain,
-		Stablecoin:                  stablecoin,
-		Score:                       result.Score.StringFixed(4),
-		EstimatedFeeUsd:             result.Fee.Amount.StringFixed(2),
-		EstimatedSettlementSeconds:  int32(result.EstimatedSeconds),
-		ScoreBreakdown:              scoreBreakdownToProto(result.ScoreBreakdown),
+		Provider:                   result.ProviderID,
+		OffRampProvider:            result.OffRampProvider,
+		Chain:                      string(result.BlockchainChain),
+		Stablecoin:                 stablecoin,
+		Score:                      result.Score.StringFixed(4),
+		EstimatedFeeUsd:            result.Fee.Amount.StringFixed(2),
+		EstimatedSettlementSeconds: int32(result.EstimatedSeconds),
+		ScoreBreakdown:             scoreBreakdownToProto(result.ScoreBreakdown),
 	})
 
 	for _, alt := range result.Alternatives {
 		routes = append(routes, &pb.RoutingOption{
-			Provider:                    alt.OnRampProvider,
-			OffRampProvider:             alt.OffRampProvider,
-			Chain:                       alt.Chain,
-			Stablecoin:                  string(alt.StableCoin),
-			Score:                       alt.Score.StringFixed(4),
-			EstimatedFeeUsd:             alt.Fee.Amount.StringFixed(2),
-			ScoreBreakdown:              scoreBreakdownToProto(alt.ScoreBreakdown),
+			Provider:        alt.OnRampProvider,
+			OffRampProvider: alt.OffRampProvider,
+			Chain:           string(alt.Chain),
+			Stablecoin:      string(alt.StableCoin),
+			Score:           alt.Score.StringFixed(4),
+			EstimatedFeeUsd: alt.Fee.Amount.StringFixed(2),
+			ScoreBreakdown:  scoreBreakdownToProto(alt.ScoreBreakdown),
 		})
 	}
 
@@ -617,12 +635,17 @@ func (s *Server) GetAccounts(ctx context.Context, req *pb.GetAccountsRequest) (*
 }
 
 func (s *Server) GetAccountBalance(ctx context.Context, req *pb.GetAccountBalanceRequest) (*pb.GetAccountBalanceResponse, error) {
-	_, err := parseUUID(req.GetTenantId(), "tenant_id")
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
 	if err != nil {
 		return nil, err
 	}
 
 	if err := validateNonEmpty("account_code", req.GetAccountCode()); err != nil {
+		return nil, err
+	}
+
+	// Verify the requesting tenant owns this account code.
+	if err := s.verifyAccountOwnership(ctx, tenantID, req.GetAccountCode()); err != nil {
 		return nil, err
 	}
 
@@ -640,12 +663,17 @@ func (s *Server) GetAccountBalance(ctx context.Context, req *pb.GetAccountBalanc
 }
 
 func (s *Server) GetTransactions(ctx context.Context, req *pb.GetTransactionsRequest) (*pb.GetTransactionsResponse, error) {
-	_, err := parseUUID(req.GetTenantId(), "tenant_id")
+	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
 	if err != nil {
 		return nil, err
 	}
 
 	if err := validateNonEmpty("account_code", req.GetAccountCode()); err != nil {
+		return nil, err
+	}
+
+	// Verify the requesting tenant owns this account code.
+	if err := s.verifyAccountOwnership(ctx, tenantID, req.GetAccountCode()); err != nil {
 		return nil, err
 	}
 
@@ -767,7 +795,7 @@ func transferToProto(t *domain.Transfer) *pb.Transfer {
 		DestAmount:     t.DestAmount.String(),
 		StableCoin:     string(t.StableCoin),
 		StableAmount:   t.StableAmount.String(),
-		Chain:          t.Chain,
+		Chain:          string(t.Chain),
 		FxRate:         t.FXRate.String(),
 		Fees:           feeBreakdownToProto(t.Fees),
 		Sender:         senderToProto(t.Sender),
@@ -832,7 +860,7 @@ func scoreBreakdownToProto(b domain.ScoreBreakdown) *pb.ScoreBreakdown {
 
 func routeInfoToProto(r domain.RouteInfo) *pb.RouteInfo {
 	return &pb.RouteInfo{
-		Chain:            r.Chain,
+		Chain:            string(r.Chain),
 		StableCoin:       string(r.StableCoin),
 		EstimatedTimeMin: int32(r.EstimatedTimeMin),
 		OnRampProvider:   r.OnRampProvider,
@@ -864,7 +892,7 @@ func entryLineToProto(e *domain.EntryLine) *pb.EntryLine {
 	return &pb.EntryLine{
 		Id:          e.ID.String(),
 		AccountId:   e.AccountID.String(),
-		AccountCode: e.AccountCode,
+		AccountCode: string(e.AccountCode),
 		EntryType:   entryTypeToProto(e.EntryType),
 		Amount:      e.Amount.String(),
 		Currency:    string(e.Currency),
@@ -965,6 +993,28 @@ func parseDecimal(s, field string) (decimal.Decimal, error) {
 	return d, nil
 }
 
+// verifyAccountOwnership checks that the given account code belongs to the
+// requesting tenant. Tenant-scoped accounts use the format "tenant:{slug}:...".
+// System accounts (without the "tenant:" prefix) are not accessible via tenant API.
+func (s *Server) verifyAccountOwnership(ctx context.Context, tenantID uuid.UUID, accountCode string) error {
+	if s.portalStore == nil {
+		return status.Error(codes.Internal, "tenant store not available")
+	}
+	// System accounts are not accessible via tenant API calls.
+	if !strings.HasPrefix(accountCode, "tenant:") {
+		return status.Errorf(codes.PermissionDenied, "account %q is a system account and cannot be accessed via tenant API", accountCode)
+	}
+	tenant, err := s.portalStore.GetTenant(ctx, tenantID)
+	if err != nil {
+		return mapDomainError(err)
+	}
+	expectedPrefix := "tenant:" + tenant.Slug + ":"
+	if !strings.HasPrefix(accountCode, expectedPrefix) {
+		return status.Errorf(codes.PermissionDenied, "account %q does not belong to tenant %s", accountCode, tenantID)
+	}
+	return nil
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Error mapping: domain errors → gRPC status codes
 // ──────────────────────────────────────────────────────────────────────────────
@@ -983,7 +1033,8 @@ func mapDomainError(err error) error {
 
 	var domErr *domain.DomainError
 	if !errors.As(err, &domErr) {
-		return status.Error(codes.Internal, err.Error())
+		slog.Error("settla-grpc: unhandled internal error", "error", err)
+		return status.Error(codes.Internal, "internal server error")
 	}
 
 	msg := domainErrorMessage(domErr)

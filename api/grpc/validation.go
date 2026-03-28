@@ -48,3 +48,27 @@ func validateNonEmpty(field, value string) error {
 	}
 	return nil
 }
+
+// validatePassword enforces minimum password complexity requirements:
+// at least 8 characters, with at least one uppercase letter, one lowercase
+// letter, and one digit.
+func validatePassword(password string) error {
+	if len(password) < 8 {
+		return status.Error(codes.InvalidArgument, "password must be at least 8 characters")
+	}
+	var hasUpper, hasLower, hasDigit bool
+	for _, c := range password {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		return status.Error(codes.InvalidArgument, "password must contain at least one uppercase letter, one lowercase letter, and one digit")
+	}
+	return nil
+}
