@@ -25,11 +25,14 @@ func RegisterOpsHandlers(mux *http.ServeMux, store transferdb.OpsStore, logger *
 	}
 	opsAPIKey := os.Getenv("SETTLA_OPS_API_KEY")
 	if opsAPIKey == "" {
-		if os.Getenv("NODE_ENV") == "production" {
+		if os.Getenv("SETTLA_ENV") == "production" || os.Getenv("NODE_ENV") == "production" {
 			logger.Error("settla-ops: SETTLA_OPS_API_KEY is required in production — ops endpoints disabled")
 			return
 		}
 		logger.Warn("settla-ops: SETTLA_OPS_API_KEY is not set — ops endpoints are unauthenticated (dev mode only)")
+	} else if (os.Getenv("SETTLA_ENV") == "production" || os.Getenv("NODE_ENV") == "production") && len(opsAPIKey) < 32 {
+		logger.Error("settla-ops: SETTLA_OPS_API_KEY must be at least 32 characters in production — ops endpoints disabled")
+		return
 	}
 
 	mux.HandleFunc("/internal/ops/", func(w http.ResponseWriter, r *http.Request) {
