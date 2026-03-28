@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -132,7 +133,7 @@ func (s *Server) CreateAPIKey(ctx context.Context, req *pb.CreateAPIKeyRequest) 
 	}
 
 	// Generate raw key and its hash
-	rawKey, keyHash, keyPrefix, err := generateAPIKey(env)
+	rawKey, keyHash, keyPrefix, err := generateAPIKey(env, s.apiKeyHMACSecret)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to generate API key")
 	}
@@ -232,7 +233,7 @@ func (s *Server) RotateAPIKey(ctx context.Context, req *pb.RotateAPIKeyRequest) 
 	}
 
 	// Create new key with same environment
-	rawKey, keyHash, keyPrefix, err := generateAPIKey(oldKey.Environment)
+	rawKey, keyHash, keyPrefix, err := generateAPIKey(oldKey.Environment, s.apiKeyHMACSecret)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to generate replacement API key")
 	}
@@ -393,8 +394,8 @@ func (s *Server) GetFeeReport(ctx context.Context, req *pb.GetFeeReportRequest) 
 	pbEntries := make([]*pb.FeeReportEntry, len(entries))
 	for i := range entries {
 		pbEntries[i] = &pb.FeeReportEntry{
-			SourceCurrency:  entries[i].SourceCurrency,
-			DestCurrency:    entries[i].DestCurrency,
+			SourceCurrency:  string(entries[i].SourceCurrency),
+			DestCurrency:    string(entries[i].DestCurrency),
 			TransferCount:   entries[i].TransferCount,
 			TotalVolumeUsd:  entries[i].TotalVolumeUSD.String(),
 			OnRampFeesUsd:   entries[i].OnRampFeesUSD.String(),
@@ -474,9 +475,14 @@ func apiKeyToProto(k *domain.APIKey) *pb.APIKeyInfo {
 // Key generation helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-// generateAPIKey creates a raw API key, its SHA-256 hash, and the display prefix.
+// generateAPIKey creates a raw API key, its HMAC-SHA256 hash, and the display prefix.
 // Format: sk_live_<32 random hex chars> or sk_test_<32 random hex chars>
-func generateAPIKey(environment string) (rawKey, keyHash, keyPrefix string, err error) {
+//
+// When hmacSecret is non-empty, the key hash is computed as HMAC-SHA256(secret, rawKey),
+// providing defense-in-depth: even if the key_hash column is leaked, an attacker
+// cannot verify candidate keys without the server-side secret.
+// When hmacSecret is empty, falls back to plain SHA-256 (development only).
+func generateAPIKey(environment string, hmacSecret []byte) (rawKey, keyHash, keyPrefix string, err error) {
 	buf := make([]byte, 32)
 	if _, err = rand.Read(buf); err != nil {
 		return "", "", "", fmt.Errorf("generating random bytes: %w", err)
@@ -488,11 +494,22 @@ func generateAPIKey(environment string) (rawKey, keyHash, keyPrefix string, err 
 	}
 
 	rawKey = prefix + hex.EncodeToString(buf)
-	hash := sha256.Sum256([]byte(rawKey))
-	keyHash = hex.EncodeToString(hash[:])
+	keyHash = hashAPIKey(rawKey, hmacSecret)
 	keyPrefix = rawKey[:12] // e.g. "sk_live_ab3c"
 
 	return rawKey, keyHash, keyPrefix, nil
+}
+
+// hashAPIKey computes the storage hash for an API key.
+// Uses HMAC-SHA256 when a secret is provided, plain SHA-256 otherwise.
+func hashAPIKey(rawKey string, hmacSecret []byte) string {
+	if len(hmacSecret) > 0 {
+		mac := hmac.New(sha256.New, hmacSecret)
+		mac.Write([]byte(rawKey))
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	hash := sha256.Sum256([]byte(rawKey))
+	return hex.EncodeToString(hash[:])
 }
 
 // generateWebhookSecret creates a random 32-byte hex string for HMAC-SHA256 signing.
