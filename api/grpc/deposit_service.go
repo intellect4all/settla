@@ -49,11 +49,11 @@ func (s *Server) CreateDepositSession(ctx context.Context, req *pb.CreateDeposit
 	}
 
 	createReq := depositcore.CreateSessionRequest{
-		Chain:          req.GetChain(),
+		Chain:          domain.CryptoChain(req.GetChain()),
 		Token:          req.GetToken(),
 		ExpectedAmount: expectedAmount,
 		SettlementPref: settlementPref,
-		IdempotencyKey: req.GetIdempotencyKey(),
+		IdempotencyKey: domain.IdempotencyKey(req.GetIdempotencyKey()),
 		TTLSeconds:     int32(req.GetTtlSeconds()),
 	}
 
@@ -209,7 +209,7 @@ func (s *Server) GetDepositSessionPublicStatus(ctx context.Context, req *pb.GetD
 	return &pb.GetDepositSessionPublicStatusResponse{
 		Id:             session.ID.String(),
 		Status:         string(session.Status),
-		Chain:          session.Chain,
+		Chain:          string(session.Chain),
 		Token:          session.Token,
 		DepositAddress: session.DepositAddress,
 		ExpectedAmount: session.ExpectedAmount.String(),
@@ -225,7 +225,7 @@ func depositSessionToProto(s *domain.DepositSession) *pb.DepositSession {
 		Id:               s.ID.String(),
 		TenantId:         s.TenantID.String(),
 		Status:           string(s.Status),
-		Chain:            s.Chain,
+		Chain:            string(s.Chain),
 		Token:            s.Token,
 		DepositAddress:   s.DepositAddress,
 		ExpectedAmount:   s.ExpectedAmount.String(),
@@ -235,7 +235,7 @@ func depositSessionToProto(s *domain.DepositSession) *pb.DepositSession {
 		FeeAmount:        s.FeeAmount.String(),
 		NetAmount:        s.NetAmount.String(),
 		SettlementPref:   string(s.SettlementPref),
-		IdempotencyKey:   s.IdempotencyKey,
+		IdempotencyKey:   string(s.IdempotencyKey),
 		ExpiresAt:        timestamppb.New(s.ExpiresAt),
 		CreatedAt:        timestamppb.New(s.CreatedAt),
 		UpdatedAt:        timestamppb.New(s.UpdatedAt),

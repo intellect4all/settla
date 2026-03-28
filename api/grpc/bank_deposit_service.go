@@ -56,13 +56,13 @@ func (s *Server) CreateBankDepositSession(ctx context.Context, req *pb.CreateBan
 	}
 
 	createReq := bankdepositcore.CreateSessionRequest{
-		Currency:         req.GetCurrency(),
+		Currency:         domain.Currency(req.GetCurrency()),
 		BankingPartnerID: req.GetBankingPartnerId(),
 		AccountType:      accountType,
 		ExpectedAmount:   expectedAmount,
 		MismatchPolicy:   mismatchPolicy,
 		SettlementPref:   settlementPref,
-		IdempotencyKey:   req.GetIdempotencyKey(),
+		IdempotencyKey:   domain.IdempotencyKey(req.GetIdempotencyKey()),
 		TTLSeconds:       req.GetTtlSeconds(),
 	}
 
@@ -194,7 +194,13 @@ func (s *Server) ListVirtualAccounts(ctx context.Context, req *pb.ListVirtualAcc
 		return nil, err
 	}
 
-	accounts, err := s.bankDepositEngine.ListVirtualAccounts(ctx, tenantID)
+	accounts, total, err := s.bankDepositEngine.ListVirtualAccounts(ctx, bankdepositcore.VirtualAccountListParams{
+		TenantID:    tenantID,
+		Currency:    req.GetCurrency(),
+		AccountType: req.GetAccountType(),
+		Limit:       req.GetLimit(),
+		Offset:      req.GetOffset(),
+	})
 	if err != nil {
 		return nil, mapBankDepositError(err)
 	}
@@ -218,7 +224,7 @@ func (s *Server) ListVirtualAccounts(ctx context.Context, req *pb.ListVirtualAcc
 
 	return &pb.ListVirtualAccountsResponse{
 		Accounts: pbAccounts,
-		Total:    int32(len(accounts)),
+		Total:    int32(total),
 	}, nil
 }
 
@@ -270,7 +276,7 @@ func bankDepositSessionToProto(s *domain.BankDepositSession) *pb.BankDepositSess
 		MismatchPolicy:   string(s.MismatchPolicy),
 		CollectionFeeBps: int32(s.CollectionFeeBPS),
 		SettlementPref:   string(s.SettlementPref),
-		IdempotencyKey:   s.IdempotencyKey,
+		IdempotencyKey:   string(s.IdempotencyKey),
 		PayerName:        s.PayerName,
 		PayerReference:   s.PayerReference,
 		BankReference:    s.BankReference,
