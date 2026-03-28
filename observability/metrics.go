@@ -122,6 +122,11 @@ type Metrics struct {
 	// ── Treasury recovery metrics ─────────────────────────────────────
 	TreasuryRecoveryDuration        *prometheus.HistogramVec
 	TreasuryPositionsRecoveredTotal prometheus.Counter
+
+	// ── Database connection pool metrics ──────────────────────────────
+	PgxPoolMaxConns     *prometheus.GaugeVec
+	PgxPoolCurrentConns *prometheus.GaugeVec
+	PgxPoolIdleConns    *prometheus.GaugeVec
 }
 
 // NewMetrics registers and returns all Settla Prometheus metrics.
@@ -329,11 +334,8 @@ func NewMetrics() *Metrics {
 			Help: "Time lag between oldest unpublished entry and now.",
 		}),
 
-		// DLQ
-		DLQMessagesTotal: promauto.NewCounterVec(prometheus.CounterOpts{
-			Name: "settla_dlq_messages_total",
-			Help: "Total messages routed to the dead letter queue.",
-		}, []string{"source_stream", "event_type"}),
+		// DLQ metric is registered in node/worker/dlq_monitor.go via promauto.
+		// Do NOT re-register here — the DLQ monitor owns this metric.
 
 		// Auth cache
 		AuthCacheHitRate: promauto.NewGauge(prometheus.GaugeOpts{
@@ -398,17 +400,13 @@ func NewMetrics() *Metrics {
 			Help: "Age of oldest stuck transfer by status.",
 		}, []string{"status"}),
 
-		// Circuit breaker state: 0=closed, 1=half-open, 2=open
-		CircuitBreakerState: promauto.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "settla_circuit_breaker_state",
-			Help: "Circuit breaker state by name (0=closed, 1=half-open, 2=open).",
-		}, []string{"name"}),
+		// Circuit breaker state is registered in resilience/circuitbreaker.go via promauto.
+		// Do NOT re-register here — the resilience package owns this metric.
+		// CircuitBreakerState is kept as a nil field; callers should use the
+		// resilience package's cbStateGauge directly.
 
-		// Load shedding
-		LoadSheddingRejectedTotal: promauto.NewCounterVec(prometheus.CounterOpts{
-			Name: "settla_loadshed_rejected_total",
-			Help: "Total requests rejected due to load shedding.",
-		}, []string{"reason"}),
+		// Load shedding metric is registered in resilience/loadshed.go via promauto.
+		// Do NOT re-register here — the resilience package owns this metric.
 
 		// Outbox partition health
 		OutboxPartitionCount: promauto.NewGauge(prometheus.GaugeOpts{
@@ -443,5 +441,21 @@ func NewMetrics() *Metrics {
 			Name: "settla_treasury_positions_recovered_total",
 			Help: "Total number of treasury positions recovered from DB after pod restart.",
 		}),
+
+		// Database connection pool
+		PgxPoolMaxConns: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "settla_pgxpool_max_conns",
+			Help: "Maximum number of connections in the pgxpool.",
+		}, []string{"db"}),
+
+		PgxPoolCurrentConns: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "settla_pgxpool_current_conns",
+			Help: "Current number of connections in the pgxpool (acquired + idle).",
+		}, []string{"db"}),
+
+		PgxPoolIdleConns: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "settla_pgxpool_idle_conns",
+			Help: "Number of idle connections in the pgxpool.",
+		}, []string{"db"}),
 	}
 }
