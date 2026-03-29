@@ -70,6 +70,7 @@ func (a *settlementTenantAdapter) GetTenant(ctx context.Context, tenantID uuid.U
 func (a *settlementTenantAdapter) ListTenantsBySettlementModel(
 	ctx context.Context,
 	model domain.SettlementModel,
+	limit, offset int32,
 ) ([]domain.Tenant, error) {
 	a.inner.mu.RLock()
 	defer a.inner.mu.RUnlock()
@@ -80,7 +81,16 @@ func (a *settlementTenantAdapter) ListTenantsBySettlementModel(
 			result = append(result, *t)
 		}
 	}
-	return result, nil
+	// Apply pagination
+	start := int(offset)
+	if start >= len(result) {
+		return nil, nil
+	}
+	end := start + int(limit)
+	if end > len(result) {
+		end = len(result)
+	}
+	return result[start:end], nil
 }
 
 // settlementStoreInMem is an in-memory implementation of settlement.SettlementStore.

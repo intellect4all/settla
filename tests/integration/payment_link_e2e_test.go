@@ -21,9 +21,9 @@ import (
 // ─── In-Memory Payment Link Store ───────────────────────────────────────────
 
 type memPaymentLinkStore struct {
-	mu           sync.RWMutex
-	links        map[uuid.UUID]*domain.PaymentLink
-	linksByCode  map[string]uuid.UUID
+	mu            sync.RWMutex
+	links         map[uuid.UUID]*domain.PaymentLink
+	linksByCode   map[string]uuid.UUID
 	linksByTenant map[uuid.UUID][]uuid.UUID // tenantID → linkIDs (ordered by creation)
 }
 

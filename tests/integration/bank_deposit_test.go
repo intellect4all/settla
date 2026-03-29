@@ -205,6 +205,46 @@ func (s *mockBDStore) ListVirtualAccountsByTenant(_ context.Context, tenantID uu
 	return result, nil
 }
 
+func (s *mockBDStore) ListVirtualAccountsPaginated(_ context.Context, params bankdeposit.VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var filtered []domain.VirtualAccountPool
+	for _, a := range s.pool {
+		if a.TenantID != params.TenantID {
+			continue
+		}
+		if params.Currency != "" && string(a.Currency) != params.Currency {
+			continue
+		}
+		if params.AccountType != "" && string(a.AccountType) != params.AccountType {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	total := int64(len(filtered))
+	start := int(params.Offset)
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + int(params.Limit)
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[start:end], total, nil
+}
+
+func (s *mockBDStore) CountAvailableVirtualAccountsByCurrency(_ context.Context, tenantID uuid.UUID) (map[string]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make(map[string]int64)
+	for _, a := range s.pool {
+		if a.TenantID == tenantID && a.Available {
+			result[string(a.Currency)]++
+		}
+	}
+	return result, nil
+}
+
 func (s *mockBDStore) GetVirtualAccountIndexByNumber(_ context.Context, accountNumber string) (*bankdeposit.VirtualAccountIndex, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

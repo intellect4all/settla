@@ -309,6 +309,21 @@ func (s *memTransferStore) GetTransferByExternalRef(_ context.Context, tenantID 
 	return nil, fmt.Errorf("transfer not found for external ref %s", externalRef)
 }
 
+func (s *memTransferStore) CountPendingTransfers(_ context.Context, tenantID uuid.UUID) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count := 0
+	for _, t := range s.transfers {
+		if t.TenantID == tenantID &&
+			t.Status != domain.TransferStatusCompleted &&
+			t.Status != domain.TransferStatusFailed &&
+			t.Status != domain.TransferStatusRefunded {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *memTransferStore) addQuote(q *domain.Quote) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

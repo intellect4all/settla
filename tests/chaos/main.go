@@ -95,6 +95,14 @@ func (c *ChaosRunner) Run(ctx context.Context) error {
 		{"PgBouncer Saturation", c.scenarioPgBouncerSaturation},
 		{"Outbox Relay Interruption", c.scenarioOutboxRelayInterruption},
 		{"Worker Node Restart", c.scenarioWorkerNodeRestart},
+		{"Memory Pressure", c.scenarioMemoryPressure},
+		{"Slow Consumer (NATS Backpressure)", c.scenarioSlowConsumer},
+		{"Concurrent Settlement Trigger", c.scenarioConcurrentSettlement},
+		{"Transfer DB Failover", c.scenarioTransferDBFailover},
+		{"Cascading Failure (NATS + Redis)", c.scenarioCascadingFailure},
+		{"Rapid Restart Cycle", c.scenarioRapidRestartCycle},
+		{"Gateway-Server Network Partition", c.scenarioGatewayServerPartition},
+		{"Hot Tenant Flood", c.scenarioHotTenantFlood},
 	}
 
 	fmt.Println()
