@@ -1,0 +1,170 @@
+# ==========================================================================
+# COMPUTE TIER — Run on fedora-compute (32GB RAM)
+# settla-server x4, settla-node x4, gateway x2, NATS
+#
+# Requires: DATA_HOST env var pointing to the data tier machine IP.
+#
+# Usage:
+#   docker compose -f deploy/cluster/docker-compose.compute.yml \
+#     --env-file deploy/cluster/.env.cluster up -d --build
+# ==========================================================================
+
+services:
+  # ── NATS with JetStream ─────────────────────────────────────────
+  # NATS lives on compute tier to minimize latency to workers.
+
+  nats:
+    image: nats:2.10-alpine
+    command:
+      - "--config=/etc/nats/nats.conf"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+      - ../nats/nats.conf:/etc/nats/nats.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+
+  # ── settla-server (4 replicas) ──────────────────────────────────
+  # gRPC backend. All DB URLs point to DATA_HOST PgBouncer ports.
+
+  settla-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/settla-server.Dockerfile
+    stop_grace_period: 30s
+    volumes:
+      - ../config/features.json:/etc/settla/features.json:ro
+    environment:
+      SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST:?DATA_HOST required}:6433/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@${DATA_HOST}:6380
+      SETTLA_NATS_URL: nats://nats:4222
+      SETTLA_JWT_SECRET: ${SETTLA_JWT_SECRET:?SETTLA_JWT_SECRET required}
+      SETTLA_SERVER_HTTP_PORT: "8080"
+      SETTLA_SERVER_GRPC_PORT: "9090"
+      SETTLA_PPROF_PORT: "6060"
+      SETTLA_PPROF: "true"
+      SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
+      SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      SETTLA_LEDGER_BATCH_MAX_SIZE: "${SETTLA_LEDGER_BATCH_MAX_SIZE:-500}"
+      SETTLA_MOCK_DELAY_MS: ${SETTLA_MOCK_DELAY_MS:-0}
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-info}
+      SETTLA_ENV: ${SETTLA_ENV:-loadtest}
+      SETTLA_PROVIDER_MODE: ${SETTLA_PROVIDER_MODE:-mock}
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4.0"
+        reservations:
+          memory: 512M
+
+  # ── settla-node (4 replicas) ────────────────────────────────────
+  # Workers processing NATS messages. 8 partitions / 4 instances = 2 each.
+
+  settla-node:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/settla-node.Dockerfile
+    stop_grace_period: 30s
+    volumes:
+      - ../config/features.json:/etc/settla/features.json:ro
+    environment:
+      SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
+      SETTLA_NATS_URL: nats://nats:4222
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@${DATA_HOST}:6380
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6433/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
+      SETTLA_NODE_PARTITIONS: "${SETTLA_NODE_PARTITIONS:-8}"
+      SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
+      SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"
+      SETTLA_LEDGER_BATCH_MAX_SIZE: "${SETTLA_LEDGER_BATCH_MAX_SIZE:-500}"
+      SETTLA_RELAY_BATCH_SIZE: "${SETTLA_RELAY_BATCH_SIZE:-500}"
+      SETTLA_RELAY_POLL_INTERVAL_MS: "${SETTLA_RELAY_POLL_INTERVAL_MS:-20}"
+      SETTLA_WORKER_POOL_TRANSFER: "${SETTLA_WORKER_POOL_TRANSFER:-16}"
+      SETTLA_WORKER_POOL_PROVIDER: "${SETTLA_WORKER_POOL_PROVIDER:-32}"
+      SETTLA_WORKER_POOL_BLOCKCHAIN: "${SETTLA_WORKER_POOL_BLOCKCHAIN:-16}"
+      SETTLA_WORKER_POOL_LEDGER: "${SETTLA_WORKER_POOL_LEDGER:-16}"
+      SETTLA_WORKER_POOL_TREASURY: "${SETTLA_WORKER_POOL_TREASURY:-16}"
+      SETTLA_WORKER_POOL_WEBHOOK: "${SETTLA_WORKER_POOL_WEBHOOK:-32}"
+      SETTLA_WORKER_POOL_INBOUND_WH: "${SETTLA_WORKER_POOL_INBOUND_WH:-8}"
+      SETTLA_MOCK_DELAY_MS: ${SETTLA_MOCK_DELAY_MS:-0}
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-info}
+      SETTLA_ENV: ${SETTLA_ENV:-loadtest}
+      SETTLA_PROVIDER_MODE: ${SETTLA_PROVIDER_MODE:-mock}
+    depends_on:
+      nats:
+        condition: service_healthy
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4.0"
+        reservations:
+          memory: 512M
+
+  # ── Gateway (2 replicas behind simple round-robin) ──────────────
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/gateway.Dockerfile
+    stop_grace_period: 30s
+    ports:
+      - "3100:3000"
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@${DATA_HOST}:6380
+      SETTLA_SERVER_GRPC_URL: settla-server:9090
+      SETTLA_SERVER_HTTP_URL: http://settla-server:8080
+      SETTLA_OPS_API_KEY: ${SETTLA_OPS_API_KEY:-settla-ops-secret-change-me}
+      SETTLA_GRPC_POOL_SIZE: "${SETTLA_GRPC_POOL_SIZE:-50}"
+      SETTLA_TENANT_CACHE_TTL_SECONDS: "${SETTLA_TENANT_CACHE_TTL_SECONDS:-30}"
+      SETTLA_LOG_LEVEL: ${SETTLA_LOG_LEVEL:-info}
+      SETTLA_ENV: ${SETTLA_ENV:-loadtest}
+      SETTLA_JWT_SECRET: ${SETTLA_JWT_SECRET:?SETTLA_JWT_SECRET required}
+      SETTLA_RATE_LIMIT_PER_TENANT: "${SETTLA_RATE_LIMIT_PER_TENANT:-10000}"
+      SETTLA_LOAD_SHED_MAX_CONCURRENT: "${SETTLA_LOAD_SHED_MAX_CONCURRENT:-10000}"
+      SETTLA_LOAD_SHED_TARGET_LATENCY_MS: "${SETTLA_LOAD_SHED_TARGET_LATENCY_MS:-1000}"
+      SETTLA_LOAD_SHED_INITIAL_LIMIT: "${SETTLA_LOAD_SHED_INITIAL_LIMIT:-5000}"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512M
+          cpus: "2.0"
+
+volumes:
+  natsdata:
