@@ -33,5 +33,7 @@ COPY --from=builder /prod/gateway/package.json ./
 # Proto files needed at runtime for gRPC client (loaded via @grpc/proto-loader)
 COPY proto/ /proto/
 
+USER node
+
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

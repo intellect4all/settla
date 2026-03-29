@@ -14,4 +14,7 @@ FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /bin/settla-node /bin/settla-node
 
+RUN addgroup -g 1000 settla && adduser -u 1000 -G settla -D settla
+USER settla
+
 ENTRYPOINT ["/bin/settla-node"]

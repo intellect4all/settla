@@ -14,5 +14,8 @@ RUN corepack enable pnpm
 COPY --from=builder /app/api/webhook/dist ./dist
 COPY --from=builder /app/api/webhook/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
+RUN addgroup -g 1000 settla && adduser -u 1000 -G settla -D settla
+USER settla
+
 EXPOSE 3001
 CMD ["node", "dist/index.js"]
