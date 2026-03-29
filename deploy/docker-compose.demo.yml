@@ -1,0 +1,118 @@
+# Docker Compose demo overlay.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.demo.yml up -d --build
+#
+# This overlay:
+#   1. Adds the mockprovider service (HTTP-controllable mock payment provider)
+#   2. Switches settla-server and settla-node to mock-http provider mode
+#   3. Remaps ports for demo-friendly URLs:
+#      - Gateway API:   http://localhost:8080
+#      - Grafana:       http://localhost:3000
+#      - Prometheus:    http://localhost:9090
+#      - NATS:          http://localhost:8222
+#      - Mock Provider: http://localhost:9095
+#
+# Admin API: http://localhost:9095/admin/config
+# Scenarios: POST /admin/scenarios/{provider-outage,high-latency,partial-failure}
+
+services:
+  mockprovider:
+    build:
+      context: ..
+      dockerfile: tools/mockprovider/Dockerfile
+    container_name: mockprovider
+    ports:
+      - "9095:9095"
+    environment:
+      MOCKPROVIDER_PORT: "9095"
+    networks:
+      - settla-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9095/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # Override settla-server: mock-http mode + remap gRPC to 9091 (free up 9090 for Prometheus).
+  settla-server:
+    ports:
+      - "8081:8080"    # HTTP (unchanged)
+      - "9091:9090"    # gRPC shifted to 9091 on host
+      - "6060:6060"    # pprof (unchanged)
+    environment:
+      SETTLA_PROVIDER_MODE: mock-http
+      SETTLA_PROVIDER_MOCK_ONRAMP_GBP_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_ONRAMP_NGN_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_OFFRAMP_NGN_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_OFFRAMP_GBP_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_TRON_MOCKPROVIDER_URL: http://mockprovider:9095
+
+  # Override settla-node: mock-http mode.
+  settla-node:
+    environment:
+      SETTLA_PROVIDER_MODE: mock-http
+      SETTLA_PROVIDER_MOCK_ONRAMP_GBP_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_ONRAMP_NGN_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_OFFRAMP_NGN_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_OFFRAMP_GBP_MOCKPROVIDER_URL: http://mockprovider:9095
+      SETTLA_PROVIDER_MOCK_TRON_MOCKPROVIDER_URL: http://mockprovider:9095
+    depends_on:
+      mockprovider:
+        condition: service_healthy
+
+  # Webhook receiver — inbound provider webhook processor.
+  webhook:
+    build:
+      context: ..
+      dockerfile: deploy/docker/webhook.Dockerfile
+    container_name: settla-webhook
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      HOST: "0.0.0.0"
+      NATS_URL: nats://nats:4222
+      NATS_STREAM: SETTLA_PROVIDER_WEBHOOKS
+      NATS_SUBJECT_PREFIX: settla.provider.inbound
+      NUM_PARTITIONS: "8"
+      LEMFI_WEBHOOK_SECRET: ${LEMFI_WEBHOOK_SECRET:-whsec_lemfi_test_secret_key_001}
+      FINCRA_WEBHOOK_SECRET: ${FINCRA_WEBHOOK_SECRET:-whsec_fincra_test_secret_key_002}
+      NODE_ENV: development
+    networks:
+      - settla-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # Demo-friendly port remaps.
+  gateway:
+    ports:
+      - "8080:3000"    # Gateway API on demo-friendly port 8080
+
+  grafana:
+    ports:
+      - "3000:3000"    # Grafana on port 3000 (was 3002)
+
+  prometheus:
+    ports:
+      - "9090:9090"    # Prometheus on port 9090 (was 9092)

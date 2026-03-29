@@ -19,7 +19,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"  # Local dev migrations only
     volumes:
       - pgdata-ledger:/var/lib/postgresql/data
       - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
@@ -48,7 +48,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"  # Local dev migrations only
     volumes:
       - pgdata-transfer:/var/lib/postgresql/data
       - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
@@ -77,7 +77,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"  # Local dev migrations only
     volumes:
       - pgdata-treasury:/var/lib/postgresql/data
       - ./docker/init-rls-role.sh:/docker-entrypoint-initdb.d/init-rls-role.sh:ro
@@ -221,8 +221,13 @@ services:
       - "start"
       - "--addresses=0.0.0.0:3001"
       - "/data/0_0.tigerbeetle"
-    ports:
-      - "3001:3001"
+    # SECURITY: TigerBeetle has no authentication — never expose externally.
+    # Port is accessible only via the settla-net Docker network.
+    # Uncomment the ports mapping below only for local debugging:
+    # ports:
+    #   - "127.0.0.1:3001:3001"
+    expose:
+      - "3001"
     volumes:
       - tbdata:/data
     networks:
