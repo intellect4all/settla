@@ -1,0 +1,79 @@
+# Precomputed recording rules — reduces query load on Grafana dashboards.
+# These are evaluated every 15s and stored as new time series.
+
+groups:
+  - name: settla_recording_rules
+    interval: 15s
+    rules:
+      # ── TPS ────────────────────────────────────────────────────
+      - record: settla:tps:1m
+        expr: sum(rate(settla_transfers_total[1m]))
+
+      - record: settla:tps:5m
+        expr: sum(rate(settla_transfers_total[5m]))
+
+      - record: settla:tps_by_tenant:5m
+        expr: sum by (tenant) (rate(settla_transfers_total[5m]))
+
+      - record: settla:tps_by_corridor:5m
+        expr: sum by (corridor) (rate(settla_transfers_total[5m]))
+
+      # ── Success rate ───────────────────────────────────────────
+      - record: settla:transfer_success_rate:5m
+        expr: >
+          sum(rate(settla_transfers_total{status="completed"}[5m]))
+          /
+          sum(rate(settla_transfers_total[5m]))
+
+      - record: settla:transfer_success_rate:1h
+        expr: >
+          sum(rate(settla_transfers_total{status="completed"}[1h]))
+          /
+          sum(rate(settla_transfers_total[1h]))
+
+      # ── Latency quantiles ──────────────────────────────────────
+      - record: settla:transfer_latency_p50:5m
+        expr: histogram_quantile(0.50, sum(rate(settla_transfer_duration_seconds_bucket[5m])) by (le))
+
+      - record: settla:transfer_latency_p99:5m
+        expr: histogram_quantile(0.99, sum(rate(settla_transfer_duration_seconds_bucket[5m])) by (le))
+
+      - record: settla:transfer_latency_p999:5m
+        expr: histogram_quantile(0.999, sum(rate(settla_transfer_duration_seconds_bucket[5m])) by (le))
+
+      # ── Error rate ─────────────────────────────────────────────
+      - record: settla:error_rate:5m
+        expr: sum(rate(settla_errors_total[5m]))
+
+      - record: settla:error_rate_by_module:5m
+        expr: sum by (module) (rate(settla_errors_total[5m]))
+
+      # ── Ledger write throughput ────────────────────────────────
+      - record: settla:ledger_writes_per_sec:5m
+        expr: sum(rate(settla_ledger_tb_writes_total[5m]))
+
+      - record: settla:ledger_postings_per_sec:5m
+        expr: sum(rate(settla_ledger_postings_total[5m]))
+
+      # ── Connection pool utilization ────────────────────────────
+      - record: settla:pgxpool_utilization
+        expr: settla_pgxpool_current_conns / settla_pgxpool_max_conns
+
+      # ── Cache hit rates ────────────────────────────────────────
+      - record: settla:cache_hit_rate:5m
+        expr: >
+          sum by (cache_type) (rate(settla_cache_hits_total[5m]))
+          /
+          (sum by (cache_type) (rate(settla_cache_hits_total[5m]))
+          + sum by (cache_type) (rate(settla_cache_misses_total[5m])))
+
+      # ── NATS partition skew ────────────────────────────────────
+      - record: settla:nats_partition_skew
+        expr: max(settla_nats_partition_queue_depth) / avg(settla_nats_partition_queue_depth > 0)
+
+      # ── Active tenants ─────────────────────────────────────────
+      - record: settla:active_tenants:1h
+        expr: count(count by (tenant) (rate(settla_transfers_total[1h]) > 0))
+
+      - record: settla:active_tenants:24h
+        expr: count(count by (tenant) (rate(settla_transfers_total[24h]) > 0))

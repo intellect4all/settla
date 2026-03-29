@@ -1,0 +1,169 @@
+# Supplemental alert rules — fills gaps not covered by alerts.yml or settla-sli-alerts.yml.
+#
+# Coverage additions:
+#   - PgxPool (application-level connection pool, distinct from PgBouncer)
+#   - Settlement wall-clock timeout
+#   - Auth cache warming issues at tenant scale
+#   - Retry exhaustion
+#   - Stuck transfer age (not just count)
+#   - Database growth rate
+#   - Reconciliation data discrepancies (vs run failures)
+#   - Tenant onboarding abuse / TPS spike detection
+#   - NATS partition skew (hot partition)
+
+groups:
+  # ═══════════════════════════════════════════════════════════════
+  # PgxPool (application connection pool — separate from PgBouncer)
+  # ═══════════════════════════════════════════════════════════════
+  - name: settla-pgxpool
+    interval: 15s
+    rules:
+      - alert: SettlaPgxPoolUtilizationHigh
+        expr: |
+          (settla_pgxpool_current_conns / settla_pgxpool_max_conns) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PgxPool utilization > 85% on {{ $labels.db }}"
+          description: "Application pool for {{ $labels.db }} at {{ $value | humanizePercentage }}. Consider increasing pool size or investigating query latency."
+
+      - alert: SettlaPgxPoolUtilizationCritical
+        expr: |
+          (settla_pgxpool_current_conns / settla_pgxpool_max_conns) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "PgxPool utilization > 95% on {{ $labels.db }}"
+          description: "Application pool for {{ $labels.db }} nearly exhausted. Queries will start timing out."
+
+      - alert: SettlaPgxPoolIdleConnectionsLow
+        expr: settla_pgxpool_idle_conns < 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PgxPool idle connections < 5 on {{ $labels.db }}"
+
+  # ═══════════════════════════════════════════════════════════════
+  # Settlement wall-clock
+  # ═══════════════════════════════════════════════════════════════
+  - name: settla-settlement-supplemental
+    interval: 15s
+    rules:
+      - alert: SettlaSettlementWallClockExceeds2Hours
+        expr: |
+          histogram_quantile(0.99, rate(settla_settlement_tick_duration_seconds_bucket[1h])) > 7200
+        for: 5m
+        labels:
+          severity: critical
+          team: settlement
+        annotations:
+          summary: "Settlement wall-clock time exceeds 2 hours"
+          description: "Settlement tick p99 is {{ $value | humanize }}s. At scale this blocks the next day's run."
+          runbook_url: "https://settla.internal/runbooks/settlement-slow"
+
+  # ═══════════════════════════════════════════════════════════════
+  # Tenant scale & cache warming
+  # ═══════════════════════════════════════════════════════════════
+  - name: settla-tenant-scale
+    interval: 15s
+    rules:
+      - alert: SettlaAuthL3HitRateHigh
+        expr: |
+          (
+            sum(rate(settla_cache_misses_total{cache_type="auth_l2"}[5m]))
+            /
+            (sum(rate(settla_cache_hits_total{cache_type="auth_l2"}[5m]))
+            + sum(rate(settla_cache_misses_total{cache_type="auth_l2"}[5m])))
+          ) > 0.30
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Auth L3 (DB) hit rate > 30% for 5 minutes"
+          description: "Cache warming issue — too many auth lookups falling through to the database. Check for sudden tenant onboarding or cache eviction."
+
+      - alert: SettlaTpsSpikeSuspicious
+        expr: |
+          sum(rate(settla_transfers_total[5m]))
+          >
+          1.5 * sum(rate(settla_transfers_total[5m] offset 1h))
+          and
+          sum(rate(settla_transfers_total[5m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "TPS spike > 50% above 1h-ago baseline"
+          description: "Current TPS is {{ $value | humanize }}, significantly above the baseline from 1 hour ago. Could indicate abuse, bulk migration, or legitimate traffic growth."
+
+      - alert: SettlaNatsPartitionSkewHigh
+        expr: |
+          (max(settla_nats_partition_queue_depth) / avg(settla_nats_partition_queue_depth > 0)) > 3
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "NATS partition skew > 3x mean (hot partition)"
+          description: "Max partition depth is {{ $value | humanize }}x the mean. Indicates tenant hash collision causing uneven load distribution."
+
+  # ═══════════════════════════════════════════════════════════════
+  # Resilience gaps
+  # ═══════════════════════════════════════════════════════════════
+  - name: settla-resilience-supplemental
+    interval: 15s
+    rules:
+      - alert: SettlaRetryExhausted
+        expr: sum(rate(settla_retry_exhausted_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Retry exhaustions > 1/s for 5 minutes"
+          description: "Operations are failing after all retry attempts. Check downstream dependency health."
+
+      - alert: SettlaStuckTransferMaxAge
+        expr: max(settla_stuck_transfer_max_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Oldest stuck transfer > 5 minutes old"
+          description: "A transfer has been stuck in a non-terminal state for {{ $value | humanize }}s. Recovery detector may be failing."
+
+  # ═══════════════════════════════════════════════════════════════
+  # Infrastructure gaps
+  # ═══════════════════════════════════════════════════════════════
+  - name: settla-infrastructure-supplemental
+    interval: 15s
+    rules:
+      - alert: SettlaDatabaseGrowthHigh
+        expr: settla_database_growth_bytes_per_hour > 5e9
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Database {{ $labels.database }} growing > 5 GB/hour"
+          description: "At this rate, disk will fill faster than expected. Check for partition drop failures or unexpected traffic surge."
+
+      - alert: SettlaReconciliationDiscrepancy
+        expr: sum(increase(settla_reconciliation_discrepancies_total[1h])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: finance
+        annotations:
+          summary: "Reconciliation found discrepancies in the last hour"
+          description: "Financial consistency check detected {{ $value }} mismatches. Immediate investigation required — potential ledger/treasury divergence."
+          runbook_url: "https://settla.internal/runbooks/reconciliation-discrepancy"
