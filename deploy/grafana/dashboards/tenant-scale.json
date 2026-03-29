@@ -1,0 +1,219 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "title": "Tenant Counts",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Total Tenants",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "count(count by (tenant) (settla_transfers_total))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "blue", "value": 0 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+    {
+      "title": "Active (1h)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 1 },
+      "targets": [
+        { "expr": "count(count by (tenant) (rate(settla_transfers_total[1h]) > 0))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": 0 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "title": "Active (24h)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 1 },
+      "targets": [
+        { "expr": "count(count by (tenant) (rate(settla_transfers_total[24h]) > 0))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": 0 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "title": "Treasury Positions",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "count(settla_treasury_balance)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "purple", "value": 0 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+    {
+      "title": "Auth Cache Hit %",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 1 },
+      "targets": [
+        { "expr": "settla_auth_cache_hit_rate * 100", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "green", "value": 90 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" }
+    },
+    {
+      "title": "Settlement Age",
+      "description": "Time since last successful settlement",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 1 },
+      "targets": [
+        { "expr": "time() - settla_settlement_last_success_timestamp", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 86400 }, { "color": "red", "value": 172800 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" }
+    },
+    {
+      "title": "TPS Leaderboard",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "collapsed": false
+    },
+    {
+      "title": "Top 20 Tenants by TPS",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "topk(20, sum by (tenant) (rate(settla_transfers_total[5m])))", "legendFormat": "{{ tenant }}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 500 }, { "color": "red", "value": 2000 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient", "orientation": "horizontal" }
+    },
+    {
+      "title": "Tenant Traffic Over Time (Top 10)",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "topk(10, sum by (tenant) (rate(settla_transfers_total[5m])))", "legendFormat": "{{ tenant }}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "stacking": { "mode": "normal" }, "fillOpacity": 30, "lineWidth": 1, "showPoints": "never" }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      }
+    },
+    {
+      "title": "NATS Partition Load",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false
+    },
+    {
+      "title": "Partition Load Heatmap",
+      "description": "Queue depth per partition — look for hot partitions (skew > 3x)",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "targets": [
+        { "expr": "settla_nats_partition_queue_depth", "legendFormat": "{{ partition }}", "refId": "A" }
+      ],
+      "options": {
+        "calculate": true,
+        "yAxis": { "axisPlacement": "left" },
+        "color": { "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      }
+    },
+    {
+      "title": "Partition Skew Ratio (max / mean)",
+      "description": "> 3x indicates hot partition. Check tenant hash distribution.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "targets": [
+        {
+          "expr": "max(settla_nats_partition_queue_depth) / avg(settla_nats_partition_queue_depth > 0)",
+          "legendFormat": "Skew ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" },
+          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 2 }, { "color": "red", "value": 3 }] }
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "title": "Settlement & Reserves",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "collapsed": false
+    },
+    {
+      "title": "Settlement Progress",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        { "expr": "sum(rate(settla_settlement_tenants_processed_total[5m]))", "legendFormat": "Processed/s", "refId": "A" },
+        { "expr": "sum(rate(settla_settlement_tenants_failed_total[5m]))", "legendFormat": "Failed/s", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, rate(settla_settlement_tick_duration_seconds_bucket[1h]))", "legendFormat": "Tick p99 (s)", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Tick p99 (s)" }, "properties": [{ "id": "unit", "value": "s" }, { "id": "custom.axisPlacement", "value": "right" }] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "title": "Per-Tenant Reserve Rate (Top 20)",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        { "expr": "topk(20, sum by (tenant) (rate(settla_treasury_reserve_total[5m])))", "legendFormat": "{{ tenant }}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 500 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient", "orientation": "horizontal" }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["settla", "tenants", "scale"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Settla Tenant Scale",
+  "uid": "settla-tenant-scale"
+}

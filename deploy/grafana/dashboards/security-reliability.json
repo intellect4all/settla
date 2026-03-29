@@ -1,0 +1,180 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "title": "Auth & Caching",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Auth Cache Hit Rate",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "settla_auth_cache_hit_rate * 100", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "green", "value": 90 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true }
+    },
+    {
+      "title": "Cache Hit Rate by Type (L1/L2/L3)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 10, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum by (cache_type) (rate(settla_cache_hits_total[5m])) / (sum by (cache_type) (rate(settla_cache_hits_total[5m])) + sum by (cache_type) (rate(settla_cache_misses_total[5m]))) * 100",
+          "legendFormat": "{{ cache_type }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "green", "value": 90 }] }
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "title": "Cache Hits vs Misses",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "targets": [
+        { "expr": "sum by (cache_type) (rate(settla_cache_hits_total[5m]))", "legendFormat": "{{ cache_type }} hits/s", "refId": "A" },
+        { "expr": "sum by (cache_type) (rate(settla_cache_misses_total[5m]))", "legendFormat": "{{ cache_type }} miss/s", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] }
+      }
+    },
+    {
+      "title": "DLQ & Recovery",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false
+    },
+    {
+      "title": "DLQ Depth & Messages",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "expr": "settla_dlq_buffer_depth", "legendFormat": "Buffer depth", "refId": "A" },
+        { "expr": "sum by (source_stream) (rate(settla_dlq_messages_total[5m]))", "legendFormat": "{{ source_stream }}/s", "refId": "B" },
+        { "expr": "sum by (result) (rate(settla_dlq_replay_total[5m]))", "legendFormat": "Replay {{ result }}/s", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "title": "Retry Attempts & Exhaustions",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        { "expr": "sum by (operation) (rate(settla_retry_attempts_total[5m]))", "legendFormat": "{{ operation }} retry/s", "refId": "A" },
+        { "expr": "sum by (operation) (rate(settla_retry_exhausted_total[5m]))", "legendFormat": "{{ operation }} exhausted/s", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }
+      }
+    },
+    {
+      "title": "Error Analysis",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false
+    },
+    {
+      "title": "Error Rate by Module",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "targets": [
+        { "expr": "sum by (module) (rate(settla_errors_total[5m]))", "legendFormat": "{{ module }}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "lastNotNull"] }
+      }
+    },
+    {
+      "title": "gRPC Errors by Method",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "targets": [
+        { "expr": "sum by (method, code) (rate(settla_grpc_requests_total{code!=\"OK\"}[5m]))", "legendFormat": "{{ method }} ({{ code }})", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }
+      }
+    },
+    {
+      "title": "Gateway Errors by Path",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "targets": [
+        {
+          "expr": "sum by (path, status) (rate(settla_gateway_requests_total{status=~\"4..|5..\"}[5m]))",
+          "legendFormat": "{{ path }} ({{ status }})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }
+      }
+    },
+    {
+      "title": "Synthetic Canary",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, corridor) (rate(settla_synthetic_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{ corridor }} p99",
+          "refId": "A"
+        },
+        { "expr": "sum(rate(settla_synthetic_failures_total[5m]))", "legendFormat": "Failures/s", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } }
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["settla", "security", "reliability"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Settla Security & Reliability",
+  "uid": "settla-security-reliability"
+}
