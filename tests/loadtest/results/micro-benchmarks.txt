@@ -1,0 +1,55 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/intellect4all/settla/tests/loadtest
+cpu: Apple M3 Pro
+BenchmarkZipfSample_1K-11                   	100000000	        30.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkZipfSample_10K-11                  	100000000	        41.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkZipfSample_100K-11                 	80543668	        41.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGenerateScaleTenants_50-11         	  190330	     22621 ns/op	   12432 B/op	     102 allocs/op
+BenchmarkGenerateScaleTenants_20K-11        	     843	   4220584 ns/op	 3205633 B/op	   99237 allocs/op
+BenchmarkGenerateScaleTenants_100K-11       	     164	  21257809 ns/op	16006311 B/op	  499239 allocs/op
+BenchmarkHistogramRecord-11                 	296932082	        13.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHistogramPercentile-11             	     472	   7918451 ns/op	  802872 B/op	       3 allocs/op
+BenchmarkHistogramRecordConcurrent-11       	37164231	        95.22 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsRecordError-11              	264526386	        12.31 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsRecordErrorConcurrent-11    	38094750	        96.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkHotspotSelect-11                   	315982689	        11.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncMapRead_1K-11                  	1000000000	         2.996 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncMapRead_10K-11                 	1000000000	         3.103 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncMapRead_50K-11                 	750367628	         5.127 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncMapRead_100K-11                	657174450	         5.837 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSyncMapWrite_1K-11                 	89038843	        40.45 ns/op	      93 B/op	       4 allocs/op
+BenchmarkSyncMapWrite_10K-11                	100000000	        37.16 ns/op	      95 B/op	       4 allocs/op
+BenchmarkSyncMapWrite_100K-11               	95535696	        39.59 ns/op	      95 B/op	       4 allocs/op
+BenchmarkMutexPool_1K-11                    	705179880	         4.813 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMutexPool_10K-11                   	1000000000	         4.054 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMutexPool_100K-11                  	713993410	         4.865 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRandomAmount_NGN-11                	100000000	        30.37 ns/op	      40 B/op	       2 allocs/op
+BenchmarkRandomAmount_GBP-11                	100000000	        31.51 ns/op	      40 B/op	       2 allocs/op
+BenchmarkCategorizeError-11                 	162567267	        21.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCategorizeHTTPError-11             	1000000000	         0.2754 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/intellect4all/settla/tests/loadtest	110.159s
+goos: darwin
+goarch: arm64
+pkg: github.com/intellect4all/settla/cache
+cpu: Apple M3 Pro
+BenchmarkLocalCacheGet-11                	18030211	       196.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLocalCacheSet-11                	 1000000	     16334 ns/op	      31 B/op	       2 allocs/op
+BenchmarkLocalCacheSetOverwrite-11       	54503716	        66.77 ns/op	       8 B/op	       0 allocs/op
+BenchmarkLocalCacheGetMiss-11            	55678276	        76.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLocalCacheDelete-11             	62497557	        59.30 ns/op	      21 B/op	       1 allocs/op
+BenchmarkRedisGet-11                     	  338907	     11261 ns/op	     202 B/op	       6 allocs/op
+BenchmarkRedisSet-11                     	  362772	     13064 ns/op	     290 B/op	       8 allocs/op
+BenchmarkRedisSetJSON-11                 	  202446	     17595 ns/op	     387 B/op	      11 allocs/op
+BenchmarkRedisGetJSON-11                 	  342903	     11031 ns/op	     522 B/op	      13 allocs/op
+BenchmarkIdempotencyCheckSet-11          	  355833	     14598 ns/op	     330 B/op	      11 allocs/op
+BenchmarkIdempotencyCheckDuplicate-11    	  342380	     11435 ns/op	     290 B/op	       8 allocs/op
+BenchmarkTenantCacheGet-11               	16873790	       220.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkConcurrentLocalCache-11         	13120099	       277.2 ns/op	      31 B/op	       1 allocs/op
+BenchmarkConcurrentRedisCache-11         	  294542	     13523 ns/op	     251 B/op	       8 allocs/op
+BenchmarkLocalCache_Get-11               	16449228	       210.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkLocalCache_Set-11               	 1000000	     15987 ns/op	      31 B/op	       2 allocs/op
+BenchmarkTenantCache_L1Hit-11            	18022471	       222.7 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/intellect4all/settla/cache	96.890s

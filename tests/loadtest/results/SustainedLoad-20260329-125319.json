@@ -1,0 +1,67 @@
+{
+  "scenario": "SustainedLoad",
+  "description": "Scenario B: 580 TPS sustained for 10 min. 50 tenants, multi-currency. Validates steady-state.",
+  "start_time": "2026-03-29T12:53:19.159983+01:00",
+  "end_time": "2026-03-29T13:06:19.213066+01:00",
+  "duration": "13m0s",
+  "config": {
+    "target_tps": 580,
+    "duration": "10m0s",
+    "tenant_count": 50,
+    "use_zipf": false,
+    "spike_mode": false,
+    "hotspot_mode": false
+  },
+  "throughput": {
+    "transfers_created": 32776,
+    "transfers_completed": 2245,
+    "transfers_failed": 0,
+    "actual_tps": 42.0184364879852,
+    "peak_tps": 111,
+    "success_rate_pct": 6.8495240419819385
+  },
+  "latency": {
+    "quote_p50_ms": 6.353,
+    "quote_p95_ms": 2648.841,
+    "quote_p99_ms": 7758.487,
+    "create_p50_ms": 20.458,
+    "create_p95_ms": 2116.134,
+    "create_p99_ms": 5056.542,
+    "e2e_p50_ms": 41431.653,
+    "e2e_p95_ms": 86138.079,
+    "e2e_p99_ms": 89152.777
+  },
+  "errors": {
+    "total_errors": 38579,
+    "error_rate_pct": 117.70502806931901,
+    "errors_by_type": {
+      "connection_error": 8083,
+      "poll_failed": 29755,
+      "server_error_5xx": 596,
+      "timeout": 144,
+      "unknown": 1
+    }
+  },
+  "verification": {
+    "outbox_drained": false,
+    "ledger_balanced": false,
+    "treasury_reconciled": false,
+    "stuck_transfers": 0
+  },
+  "thresholds": {
+    "p50_latency_passed": false,
+    "p50_latency_actual_ms": 41431.653,
+    "p50_latency_limit_ms": 100,
+    "p99_latency_passed": false,
+    "p99_latency_actual_ms": 89152.777,
+    "p99_latency_limit_ms": 500,
+    "error_rate_passed": false,
+    "error_rate_actual_pct": 117.70502806931901,
+    "error_rate_limit_pct": 0.1,
+    "stuck_transfers_passed": true,
+    "stuck_transfers_actual": 0,
+    "stuck_transfers_limit": 0
+  },
+  "passed": false,
+  "fail_reason": "drain phase failed: drain timeout with 777 transfers still in-flight"
+}

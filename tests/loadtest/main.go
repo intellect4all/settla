@@ -55,6 +55,25 @@ type LoadTestConfig struct {
 
 	// MaxErrorRate is the maximum acceptable error rate as a percentage (default 1.0%).
 	MaxErrorRate float64
+
+	// Zipf distribution for tenant selection (Scenarios G, H, I, J).
+	// When true, tenants are selected using Zipf distribution instead of uniform random.
+	UseZipf      bool
+	ZipfExponent float64 // Default 1.2 — top 1% generates ~50% traffic
+
+	// Spike mode (Scenario E): instant jump, no ramp.
+	SpikeMode    bool
+	SpikeBaseTPS int // Base TPS before/after spike (default 100)
+
+	// HotSpot mode (Scenario F): concentrate traffic on first tenant.
+	HotSpotMode bool
+	HotSpotPct  float64 // Percentage of traffic to first tenant (default 80)
+
+	// Settlement mode (Scenario J): trigger settlement after load phase.
+	SettlementMode bool
+
+	// OpsAPIKey for settlement trigger (Scenario J).
+	OpsAPIKey string
 }
 
 // TenantConfig represents a test tenant with API credentials.
@@ -80,6 +99,10 @@ type LoadTestRunner struct {
 	// TPS tracking (updated every second by reportMetrics)
 	lastTPSCheck   time.Time
 	lastTPSCreated int64
+
+	// Tenant selection strategies (initialized in Run)
+	zipf    *ZipfDistribution // Non-nil when UseZipf is true
+	hotspot *HotspotSelector  // Non-nil when HotSpotMode is true
 }
 
 // TransferResult tracks the outcome of a single transfer flow.
@@ -109,6 +132,40 @@ func NewLoadTestRunner(config LoadTestConfig, logger *slog.Logger) *LoadTestRunn
 func (r *LoadTestRunner) Run(ctx context.Context) error {
 	r.startTime = time.Now()
 	r.lastTPSCheck = r.startTime
+
+	// Initialize Zipf distribution if configured
+	if r.config.UseZipf && len(r.config.Tenants) > 1 {
+		exp := r.config.ZipfExponent
+		if exp <= 0 {
+			exp = 1.2
+		}
+		r.zipf = NewZipfDistribution(len(r.config.Tenants), exp)
+		stats := r.zipf.Stats()
+		r.logger.Info("zipf distribution initialized",
+			"tenants", stats.TenantCount,
+			"exponent", stats.Exponent,
+			"top_1pct_traffic", fmt.Sprintf("%.1f%%", stats.Top1PctTraffic*100),
+			"top_10pct_traffic", fmt.Sprintf("%.1f%%", stats.Top10PctTraffic*100),
+		)
+	}
+
+	// Initialize hotspot selector if configured
+	if r.config.HotSpotMode && len(r.config.Tenants) >= 2 {
+		pct := r.config.HotSpotPct
+		if pct <= 0 {
+			pct = 80.0
+		}
+		var err error
+		r.hotspot, err = HotspotTenantPool(r.config.Tenants, pct)
+		if err != nil {
+			return fmt.Errorf("hotspot setup: %w", err)
+		}
+		r.logger.Info("hotspot mode enabled",
+			"hot_tenant", r.config.Tenants[0].ID,
+			"hot_pct", pct,
+		)
+	}
+
 	r.logger.Info("starting load test",
 		"target_tps", r.config.TargetTPS,
 		"duration", r.config.Duration,
@@ -320,8 +377,16 @@ func (r *LoadTestRunner) executeTransferFlow(ctx context.Context) {
 		r.metrics.PeakInflight.Store(r.inflight.Load())
 	}
 
-	// Select random tenant
-	tenant := r.config.Tenants[rand.Intn(len(r.config.Tenants))]
+	// Select tenant based on configured distribution
+	var tenant TenantConfig
+	switch {
+	case r.hotspot != nil:
+		tenant = r.hotspot.Select()
+	case r.zipf != nil:
+		tenant = r.config.Tenants[r.zipf.Sample()]
+	default:
+		tenant = r.config.Tenants[rand.Intn(len(r.config.Tenants))]
+	}
 
 	// Step 1: Create quote
 	quoteStart := time.Now()
@@ -446,10 +511,7 @@ func (r *LoadTestRunner) createTransfer(ctx context.Context, tenant TenantConfig
 				return "NG"
 			}(),
 		},
-		"recipient": map[string]string{
-			"name":    "Load Test Recipient",
-			"country": tenant.Country,
-		},
+		"recipient": buildRecipient(tenant.Country),
 	}
 
 	resp, err := r.doRequest(ctx, "POST", "/v1/transfers", tenant.APIKey, body)
@@ -673,6 +735,39 @@ func (r *LoadTestRunner) collectResults(ctx context.Context) {
 	}
 }
 
+// buildRecipient constructs a valid recipient payload with proper payment details
+// for the destination country. GB recipients require sort_code or iban.
+func buildRecipient(country string) map[string]string {
+	switch country {
+	case "GB":
+		return map[string]string{
+			"name":      "Load Test Recipient",
+			"country":   "GB",
+			"sort_code": "040004",
+			"account_number": "12345678",
+			"bank_name": "Loadtest Bank UK",
+		}
+	case "NG":
+		return map[string]string{
+			"name":           "Load Test Recipient",
+			"country":        "NG",
+			"account_number": "0123456789",
+			"bank_name":      "Loadtest Bank NG",
+		}
+	case "US":
+		return map[string]string{
+			"name":    "Load Test Recipient",
+			"country": "US",
+			"iban":    "US12345678901234567890",
+		}
+	default:
+		return map[string]string{
+			"name":    "Load Test Recipient",
+			"country": country,
+		}
+	}
+}
+
 // randomAmount generates a random transfer amount appropriate for the currency.
 // GBP: 100-10,000; NGN: 10,000-1,000,000 (reflects real-world ranges).
 func randomAmount(currency string) decimal.Decimal {
@@ -695,6 +790,33 @@ func randomDestCurrency(source string) string {
 }
 
 func main() {
+	// Sub-command dispatch: "seed" runs the tenant provisioning tool
+	if len(os.Args) > 1 && os.Args[1] == "seed" {
+		if err := RunSeed(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "seed failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Sub-command: "report" aggregates JSON results into a single report
+	if len(os.Args) > 1 && os.Args[1] == "report" {
+		resultsDir := "tests/loadtest/results"
+		outputPath := "tests/loadtest/results/aggregate-report.json"
+		if len(os.Args) > 2 {
+			resultsDir = os.Args[2]
+		}
+		if len(os.Args) > 3 {
+			outputPath = os.Args[3]
+		}
+		if err := WriteAggregateReport(resultsDir, outputPath); err != nil {
+			fmt.Fprintf(os.Stderr, "report failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Aggregate report written to %s\n", outputPath)
+		return
+	}
+
 	var (
 		gatewayURL    = flag.String("gateway", "http://localhost:3000", "Gateway URL")
 		targetTPS     = flag.Int("tps", 1000, "Target transactions per second")
@@ -704,10 +826,11 @@ func main() {
 		drain         = flag.Duration("drain", 60*time.Second, "Drain duration")
 		soakMode      = flag.Bool("soak", false, "Run in soak test mode (with health monitoring)")
 		pprofURL      = flag.String("pprof", "http://localhost:6060", "settla-server pprof URL")
-		scenarioName  = flag.String("scenario", "", "Named scenario (PeakLoad|SustainedLoad|BurstRecovery|SingleTenantFlood|MultiTenantScale)")
+		scenarioName  = flag.String("scenario", "", "Named scenario (SmokeTest|SustainedLoad|PeakBurst|SoakTest|SpikeTest|HotSpot|TenantScale20K|TenantScale100K|TenantScalePeak|SettlementBatch|PeakLoad|BurstRecovery|SingleTenantFlood|MultiTenantScale)")
 		transferDBURL = flag.String("transfer-db", "", "Transfer DB URL for post-test outbox/stuck-transfer checks (optional)")
 		ledgerDBURL   = flag.String("ledger-db", "", "Ledger DB URL for post-test debit=credit balance check (optional)")
 		maxErrorRate  = flag.Float64("max-error-rate", 1.0, "Maximum acceptable error rate percentage (default 1.0%)")
+		jsonReport    = flag.Bool("json", false, "Write structured JSON result to tests/loadtest/results/")
 	)
 	flag.Parse()
 
@@ -771,6 +894,7 @@ func main() {
 	}
 
 	var config LoadTestConfig
+	var scenario Scenario
 
 	// Named scenario overrides individual flags.
 	if *scenarioName != "" {
@@ -781,6 +905,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("running named scenario", "name", s.Name, "description", s.Description)
+		scenario = s
 		config = s.Config
 		config.GatewayURL = *gatewayURL // always allow gateway override
 	} else {
@@ -798,6 +923,11 @@ func main() {
 			RampUpDuration: *rampUp,
 			DrainDuration:  *drain,
 			MaxErrorRate:   *maxErrorRate,
+		}
+		scenario = Scenario{
+			Name:        "Custom",
+			Description: fmt.Sprintf("Custom: %d TPS, %d tenants, %s", *targetTPS, *tenants, *duration),
+			Config:      config,
 		}
 	}
 
@@ -850,12 +980,40 @@ func main() {
 		// Standard load test mode
 		runner := NewLoadTestRunner(config, logger)
 
+		// Set up result collector for JSON reporting
+		var collector *ResultCollector
+		if *jsonReport {
+			collector = NewResultCollector(scenario, runner.metrics)
+		}
+
 		if err := runner.Run(ctx); err != nil {
 			logger.Error("load test failed", "error", err)
+
+			// Still write partial result on failure if JSON mode
+			if collector != nil {
+				result := collector.Collect(nil)
+				result.Passed = false
+				result.FailReason = err.Error()
+				if path, writeErr := result.WriteJSON("tests/loadtest/results"); writeErr == nil {
+					logger.Info("partial result written", "path", path)
+				}
+			}
+
 			os.Exit(1)
 		}
 
 		runner.printMetrics()
+
+		// Write structured JSON result
+		if collector != nil {
+			result := collector.Collect(nil)
+			if path, writeErr := result.WriteJSON("tests/loadtest/results"); writeErr != nil {
+				logger.Error("failed to write JSON result", "error", writeErr)
+			} else {
+				logger.Info("result written", "path", path, "passed", result.Passed)
+			}
+		}
+
 		logger.Info("load test completed successfully")
 	}
 }
