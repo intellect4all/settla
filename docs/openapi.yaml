@@ -1,0 +1,4300 @@
+openapi: 3.1.0
+info:
+  title: Settla API
+  version: 1.0.0
+  description: 'B2B stablecoin settlement infrastructure for fintechs. Settla enables cross-border payments through stablecoin
+    rails with automatic on-ramp, off-ramp, and treasury management.
+
+
+    All monetary amounts are represented as decimal strings to preserve precision. All IDs are UUIDs. All timestamps are in
+    UTC (RFC 3339).'
+  contact:
+    name: Settla Support
+    email: support@settla.io
+    url: https://docs.settla.io
+  license:
+    name: Proprietary
+servers:
+- url: https://api.settla.io
+  description: Production
+- url: https://sandbox.settla.io
+  description: Sandbox
+security:
+- BearerAuth: []
+tags:
+- name: Authentication
+  description: Register, login, email verification, token refresh, and KYB submission.
+- name: Quotes
+  description: Create and retrieve FX quotes for cross-border transfers. Quotes include fee breakdowns and routing information.
+    Cached for 30 seconds.
+- name: Transfers
+  description: Create, retrieve, list, and cancel cross-border transfers. Transfers progress through a state machine from
+    CREATED to COMPLETED or FAILED.
+- name: Treasury
+  description: Manage treasury positions, liquidity, top-ups, withdrawals, and position event history.
+- name: Crypto Deposits
+  description: Create on-chain deposit sessions for receiving stablecoin payments. Supports Tron, Ethereum, Solana, Base,
+    Polygon, and Arbitrum.
+- name: Bank Deposits
+  description: Create fiat deposit sessions via virtual bank accounts. Supports automatic reconciliation and mismatch policies.
+- name: Payment Links
+  description: Generate shareable payment links for merchant collections. Links resolve to crypto deposit sessions.
+- name: Routes
+  description: Query available routing options for a currency pair, with scoring breakdown.
+- name: Verification
+  description: Verify and look up transactions by ID, reference, or blockchain transaction hash.
+- name: Analytics
+  description: Transfer analytics, fee reports, provider metrics, reconciliation status, deposit metrics, and data exports.
+- name: Tenant Portal
+  description: 'Tenant self-service: profile, API keys, webhook configuration, and dashboard metrics.'
+- name: Webhooks
+  description: Inbound provider webhook endpoint for async payment provider callbacks.
+- name: Health
+  description: Health and readiness probes for monitoring.
+- name: Ledger
+  description: Double-entry ledger accounts and transaction history (read model powered by TigerBeetle)
+- name: Ops
+  description: Internal operations endpoints (requires X-Ops-Api-Key)
+paths:
+  /v1/auth/register:
+    post:
+      operationId: registerTenant
+      summary: Register a new tenant
+      description: Creates a new tenant account. A verification email is sent to the provided address. The tenant must complete
+        email verification before accessing most API endpoints.
+      tags:
+      - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - company_name
+              - email
+              - password
+              properties:
+                company_name:
+                  type: string
+                  description: Legal company name of the fintech.
+                  example: Acme Payments Ltd
+                email:
+                  type: string
+                  format: email
+                  description: Primary contact email address.
+                  example: admin@acmepay.com
+                password:
+                  type: string
+                  minLength: 8
+                  description: Account password. Minimum 8 characters.
+                  example: s3cur3Pa$$w0rd!
+                display_name:
+                  type: string
+                  description: Display name shown in the portal. Defaults to company_name if omitted.
+                  example: Acme Pay
+      responses:
+        '201':
+          description: Tenant registered successfully. Verification email sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                    format: uuid
+                    example: c3d4e5f6-7890-1234-abcd-ef0123456789
+                  user_id:
+                    type: string
+                    format: uuid
+                    example: d4e5f678-9012-3456-bcde-f01234567890
+                  email:
+                    type: string
+                    format: email
+                    example: admin@acmepay.com
+                  message:
+                    type: string
+                    example: Registration successful. Please verify your email.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/auth/login:
+    post:
+      operationId: login
+      summary: Authenticate and obtain tokens
+      description: Authenticates a user with email and password, returning JWT access and refresh tokens. Rate limited to
+        10 requests per minute per IP.
+      tags:
+      - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: admin@acmepay.com
+                password:
+                  type: string
+                  example: s3cur3Pa$$w0rd!
+      responses:
+        '200':
+          description: Authentication successful.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    description: JWT access token. Use as Bearer token for API requests.
+                    example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refresh_token:
+                    type: string
+                    description: Refresh token for obtaining new access tokens.
+                    example: dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...
+                  expires_in:
+                    type: integer
+                    description: Access token validity in seconds.
+                    example: 3600
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                        example: d4e5f678-9012-3456-bcde-f01234567890
+                      email:
+                        type: string
+                        format: email
+                        example: admin@acmepay.com
+                      tenant_id:
+                        type: string
+                        format: uuid
+                        example: c3d4e5f6-7890-1234-abcd-ef0123456789
+                      role:
+                        type: string
+                        example: admin
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/auth/verify-email:
+    post:
+      operationId: verifyEmail
+      summary: Verify email address
+      description: Verifies a tenant's email address using the token sent during registration.
+      tags:
+      - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - token
+              properties:
+                token:
+                  type: string
+                  description: Email verification token from the verification link.
+                  example: eyJhbGciOiJIUzI1NiJ9.dG9rZW4...
+      responses:
+        '200':
+          description: Email verified successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Email verified successfully.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Refresh access token
+      description: Exchanges a valid refresh token for a new access token.
+      tags:
+      - Authentication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+                  description: The refresh token obtained from login.
+                  example: dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...
+      responses:
+        '200':
+          description: Token refreshed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+                  expires_in:
+                    type: integer
+                    example: 3600
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/kyb:
+    post:
+      operationId: submitKyb
+      summary: Submit KYB application
+      description: Submits a Know Your Business (KYB) application for the authenticated tenant. Required before processing
+        live transactions.
+      tags:
+      - Authentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - company_registration_number
+              - country
+              - business_type
+              - contact_name
+              - contact_email
+              properties:
+                company_registration_number:
+                  type: string
+                  description: Official company registration or incorporation number.
+                  example: '12345678'
+                country:
+                  type: string
+                  minLength: 2
+                  maxLength: 2
+                  description: Country of incorporation (ISO 3166-1 alpha-2).
+                  example: GB
+                business_type:
+                  type: string
+                  enum:
+                  - fintech
+                  - bank
+                  - payment_processor
+                  - other
+                  description: Type of business.
+                  example: fintech
+                contact_name:
+                  type: string
+                  description: Primary contact full name.
+                  example: Jane Smith
+                contact_email:
+                  type: string
+                  format: email
+                  description: Primary contact email.
+                  example: jane@acmepay.com
+                contact_phone:
+                  type: string
+                  description: Primary contact phone number.
+                  example: +44 7700 900000
+      responses:
+        '200':
+          description: KYB application submitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: KYB application submitted successfully.
+                  kyb_status:
+                    type: string
+                    enum:
+                    - pending
+                    - approved
+                    - rejected
+                    - under_review
+                    example: pending
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/quotes:
+    post:
+      operationId: createQuote
+      summary: Create a quote
+      description: Creates an FX quote for a cross-border transfer. Quotes include the exchange rate, fee breakdown, and recommended
+        route. Quotes are cached for 30 seconds (bucketed) and expire after the time indicated in `expires_at`.
+      tags:
+      - Quotes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - source_currency
+              - source_amount
+              - dest_currency
+              properties:
+                source_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Source currency code (e.g. GBP, NGN, USD, EUR).
+                  example: GBP
+                source_amount:
+                  type: string
+                  description: Amount in source currency. Decimal string for precision.
+                  example: '1000.00'
+                dest_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Destination currency code.
+                  example: NGN
+                dest_country:
+                  type: string
+                  minLength: 2
+                  maxLength: 2
+                  description: Destination country (ISO 3166-1 alpha-2). Used for route optimization.
+                  example: NG
+      responses:
+        '200':
+          description: Quote created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/quotes/{quoteId}:
+    get:
+      operationId: getQuote
+      summary: Get a quote
+      description: Retrieves an existing quote by ID. Returns 404 if the quote has expired and been purged.
+      tags:
+      - Quotes
+      parameters:
+      - name: quoteId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Quote ID.
+      responses:
+        '200':
+          description: Quote retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transfers:
+    post:
+      operationId: createTransfer
+      summary: Create a transfer
+      description: 'Initiates a new cross-border transfer. The transfer progresses through a state machine: CREATED -> FUNDED
+        -> ON_RAMPING -> SETTLING -> OFF_RAMPING -> COMPLETED. Each state transition is driven by the outbox relay and dedicated
+        workers.
+
+
+        The `idempotency_key` field is required and ensures that duplicate requests with the same key return the original
+        transfer instead of creating a new one.'
+      tags:
+      - Transfers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - idempotency_key
+              - source_currency
+              - source_amount
+              - dest_currency
+              - recipient
+              properties:
+                idempotency_key:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                  description: Client-generated unique key for idempotency. Scoped per tenant.
+                  example: txn_20240315_001
+                external_ref:
+                  type: string
+                  description: Your internal reference for this transfer.
+                  example: INV-2024-0042
+                source_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Source currency code.
+                  example: GBP
+                source_amount:
+                  type: string
+                  description: Amount in source currency. Decimal string. Minimum 0.01, maximum 10,000,000.
+                  example: '1000.00'
+                dest_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Destination currency code.
+                  example: NGN
+                sender:
+                  $ref: '#/components/schemas/Sender'
+                recipient:
+                  $ref: '#/components/schemas/Recipient'
+                quote_id:
+                  type: string
+                  format: uuid
+                  description: Optional quote ID to lock in the quoted rate and fees.
+      responses:
+        '201':
+          description: Transfer created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: listTransfers
+      summary: List transfers
+      description: Retrieves a paginated list of transfers for the authenticated tenant. Supports filtering by status and
+        free-text search.
+      tags:
+      - Transfers
+      parameters:
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 1000
+        description: Number of transfers per page.
+      - name: page_token
+        in: query
+        schema:
+          type: string
+        description: Cursor token for the next page. Obtained from `next_page_token` in a previous response.
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - CREATED
+          - FUNDED
+          - ON_RAMPING
+          - SETTLING
+          - OFF_RAMPING
+          - COMPLETED
+          - FAILED
+          - REFUNDING
+          - REFUNDED
+        description: Filter by transfer status.
+      - name: search
+        in: query
+        schema:
+          type: string
+        description: Free-text search across external_ref, idempotency_key, and recipient name.
+      responses:
+        '200':
+          description: Transfer list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transfers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Transfer'
+                  next_page_token:
+                    type: string
+                    description: Cursor for the next page. Absent if this is the last page.
+                    example: eyJpZCI6IjEyMzQ1Njc4In0=
+                  total_count:
+                    type: integer
+                    description: Total number of transfers matching the filters.
+                    example: 1542
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transfers/{transferId}:
+    get:
+      operationId: getTransfer
+      summary: Get a transfer
+      description: Retrieves the full details of a transfer by ID, including blockchain transactions and fee breakdown.
+      tags:
+      - Transfers
+      parameters:
+      - name: transferId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Transfer ID.
+      responses:
+        '200':
+          description: Transfer retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transfers/{transferId}/events:
+    get:
+      operationId: getTransferEvents
+      summary: Get transfer events
+      description: Retrieves the full event history for a transfer, showing each state transition with timestamps and metadata.
+      tags:
+      - Transfers
+      parameters:
+      - name: transferId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Transfer ID.
+      responses:
+        '200':
+          description: Transfer events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TransferEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transfers/{transferId}/cancel:
+    post:
+      operationId: cancelTransfer
+      summary: Cancel a transfer
+      description: Requests cancellation of a transfer. Only transfers in CREATED or FUNDED status can be cancelled. Transfers
+        in later states require manual review.
+      tags:
+      - Transfers
+      parameters:
+      - name: transferId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Transfer ID.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional cancellation reason.
+                  example: Customer requested cancellation.
+      responses:
+        '200':
+          description: Transfer cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/positions:
+    get:
+      operationId: listPositions
+      summary: List treasury positions
+      description: Returns all treasury positions for the authenticated tenant. Each position represents a currency balance
+        at a specific location (e.g. GBP in the UK clearing account).
+      tags:
+      - Treasury
+      responses:
+        '200':
+          description: Treasury positions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  positions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Position'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/positions/{currency}/{location}:
+    get:
+      operationId: getPosition
+      summary: Get a treasury position
+      description: Retrieves a specific treasury position by currency and location.
+      tags:
+      - Treasury
+      parameters:
+      - name: currency
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Z]{3,5}$
+        description: Currency code (e.g. GBP, USDT).
+        example: USDT
+      - name: location
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Position location identifier (e.g. tron, ethereum, uk_clearing).
+        example: tron
+      responses:
+        '200':
+          description: Position retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/liquidity:
+    get:
+      operationId: getLiquidityReport
+      summary: Get liquidity report
+      description: Returns an aggregated liquidity report across all positions, including total available balances per currency
+        and alert positions where balances are below minimum thresholds.
+      tags:
+      - Treasury
+      responses:
+        '200':
+          description: Liquidity report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiquidityReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/topup:
+    post:
+      operationId: topUpPosition
+      summary: Top up a treasury position
+      description: Initiates a top-up (deposit) to a treasury position. The position is credited once funds are confirmed.
+      tags:
+      - Treasury
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - currency
+              - location
+              - amount
+              properties:
+                currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Currency code.
+                  example: USDT
+                location:
+                  type: string
+                  description: Position location.
+                  example: tron
+                amount:
+                  type: string
+                  description: Top-up amount. Decimal string.
+                  example: '50000.00'
+                method:
+                  type: string
+                  enum:
+                  - bank_transfer
+                  - crypto
+                  - internal
+                  description: Top-up method. Defaults to bank_transfer.
+                  example: crypto
+      responses:
+        '201':
+          description: Top-up initiated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionTransaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/withdraw:
+    post:
+      operationId: withdrawPosition
+      summary: Withdraw from a treasury position
+      description: Initiates a withdrawal from a treasury position. The amount must not exceed the available (unlocked) balance.
+      tags:
+      - Treasury
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - currency
+              - location
+              - amount
+              - method
+              - destination
+              properties:
+                currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  example: USDT
+                location:
+                  type: string
+                  example: tron
+                amount:
+                  type: string
+                  description: Withdrawal amount. Decimal string.
+                  example: '10000.00'
+                method:
+                  type: string
+                  enum:
+                  - bank_transfer
+                  - crypto
+                  example: crypto
+                destination:
+                  type: string
+                  description: Destination address or account number for the withdrawal.
+                  example: TXkR2...7xN3
+      responses:
+        '201':
+          description: Withdrawal initiated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionTransaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/transactions:
+    get:
+      operationId: listPositionTransactions
+      summary: List position transactions
+      description: Retrieves a paginated list of treasury position transactions (top-ups and withdrawals).
+      tags:
+      - Treasury
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+        description: Number of transactions per page.
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+        description: Number of transactions to skip.
+      responses:
+        '200':
+          description: Position transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PositionTransaction'
+                  totalCount:
+                    type: integer
+                    example: 87
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/transactions/{id}:
+    get:
+      operationId: getPositionTransaction
+      summary: Get a position transaction
+      description: Retrieves a specific treasury position transaction by ID.
+      tags:
+      - Treasury
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Position transaction ID.
+      responses:
+        '200':
+          description: Position transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionTransaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/treasury/positions/{currency}/{location}/events:
+    get:
+      operationId: listPositionEvents
+      summary: List position events
+      description: Retrieves an audit log of events for a specific treasury position, including credits, debits, reservations,
+        and releases.
+      tags:
+      - Treasury
+      parameters:
+      - name: currency
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Z]{3,5}$
+        example: USDT
+      - name: location
+        in: path
+        required: true
+        schema:
+          type: string
+        example: tron
+      - name: from
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: Start of time range (inclusive).
+      - name: to
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: End of time range (inclusive).
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 50
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      responses:
+        '200':
+          description: Position events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PositionEvent'
+                  totalCount:
+                    type: integer
+                    example: 342
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits:
+    post:
+      operationId: createDepositSession
+      summary: Create a crypto deposit session
+      description: Creates a new crypto deposit session. A unique deposit address is generated for the specified chain and
+        token. The session monitors the blockchain for incoming payments and progresses through the deposit lifecycle.
+      tags:
+      - Crypto Deposits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - chain
+              - token
+              - expected_amount
+              properties:
+                chain:
+                  type: string
+                  enum:
+                  - tron
+                  - ethereum
+                  - solana
+                  - base
+                  - polygon
+                  - arbitrum
+                  description: Blockchain network.
+                  example: tron
+                token:
+                  type: string
+                  description: Token symbol (e.g. USDT, USDC).
+                  example: USDT
+                expected_amount:
+                  type: string
+                  description: Expected deposit amount. Decimal string.
+                  example: '5000.00'
+                currency:
+                  type: string
+                  description: Target fiat currency for auto-conversion (required if settlement_pref is AUTO_CONVERT).
+                  example: NGN
+                settlement_pref:
+                  type: string
+                  enum:
+                  - AUTO_CONVERT
+                  - HOLD
+                  - THRESHOLD
+                  description: Settlement preference. AUTO_CONVERT converts to fiat immediately. HOLD keeps as stablecoin.
+                    THRESHOLD converts when a threshold is met.
+                  example: AUTO_CONVERT
+                idempotency_key:
+                  type: string
+                  description: Idempotency key for deduplication.
+                  example: dep_20240315_001
+                ttl_seconds:
+                  type: integer
+                  description: Session time-to-live in seconds. Default varies by chain.
+                  example: 3600
+      responses:
+        '201':
+          description: Deposit session created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: listDepositSessions
+      summary: List crypto deposit sessions
+      description: Retrieves a paginated list of crypto deposit sessions for the authenticated tenant.
+      tags:
+      - Crypto Deposits
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      responses:
+        '200':
+          description: Deposit sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DepositSession'
+                  total:
+                    type: integer
+                    example: 156
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits/{id}:
+    get:
+      operationId: getDepositSession
+      summary: Get a crypto deposit session
+      description: Retrieves the full details of a crypto deposit session.
+      tags:
+      - Crypto Deposits
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Deposit session ID.
+      responses:
+        '200':
+          description: Deposit session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits/{id}/cancel:
+    post:
+      operationId: cancelDepositSession
+      summary: Cancel a crypto deposit session
+      description: Cancels a pending deposit session. Only sessions in PENDING_PAYMENT status can be cancelled.
+      tags:
+      - Crypto Deposits
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Deposit session cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits/balance:
+    get:
+      operationId: getCryptoBalances
+      summary: Get crypto balances
+      description: Returns the tenant's crypto balances across all chains and tokens, with USD valuations.
+      tags:
+      - Crypto Deposits
+      responses:
+        '200':
+          description: Crypto balances.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balances:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        chain:
+                          type: string
+                          example: tron
+                        token:
+                          type: string
+                          example: USDT
+                        balance:
+                          type: string
+                          description: Balance amount. Decimal string.
+                          example: '125000.50'
+                        value_usd:
+                          type: string
+                          description: USD equivalent. Decimal string.
+                          example: '125000.50'
+                  total_value_usd:
+                    type: string
+                    description: Total USD value across all balances.
+                    example: '250001.00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits/convert:
+    post:
+      operationId: convertCryptoToFiat
+      summary: Convert crypto to fiat
+      description: Initiates conversion of a crypto balance to fiat currency.
+      tags:
+      - Crypto Deposits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - chain
+              - token
+              - amount
+              properties:
+                chain:
+                  type: string
+                  example: tron
+                token:
+                  type: string
+                  example: USDT
+                amount:
+                  type: string
+                  description: Amount to convert. Decimal string.
+                  example: '10000.00'
+      responses:
+        '200':
+          description: Conversion initiated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Conversion initiated successfully.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/deposits/{id}/public-status:
+    get:
+      operationId: getDepositPublicStatus
+      summary: Get deposit public status
+      description: Returns the public-facing status of a deposit session. No authentication required. Intended for payment
+        pages.
+      tags:
+      - Crypto Deposits
+      security: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Public deposit status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: f1e2d3c4-b5a6-7890-1234-567890abcdef
+                  status:
+                    type: string
+                    enum:
+                    - PENDING_PAYMENT
+                    - DETECTED
+                    - CONFIRMED
+                    - CREDITING
+                    - CREDITED
+                    - SETTLING
+                    - SETTLED
+                    - HELD
+                    - EXPIRED
+                    - FAILED
+                    - CANCELLED
+                    example: PENDING_PAYMENT
+                  chain:
+                    type: string
+                    example: tron
+                  token:
+                    type: string
+                    example: USDT
+                  deposit_address:
+                    type: string
+                    example: TXkR2Gp...7xN3
+                  expected_amount:
+                    type: string
+                    example: '5000.00'
+                  received_amount:
+                    type: string
+                    example: '0.00'
+                  expires_at:
+                    type: string
+                    format: date-time
+                    example: '2024-03-15T15:30:00Z'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/bank-deposits:
+    post:
+      operationId: createBankDepositSession
+      summary: Create a bank deposit session
+      description: Creates a fiat bank deposit session with a virtual bank account for receiving funds. The session monitors
+        for incoming bank credits and reconciles automatically.
+      tags:
+      - Bank Deposits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - currency
+              - expected_amount
+              properties:
+                currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  description: Fiat currency code.
+                  example: GBP
+                banking_partner_id:
+                  type: string
+                  description: Preferred banking partner ID. Auto-selected if omitted.
+                account_type:
+                  type: string
+                  enum:
+                  - PERMANENT
+                  - TEMPORARY
+                  description: Virtual account type. TEMPORARY accounts expire with the session.
+                  example: TEMPORARY
+                expected_amount:
+                  type: string
+                  description: Expected deposit amount. Decimal string.
+                  example: '25000.00'
+                min_amount:
+                  type: string
+                  description: Minimum acceptable amount. Decimal string.
+                max_amount:
+                  type: string
+                  description: Maximum acceptable amount. Decimal string.
+                mismatch_policy:
+                  type: string
+                  enum:
+                  - ACCEPT
+                  - REJECT
+                  description: Policy when received amount differs from expected. ACCEPT credits the received amount; REJECT
+                    returns it.
+                  example: ACCEPT
+                settlement_pref:
+                  type: string
+                  enum:
+                  - AUTO_CONVERT
+                  - HOLD
+                  - THRESHOLD
+                  description: Settlement preference for the deposited funds.
+                idempotency_key:
+                  type: string
+                  description: Idempotency key for deduplication.
+                  example: bdep_20240315_001
+                ttl_seconds:
+                  type: integer
+                  description: Session TTL in seconds.
+                  example: 86400
+      responses:
+        '201':
+          description: Bank deposit session created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankDepositSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: listBankDepositSessions
+      summary: List bank deposit sessions
+      description: Retrieves a paginated list of bank deposit sessions.
+      tags:
+      - Bank Deposits
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      responses:
+        '200':
+          description: Bank deposit sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BankDepositSession'
+                  total:
+                    type: integer
+                    example: 43
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/bank-deposits/{id}:
+    get:
+      operationId: getBankDepositSession
+      summary: Get a bank deposit session
+      description: Retrieves the full details of a bank deposit session.
+      tags:
+      - Bank Deposits
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Bank deposit session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankDepositSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/bank-deposits/{id}/cancel:
+    post:
+      operationId: cancelBankDepositSession
+      summary: Cancel a bank deposit session
+      description: Cancels a pending bank deposit session. Only sessions in PENDING_PAYMENT status can be cancelled.
+      tags:
+      - Bank Deposits
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Bank deposit session cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankDepositSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/bank-deposits/accounts:
+    get:
+      operationId: listVirtualAccounts
+      summary: List virtual bank accounts
+      description: Retrieves the tenant's virtual bank accounts, which can be used to receive fiat deposits.
+      tags:
+      - Bank Deposits
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      - name: currency
+        in: query
+        schema:
+          type: string
+          pattern: ^[A-Z]{3,5}$
+        description: Filter by currency.
+      - name: account_type
+        in: query
+        schema:
+          type: string
+          enum:
+          - PERMANENT
+          - TEMPORARY
+        description: Filter by account type.
+      responses:
+        '200':
+          description: Virtual accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VirtualAccount'
+                  total:
+                    type: integer
+                    example: 5
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/payment-links:
+    post:
+      operationId: createPaymentLink
+      summary: Create a payment link
+      description: Creates a shareable payment link that resolves to a crypto deposit session when redeemed.
+      tags:
+      - Payment Links
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - amount
+              - currency
+              - chain
+              - token
+              properties:
+                description:
+                  type: string
+                  description: Human-readable description shown on the payment page.
+                  example: 'Invoice #INV-2024-0042'
+                redirect_url:
+                  type: string
+                  format: uri
+                  description: URL to redirect the payer after successful payment.
+                  example: https://acmepay.com/payment/success
+                use_limit:
+                  type: integer
+                  description: Maximum number of times the link can be redeemed. Unlimited if omitted.
+                  example: 1
+                expires_at_unix:
+                  type: integer
+                  description: Expiration time as Unix timestamp. The link cannot be redeemed after this time.
+                  example: 1710547200
+                amount:
+                  type: string
+                  description: Payment amount. Decimal string.
+                  example: '100.00'
+                currency:
+                  type: string
+                  description: Currency code for the amount.
+                  example: USD
+                chain:
+                  type: string
+                  description: Blockchain network for accepting payment.
+                  example: tron
+                token:
+                  type: string
+                  description: Token to accept.
+                  example: USDT
+                settlement_pref:
+                  type: string
+                  enum:
+                  - AUTO_CONVERT
+                  - HOLD
+                  - THRESHOLD
+                  description: Settlement preference for collected funds.
+                ttl_seconds:
+                  type: integer
+                  description: TTL for deposit sessions created from this link.
+      responses:
+        '201':
+          description: Payment link created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: listPaymentLinks
+      summary: List payment links
+      description: Retrieves a paginated list of payment links for the authenticated tenant.
+      tags:
+      - Payment Links
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      responses:
+        '200':
+          description: Payment links.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentLink'
+                  total:
+                    type: integer
+                    example: 12
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/payment-links/{id}:
+    get:
+      operationId: getPaymentLink
+      summary: Get a payment link
+      description: Retrieves a specific payment link by ID.
+      tags:
+      - Payment Links
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Payment link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      operationId: disablePaymentLink
+      summary: Disable a payment link
+      description: Disables a payment link so it can no longer be redeemed.
+      tags:
+      - Payment Links
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Payment link disabled.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/payment-links/resolve/{code}:
+    get:
+      operationId: resolvePaymentLink
+      summary: Resolve a payment link by short code
+      description: Resolves a payment link using its short code. No authentication required. Used by payment pages to display
+        link details.
+      tags:
+      - Payment Links
+      security: []
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Payment link short code.
+        example: pay_abc123
+      responses:
+        '200':
+          description: Payment link resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/payment-links/redeem/{code}:
+    post:
+      operationId: redeemPaymentLink
+      summary: Redeem a payment link
+      description: Redeems a payment link by creating a crypto deposit session. No authentication required. Returns both the
+        deposit session and the link details.
+      tags:
+      - Payment Links
+      security: []
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Payment link short code.
+        example: pay_abc123
+      responses:
+        '200':
+          description: Payment link redeemed. Deposit session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: '#/components/schemas/DepositSession'
+                  link:
+                    $ref: '#/components/schemas/PaymentLink'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/routes:
+    post:
+      operationId: getRoutingOptions
+      summary: Get routing options
+      description: Returns available routing options for a currency pair, scored by cost (40%), speed (30%), liquidity (20%),
+        and reliability (10%). Useful for displaying route choices to users or for pre-flight checks.
+      tags:
+      - Routes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - from_currency
+              - to_currency
+              - amount
+              properties:
+                from_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  example: GBP
+                to_currency:
+                  type: string
+                  pattern: ^[A-Z]{3,5}$
+                  example: NGN
+                amount:
+                  type: string
+                  description: Transfer amount for cost estimation. Decimal string.
+                  example: '5000.00'
+      responses:
+        '200':
+          description: Routing options.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RoutingOption'
+                  quoted_at:
+                    type: string
+                    format: date-time
+                    example: '2024-03-15T14:30:00Z'
+                  valid_for_seconds:
+                    type: integer
+                    description: Number of seconds the routing scores remain valid.
+                    example: 30
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transactions/verify/{id}:
+    get:
+      operationId: verifyTransaction
+      summary: Verify a transaction
+      description: Retrieves and verifies a transaction by ID. Returns either a Transfer or DepositSession, distinguished
+        by the `type` field.
+      tags:
+      - Verification
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Transaction ID (transfer ID or deposit session ID).
+      responses:
+        '200':
+          description: Transaction verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                    - transfer
+                    - deposit
+                    description: Discriminator indicating whether this is a transfer or deposit.
+                  transfer:
+                    $ref: '#/components/schemas/Transfer'
+                  deposit:
+                    $ref: '#/components/schemas/DepositSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/transactions/lookup:
+    get:
+      operationId: lookupTransaction
+      summary: Look up a transaction
+      description: Looks up a transaction by ID, external reference, or blockchain transaction hash. Exactly one of the query
+        parameters must be provided (except `chain`, which is optional and paired with `tx_hash`).
+      tags:
+      - Verification
+      parameters:
+      - name: id
+        in: query
+        schema:
+          type: string
+          format: uuid
+        description: Transaction ID.
+      - name: reference
+        in: query
+        schema:
+          type: string
+        description: External reference or idempotency key.
+      - name: tx_hash
+        in: query
+        schema:
+          type: string
+        description: Blockchain transaction hash.
+      - name: chain
+        in: query
+        schema:
+          type: string
+        description: Blockchain network (used with tx_hash for disambiguation).
+      responses:
+        '200':
+          description: Transaction found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                    - transfer
+                    - deposit
+                  transfer:
+                    $ref: '#/components/schemas/Transfer'
+                  deposit:
+                    $ref: '#/components/schemas/DepositSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/transfers:
+    get:
+      operationId: getTransferAnalytics
+      summary: Get transfer analytics
+      description: Returns aggregated transfer analytics including volume, corridor breakdown, status distribution, and latency
+        percentiles.
+      tags:
+      - Analytics
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - all
+        description: Analytics period.
+      responses:
+        '200':
+          description: Transfer analytics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  corridors:
+                    type: array
+                    description: Breakdown by currency corridor.
+                    items:
+                      type: object
+                      properties:
+                        source_currency:
+                          type: string
+                          example: GBP
+                        dest_currency:
+                          type: string
+                          example: NGN
+                        count:
+                          type: integer
+                          example: 15420
+                        volume_usd:
+                          type: string
+                          example: '8750000.00'
+                  statuses:
+                    type: object
+                    description: Transfer count by status.
+                    additionalProperties:
+                      type: integer
+                    example:
+                      COMPLETED: 14800
+                      FAILED: 120
+                      ON_RAMPING: 45
+                      SETTLING: 30
+                  total_count:
+                    type: integer
+                    example: 15420
+                  total_volume_usd:
+                    type: string
+                    example: '8750000.00'
+                  total_fees_usd:
+                    type: string
+                    example: '35000.00'
+                  p50_ms:
+                    type: integer
+                    description: Median transfer completion time in milliseconds.
+                    example: 45000
+                  p90_ms:
+                    type: integer
+                    example: 120000
+                  p95_ms:
+                    type: integer
+                    example: 180000
+                  p99_ms:
+                    type: integer
+                    example: 300000
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/fees:
+    get:
+      operationId: getFeeAnalytics
+      summary: Get fee analytics
+      description: Returns fee breakdown by corridor for the specified period.
+      tags:
+      - Analytics
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - all
+      responses:
+        '200':
+          description: Fee analytics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        source_currency:
+                          type: string
+                          example: GBP
+                        dest_currency:
+                          type: string
+                          example: NGN
+                        transfer_count:
+                          type: integer
+                          example: 5200
+                        total_volume_usd:
+                          type: string
+                          example: '2600000.00'
+                        on_ramp_fees_usd:
+                          type: string
+                          example: '5200.00'
+                        off_ramp_fees_usd:
+                          type: string
+                          example: '4550.00'
+                        network_fees_usd:
+                          type: string
+                          example: '520.00'
+                        total_fees_usd:
+                          type: string
+                          example: '10270.00'
+                  total_fees_usd:
+                    type: string
+                    example: '35000.00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/providers:
+    get:
+      operationId: getProviderAnalytics
+      summary: Get provider analytics
+      description: Returns performance metrics for each payment provider, including success rates, latency, and volume.
+      tags:
+      - Analytics
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - all
+      responses:
+        '200':
+          description: Provider analytics.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    provider:
+                      type: string
+                      example: settla_onramp
+                    total_calls:
+                      type: integer
+                      example: 8500
+                    success_count:
+                      type: integer
+                      example: 8400
+                    failure_count:
+                      type: integer
+                      example: 100
+                    success_rate:
+                      type: number
+                      format: float
+                      example: 0.9882
+                    avg_latency_ms:
+                      type: integer
+                      example: 2500
+                    p95_latency_ms:
+                      type: integer
+                      example: 8000
+                    total_volume_usd:
+                      type: string
+                      example: '4250000.00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/reconciliation:
+    get:
+      operationId: getReconciliationAnalytics
+      summary: Get reconciliation status
+      description: Returns reconciliation check results including pass rates and items requiring manual review.
+      tags:
+      - Analytics
+      responses:
+        '200':
+          description: Reconciliation status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_runs:
+                    type: integer
+                    example: 720
+                  checks_passed:
+                    type: integer
+                    example: 4300
+                  checks_failed:
+                    type: integer
+                    example: 20
+                  pass_rate:
+                    type: number
+                    format: float
+                    example: 0.9954
+                  last_run_at:
+                    type: string
+                    format: date-time
+                    example: '2024-03-15T14:00:00Z'
+                  needs_review_count:
+                    type: integer
+                    example: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/deposits:
+    get:
+      operationId: getDepositAnalytics
+      summary: Get deposit analytics
+      description: Returns aggregated metrics for both crypto and bank deposits.
+      tags:
+      - Analytics
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - 7d
+          - 30d
+          - 90d
+          - all
+      responses:
+        '200':
+          description: Deposit analytics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  crypto:
+                    type: object
+                    properties:
+                      total_sessions:
+                        type: integer
+                        example: 850
+                      completed_sessions:
+                        type: integer
+                        example: 780
+                      total_volume_usd:
+                        type: string
+                        example: '3500000.00'
+                      avg_confirmation_seconds:
+                        type: integer
+                        example: 120
+                  bank:
+                    type: object
+                    properties:
+                      total_sessions:
+                        type: integer
+                        example: 320
+                      completed_sessions:
+                        type: integer
+                        example: 310
+                      total_volume_usd:
+                        type: string
+                        example: '12000000.00'
+                      avg_settlement_seconds:
+                        type: integer
+                        example: 3600
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/export:
+    post:
+      operationId: createExportJob
+      summary: Create a data export
+      description: Creates an asynchronous data export job. Once complete, the export can be downloaded via the `download_url`.
+      tags:
+      - Analytics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - export_type
+              properties:
+                export_type:
+                  type: string
+                  enum:
+                  - transfers
+                  - fees
+                  - deposits
+                  - reconciliation
+                  description: Type of data to export.
+                  example: transfers
+                period:
+                  type: string
+                  enum:
+                  - 7d
+                  - 30d
+                  - 90d
+                  - all
+                  description: Period for the export. Defaults to 30d.
+                  example: 30d
+                format:
+                  type: string
+                  enum:
+                  - csv
+                  - json
+                  description: Export file format. Defaults to csv.
+                  example: csv
+      responses:
+        '201':
+          description: Export job created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: e1f2a3b4-c5d6-7890-1234-567890abcdef
+                  status:
+                    type: string
+                    enum:
+                    - pending
+                    - processing
+                    - completed
+                    - failed
+                    example: pending
+                  download_url:
+                    type: string
+                    format: uri
+                    description: URL to download the export. Available once status is completed.
+                    example: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/analytics/export/{jobId}:
+    get:
+      operationId: getExportJob
+      summary: Get export job status
+      description: Retrieves the status and download URL for a data export job.
+      tags:
+      - Analytics
+      parameters:
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Export job status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum:
+                    - pending
+                    - processing
+                    - completed
+                    - failed
+                  export_type:
+                    type: string
+                  period:
+                    type: string
+                  format:
+                    type: string
+                  download_url:
+                    type: string
+                    format: uri
+                  created_at:
+                    type: string
+                    format: date-time
+                  completed_at:
+                    type: string
+                    format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me:
+    get:
+      operationId: getTenant
+      summary: Get tenant profile
+      description: Returns the authenticated tenant's profile including fee schedules, limits, and KYB status.
+      tags:
+      - Tenant Portal
+      responses:
+        '200':
+          description: Tenant profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      operationId: updateTenant
+      summary: Update tenant profile
+      description: Updates the authenticated tenant's configurable settings.
+      tags:
+      - Tenant Portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+                  description: URL for receiving webhook notifications.
+                  example: https://api.acmepay.com/webhooks/settla
+                settlement_model:
+                  type: string
+                  enum:
+                  - INSTANT
+                  - DAILY_NET
+                  - WEEKLY_NET
+                  description: Settlement model preference.
+                  example: DAILY_NET
+      responses:
+        '200':
+          description: Tenant profile updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/dashboard:
+    get:
+      operationId: getDashboardMetrics
+      summary: Get dashboard metrics
+      description: Returns aggregated metrics for the tenant dashboard, including recent activity, volume, and key performance
+        indicators.
+      tags:
+      - Tenant Portal
+      responses:
+        '200':
+          description: Dashboard metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardMetrics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/api-keys:
+    get:
+      operationId: listApiKeys
+      summary: List API keys
+      description: Returns all API keys for the authenticated tenant. Keys are masked except for the prefix.
+      tags:
+      - Tenant Portal
+      responses:
+        '200':
+          description: API keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/APIKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      operationId: createApiKey
+      summary: Create an API key
+      description: Creates a new API key. The full key value is returned only in this response and cannot be retrieved later.
+      tags:
+      - Tenant Portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - name
+              - environment
+              properties:
+                name:
+                  type: string
+                  description: Human-readable name for the key.
+                  example: Production Server
+                environment:
+                  type: string
+                  enum:
+                  - live
+                  - test
+                  description: Environment scope for the key.
+                  example: live
+      responses:
+        '201':
+          description: API key created. The `key` field contains the full key and is shown only once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+                  key:
+                    type: string
+                    description: Full API key. Shown only once at creation time. Store securely.
+                    example: sk_live_EXAMPLE_KEY_DO_NOT_USE_000000000000
+                  key_prefix:
+                    type: string
+                    example: sk_live_abc123
+                  name:
+                    type: string
+                    example: Production Server
+                  environment:
+                    type: string
+                    example: live
+                  created_at:
+                    type: string
+                    format: date-time
+                    example: '2024-03-15T14:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/api-keys/{keyId}:
+    delete:
+      operationId: deleteApiKey
+      summary: Delete an API key
+      description: Permanently revokes and deletes an API key. This action cannot be undone.
+      tags:
+      - Tenant Portal
+      parameters:
+      - name: keyId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: API key deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/api-keys/{keyId}/rotate:
+    post:
+      operationId: rotateApiKey
+      summary: Rotate an API key
+      description: Rotates an API key, generating a new secret while keeping the same key ID. The old key is immediately invalidated.
+      tags:
+      - Tenant Portal
+      parameters:
+      - name: keyId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: API key rotated. New key shown only once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  key:
+                    type: string
+                    description: New full API key. Shown only once.
+                    example: sk_live_EXAMPLE_NEW_KEY_DO_NOT_USE_00000000
+                  key_prefix:
+                    type: string
+                    example: sk_live_new123
+                  name:
+                    type: string
+                  environment:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/webhooks:
+    get:
+      operationId: getWebhookConfig
+      summary: Get webhook configuration
+      description: Returns the tenant's current webhook configuration including URL and subscribed events.
+      tags:
+      - Tenant Portal
+      responses:
+        '200':
+          description: Webhook configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    example: https://api.acmepay.com/webhooks/settla
+                  events:
+                    type: array
+                    items:
+                      type: string
+                    description: List of subscribed event types. Empty array means all events.
+                    example:
+                    - transfer.completed
+                    - transfer.failed
+                    - deposit.credited
+                  signing_secret_prefix:
+                    type: string
+                    description: First 8 characters of the webhook signing secret.
+                    example: whsec_ab
+                  active:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      operationId: updateWebhookConfig
+      summary: Update webhook configuration
+      description: Updates the tenant's webhook URL and subscribed events.
+      tags:
+      - Tenant Portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - url
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: Webhook delivery URL. Must be HTTPS.
+                  example: https://api.acmepay.com/webhooks/settla
+                events:
+                  type: array
+                  items:
+                    type: string
+                  description: Event types to subscribe to. Empty or omitted means all events.
+                  example:
+                  - transfer.completed
+                  - transfer.failed
+      responses:
+        '200':
+          description: Webhook configuration updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                  events:
+                    type: array
+                    items:
+                      type: string
+                  signing_secret_prefix:
+                    type: string
+                  active:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/webhooks/test:
+    post:
+      operationId: testWebhook
+      summary: Send a test webhook
+      description: Sends a test webhook event to the configured URL to verify connectivity and signature validation.
+      tags:
+      - Tenant Portal
+      responses:
+        '200':
+          description: Test webhook sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  status_code:
+                    type: integer
+                    description: HTTP status code from the webhook endpoint.
+                    example: 200
+                  response_time_ms:
+                    type: integer
+                    description: Response time in milliseconds.
+                    example: 245
+                  error:
+                    type: string
+                    description: Error message if the test failed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /v1/me/webhooks/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List webhook deliveries
+      description: Returns a paginated list of webhook delivery attempts, including status and response details.
+      tags:
+      - Tenant Portal
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          default: 0
+          minimum: 0
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - delivered
+          - failed
+          - pending
+        description: Filter by delivery status.
+      - name: event_type
+        in: query
+        schema:
+          type: string
+        description: Filter by event type (e.g. transfer.completed).
+      responses:
+        '200':
+          description: Webhook deliveries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        event_type:
+                          type: string
+                          example: transfer.completed
+                        status:
+                          type: string
+                          enum:
+                          - delivered
+                          - failed
+                          - pending
+                          example: delivered
+                        url:
+                          type: string
+                          format: uri
+                        http_status:
+                          type: integer
+                          example: 200
+                        response_time_ms:
+                          type: integer
+                          example: 150
+                        attempt_count:
+                          type: integer
+                          example: 1
+                        last_attempted_at:
+                          type: string
+                          format: date-time
+                        created_at:
+                          type: string
+                          format: date-time
+                  total_count:
+                    type: integer
+                    example: 1250
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /webhooks/providers/{providerId}:
+    post:
+      operationId: receiveProviderWebhook
+      summary: Receive provider webhook
+      description: Endpoint for receiving inbound webhooks from payment providers. Authenticated via HMAC-SHA256 signature.
+        The payload is normalized and published to the internal processing queue.
+      tags:
+      - Webhooks
+      security: []
+      parameters:
+      - name: providerId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Provider identifier.
+        example: stripe
+      - name: x-webhook-signature
+        in: header
+        required: true
+        schema:
+          type: string
+        description: HMAC-SHA256 signature of the request body.
+      - name: x-webhook-timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Unix timestamp when the webhook was sent. Used for replay protection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw provider webhook payload. Structure varies by provider.
+              additionalProperties: true
+      responses:
+        '200':
+          description: Webhook received and queued for processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      description: Basic liveness probe. Returns 200 if the service is running.
+      tags:
+      - Health
+      security: []
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /ready:
+    get:
+      operationId: readinessCheck
+      summary: Readiness check
+      description: Readiness probe. Checks gRPC backend and Redis connectivity. Returns 200 only if all dependencies are healthy.
+      tags:
+      - Health
+      security: []
+      responses:
+        '200':
+          description: Service is ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - ok
+                    - not_ready
+                    example: ok
+                  checks:
+                    type: object
+                    properties:
+                      grpc:
+                        type: string
+                        enum:
+                        - ok
+                        - error
+                        example: ok
+                      redis:
+                        type: string
+                        enum:
+                        - ok
+                        - error
+                        example: ok
+        '503':
+          description: Service is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  checks:
+                    type: object
+                    properties:
+                      grpc:
+                        type: string
+                      redis:
+                        type: string
+  /v1/ledger/accounts:
+    get:
+      operationId: listAccounts
+      summary: List ledger accounts
+      description: List all ledger accounts for the authenticated tenant. Accounts follow a hierarchical code structure.
+      tags:
+      - Ledger
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+          maximum: 100
+      - name: page_token
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Account'
+                  next_page_token:
+                    type: string
+                  total_count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/ledger/balance/{accountCode}:
+    get:
+      operationId: getAccountBalance
+      summary: Get account balance
+      description: Get the current balance of a specific ledger account. Balances are sourced from TigerBeetle.
+      tags:
+      - Ledger
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: accountCode
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Hierarchical account code (URL-encoded)
+        example: tenant:korapay:assets:bank:gbp:clearing
+      responses:
+        '200':
+          description: Account balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/ledger/transactions:
+    get:
+      operationId: listAccountTransactions
+      summary: List account transactions
+      description: List journal entry lines for an account with optional date range filtering.
+      tags:
+      - Ledger
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: account_code
+        in: query
+        required: true
+        schema:
+          type: string
+        description: Account code to query
+      - name: from
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: Start of date range
+      - name: to
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: End of date range
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+          maximum: 100
+      - name: page_token
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: List of journal entry lines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JournalEntryLine'
+                  next_page_token:
+                    type: string
+                  total_count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: 'API key (e.g. `sk_live_xxx` or `sk_test_xxx`) or JWT access token from login. Pass as `Authorization:
+        Bearer <token>`.'
+    OpsAuth:
+      type: apiKey
+      in: header
+      name: X-Ops-Api-Key
+      description: Operations API key for internal/admin endpoints.
+  schemas:
+    Error:
+      type: object
+      description: Standard error response.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              description: Human-readable error description.
+              example: The source_amount field must be a positive decimal.
+            details:
+              type: object
+              description: Additional error context. Structure varies by error type.
+              additionalProperties: true
+          required:
+          - code
+          - message
+      required:
+      - error
+    Quote:
+      type: object
+      description: An FX quote for a cross-border transfer.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique quote identifier.
+          example: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+        tenant_id:
+          type: string
+          format: uuid
+          example: c3d4e5f6-7890-1234-abcd-ef0123456789
+        source_currency:
+          type: string
+          example: GBP
+        source_amount:
+          type: string
+          description: Quoted source amount. Decimal string.
+          example: '1000.00'
+        dest_currency:
+          type: string
+          example: NGN
+        dest_amount:
+          type: string
+          description: Estimated destination amount after fees and FX. Decimal string.
+          example: '1850000.00'
+        fx_rate:
+          type: string
+          description: Applied exchange rate. Decimal string.
+          example: '1875.50'
+        fees:
+          $ref: '#/components/schemas/FeeBreakdown'
+        route:
+          $ref: '#/components/schemas/RouteInfo'
+        expires_at:
+          type: string
+          format: date-time
+          description: Quote expiration time (UTC).
+          example: '2024-03-15T14:35:00Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+    FeeBreakdown:
+      type: object
+      description: Breakdown of fees applied to a transfer or quote.
+      properties:
+        on_ramp_fee:
+          type: string
+          description: Fee for converting fiat to stablecoin. Decimal string (USD).
+          example: '2.50'
+        network_fee:
+          type: string
+          description: Blockchain network fee. Decimal string (USD).
+          example: '0.50'
+        off_ramp_fee:
+          type: string
+          description: Fee for converting stablecoin to destination fiat. Decimal string (USD).
+          example: '3.00'
+        total_fee_usd:
+          type: string
+          description: Total fees in USD. Decimal string.
+          example: '6.00'
+    RouteInfo:
+      type: object
+      description: Selected settlement route details.
+      properties:
+        chain:
+          type: string
+          description: Blockchain network used for settlement.
+          example: tron
+        stable_coin:
+          type: string
+          description: Stablecoin used for settlement.
+          example: USDT
+        on_ramp_provider:
+          type: string
+          description: Provider for fiat-to-crypto conversion.
+          example: settla_onramp
+        off_ramp_provider:
+          type: string
+          description: Provider for crypto-to-fiat conversion.
+          example: settla_offramp
+        estimated_time_min:
+          type: integer
+          description: Estimated settlement time in minutes.
+          example: 3
+        explorer_url:
+          type: string
+          format: uri
+          description: Blockchain explorer URL template.
+          example: https://tronscan.org/#/transaction/
+        alternative_routes:
+          type: array
+          description: Alternative routes that were considered.
+          items:
+            $ref: '#/components/schemas/RouteAlternative'
+    RouteAlternative:
+      type: object
+      description: An alternative settlement route.
+      properties:
+        chain:
+          type: string
+          example: ethereum
+        stable_coin:
+          type: string
+          example: USDC
+        estimated_fee_usd:
+          type: string
+          example: '12.00'
+        estimated_time_min:
+          type: integer
+          example: 5
+    Transfer:
+      type: object
+      description: A cross-border transfer moving funds from source to destination via stablecoin rails.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: b2c3d4e5-f678-9012-bcde-f01234567890
+        tenant_id:
+          type: string
+          format: uuid
+          example: c3d4e5f6-7890-1234-abcd-ef0123456789
+        external_ref:
+          type: string
+          description: Client-provided external reference.
+          example: INV-2024-0042
+        idempotency_key:
+          type: string
+          example: txn_20240315_001
+        status:
+          type: string
+          enum:
+          - CREATED
+          - FUNDED
+          - ON_RAMPING
+          - SETTLING
+          - OFF_RAMPING
+          - COMPLETED
+          - FAILED
+          - REFUNDING
+          - REFUNDED
+          description: Current transfer status.
+          example: COMPLETED
+        version:
+          type: integer
+          description: Optimistic concurrency version. Incremented on each state transition.
+          example: 7
+        source_currency:
+          type: string
+          example: GBP
+        source_amount:
+          type: string
+          description: Source amount. Decimal string.
+          example: '1000.00'
+        dest_currency:
+          type: string
+          example: NGN
+        dest_amount:
+          type: string
+          description: Destination amount. Decimal string.
+          example: '1850000.00'
+        stable_coin:
+          type: string
+          description: Stablecoin used for settlement.
+          example: USDT
+        stable_amount:
+          type: string
+          description: Stablecoin amount. Decimal string.
+          example: '1270.50'
+        chain:
+          type: string
+          description: Blockchain used for settlement.
+          example: tron
+        fx_rate:
+          type: string
+          description: Applied FX rate. Decimal string.
+          example: '1875.50'
+        fees:
+          $ref: '#/components/schemas/FeeBreakdown'
+        sender:
+          $ref: '#/components/schemas/Sender'
+        recipient:
+          $ref: '#/components/schemas/Recipient'
+        quote_id:
+          type: string
+          format: uuid
+          description: Quote ID if a quote was used.
+        blockchain_txs:
+          type: array
+          description: Blockchain transactions associated with this transfer.
+          items:
+            $ref: '#/components/schemas/BlockchainTx'
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:33:45Z'
+        funded_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:33:45Z'
+        failed_at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: string
+          description: Human-readable failure reason (only set when status is FAILED).
+        failure_code:
+          type: string
+          description: Machine-readable failure code.
+    TransferEvent:
+      type: object
+      description: A state transition event in a transfer's lifecycle.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: e1f2a3b4-c5d6-7890-1234-567890abcdef
+        transfer_id:
+          type: string
+          format: uuid
+          example: b2c3d4e5-f678-9012-bcde-f01234567890
+        from_status:
+          type: string
+          description: Status before the transition.
+          example: ON_RAMPING
+        to_status:
+          type: string
+          description: Status after the transition.
+          example: SETTLING
+        occurred_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:31:20Z'
+        provider_ref:
+          type: string
+          description: Provider reference associated with this event.
+        metadata:
+          type: object
+          description: Additional event metadata.
+          additionalProperties: true
+    Sender:
+      type: object
+      description: Sender details for a transfer.
+      properties:
+        id:
+          type: string
+          description: Client-side sender identifier.
+          example: user_12345
+        name:
+          type: string
+          example: John Smith
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        country:
+          type: string
+          minLength: 2
+          maxLength: 2
+          example: GB
+    Recipient:
+      type: object
+      description: Recipient bank account details. Either `sort_code` (UK) or `iban` (SEPA/international) should be provided,
+        not both.
+      required:
+      - name
+      - account_number
+      - bank_name
+      - country
+      properties:
+        name:
+          type: string
+          example: Adebayo Ogunlesi
+        account_number:
+          type: string
+          example: 0123456789
+        sort_code:
+          type: string
+          description: UK sort code (6 digits). Mutually exclusive with iban.
+          example: 12-34-56
+        bank_name:
+          type: string
+          example: First Bank of Nigeria
+        country:
+          type: string
+          minLength: 2
+          maxLength: 2
+          example: NG
+        iban:
+          type: string
+          description: International Bank Account Number. Mutually exclusive with sort_code.
+          example: DE89370400440532013000
+    BlockchainTx:
+      type: object
+      description: A blockchain transaction associated with a transfer.
+      properties:
+        chain:
+          type: string
+          example: tron
+        type:
+          type: string
+          description: Transaction type (e.g. on_ramp, settlement, off_ramp).
+          example: settlement
+        tx_hash:
+          type: string
+          example: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+        explorer_url:
+          type: string
+          format: uri
+          example: https://tronscan.org/#/transaction/a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+        status:
+          type: string
+          enum:
+          - pending
+          - confirmed
+          - failed
+          example: confirmed
+    Position:
+      type: object
+      description: A treasury position representing a currency balance at a specific location.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: d4e5f678-9012-3456-bcde-f01234567890
+        tenant_id:
+          type: string
+          format: uuid
+          example: c3d4e5f6-7890-1234-abcd-ef0123456789
+        currency:
+          type: string
+          example: USDT
+        location:
+          type: string
+          description: Position location (chain or banking rail).
+          example: tron
+        balance:
+          type: string
+          description: Total balance (locked + available). Decimal string.
+          example: '150000.00'
+        locked:
+          type: string
+          description: Amount locked for in-flight transfers. Decimal string.
+          example: '25000.00'
+        available:
+          type: string
+          description: Available balance (balance - locked). Decimal string.
+          example: '125000.00'
+        min_balance:
+          type: string
+          description: Minimum balance threshold for alerts. Decimal string.
+          example: '10000.00'
+        target_balance:
+          type: string
+          description: Target balance for rebalancing. Decimal string.
+          example: '100000.00'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+    PositionTransaction:
+      type: object
+      description: A treasury position transaction (top-up or withdrawal).
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: f1e2d3c4-b5a6-7890-1234-567890abcdef
+        tenant_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+          - topup
+          - withdrawal
+          example: topup
+        currency:
+          type: string
+          example: USDT
+        location:
+          type: string
+          example: tron
+        amount:
+          type: string
+          description: Transaction amount. Decimal string.
+          example: '50000.00'
+        status:
+          type: string
+          enum:
+          - PENDING
+          - PROCESSING
+          - COMPLETED
+          - FAILED
+          example: COMPLETED
+        method:
+          type: string
+          enum:
+          - bank_transfer
+          - crypto
+          - internal
+          example: crypto
+        destination:
+          type: string
+          description: Destination address (for withdrawals).
+        reference:
+          type: string
+          description: Transaction reference.
+        failure_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:32:00Z'
+    PositionEvent:
+      type: object
+      description: An audit event for a treasury position.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+        position_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+          - CREDIT
+          - DEBIT
+          - RESERVE
+          - RELEASE
+          - COMMIT
+          - CONSUME
+          description: Type of position event.
+          example: RESERVE
+        amount:
+          type: string
+          description: Event amount. Decimal string.
+          example: '1500.00'
+        balance_after:
+          type: string
+          description: Position balance after the event. Decimal string.
+          example: '148500.00'
+        locked_after:
+          type: string
+          description: Locked amount after the event. Decimal string.
+          example: '26500.00'
+        reference_id:
+          type: string
+          format: uuid
+          description: ID of the entity that triggered this event (e.g. transfer ID).
+        reference_type:
+          type: string
+          description: Type of the reference entity.
+          example: transfer
+        recorded_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:05Z'
+    LiquidityReport:
+      type: object
+      description: Aggregated liquidity report for a tenant.
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+        total_available:
+          type: object
+          description: Total available balance per currency.
+          additionalProperties:
+            type: string
+          example:
+            USDT: '250000.00'
+            USDC: '75000.00'
+            GBP: '50000.00'
+        alert_positions:
+          type: array
+          description: Positions below minimum balance threshold.
+          items:
+            $ref: '#/components/schemas/Position'
+        generated_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+    DepositSession:
+      type: object
+      description: A crypto deposit session for receiving on-chain stablecoin payments.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: f1e2d3c4-b5a6-7890-1234-567890abcdef
+        tenant_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING_PAYMENT
+          - DETECTED
+          - CONFIRMED
+          - CREDITING
+          - CREDITED
+          - SETTLING
+          - SETTLED
+          - HELD
+          - EXPIRED
+          - FAILED
+          - CANCELLED
+          description: Deposit session status.
+          example: PENDING_PAYMENT
+        chain:
+          type: string
+          example: tron
+        token:
+          type: string
+          example: USDT
+        deposit_address:
+          type: string
+          description: On-chain deposit address. Send funds here.
+          example: TXkR2Gp9s4K7f1yD8m3Nz6v2Bw5xQ7xN3
+        expected_amount:
+          type: string
+          description: Expected deposit amount. Decimal string.
+          example: '5000.00'
+        received_amount:
+          type: string
+          description: Amount received on-chain. Decimal string.
+          example: '0.00'
+        currency:
+          type: string
+          description: Target fiat currency for auto-conversion.
+          example: NGN
+        fee_amount:
+          type: string
+          description: Fee charged. Decimal string.
+          example: '5.00'
+        net_amount:
+          type: string
+          description: Net amount after fees. Decimal string.
+          example: '4995.00'
+        settlement_pref:
+          type: string
+          enum:
+          - AUTO_CONVERT
+          - HOLD
+          - THRESHOLD
+          example: AUTO_CONVERT
+        expires_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T15:30:00Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+        detected_at:
+          type: string
+          format: date-time
+        confirmed_at:
+          type: string
+          format: date-time
+        credited_at:
+          type: string
+          format: date-time
+        settled_at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: string
+        failure_code:
+          type: string
+    BankDepositSession:
+      type: object
+      description: A fiat bank deposit session using a virtual bank account.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+        tenant_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - PENDING_PAYMENT
+          - PAYMENT_RECEIVED
+          - CREDITING
+          - CREDITED
+          - SETTLING
+          - SETTLED
+          - HELD
+          - EXPIRED
+          - FAILED
+          - CANCELLED
+          - UNDERPAID
+          - OVERPAID
+          example: PENDING_PAYMENT
+        account_number:
+          type: string
+          description: Virtual bank account number for receiving the deposit.
+          example: '12345678'
+        account_name:
+          type: string
+          example: Settla / Acme Payments
+        sort_code:
+          type: string
+          example: 04-00-04
+        iban:
+          type: string
+        account_type:
+          type: string
+          enum:
+          - PERMANENT
+          - TEMPORARY
+          example: TEMPORARY
+        currency:
+          type: string
+          example: GBP
+        expected_amount:
+          type: string
+          description: Expected deposit amount. Decimal string.
+          example: '25000.00'
+        received_amount:
+          type: string
+          description: Amount received from bank. Decimal string.
+          example: '0.00'
+        fee_amount:
+          type: string
+          example: '0.00'
+        net_amount:
+          type: string
+          example: '0.00'
+        mismatch_policy:
+          type: string
+          enum:
+          - ACCEPT
+          - REJECT
+          example: ACCEPT
+        settlement_pref:
+          type: string
+          enum:
+          - AUTO_CONVERT
+          - HOLD
+          - THRESHOLD
+        payer_name:
+          type: string
+          description: Name of the payer (populated after payment receipt).
+        payer_reference:
+          type: string
+          description: Reference provided by the payer.
+        bank_reference:
+          type: string
+          description: Bank-generated transaction reference.
+        expires_at:
+          type: string
+          format: date-time
+          example: '2024-03-16T14:30:00Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+        payment_received_at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: string
+        failure_code:
+          type: string
+    VirtualAccount:
+      type: object
+      description: A virtual bank account for receiving fiat deposits.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: b2c3d4e5-f678-9012-bcde-f01234567890
+        tenant_id:
+          type: string
+          format: uuid
+        banking_partner_id:
+          type: string
+          description: Banking partner that issued the account.
+        account_number:
+          type: string
+          example: '12345678'
+        account_name:
+          type: string
+          example: Settla / Acme Payments
+        sort_code:
+          type: string
+          example: 04-00-04
+        iban:
+          type: string
+        currency:
+          type: string
+          example: GBP
+        account_type:
+          type: string
+          enum:
+          - PERMANENT
+          - TEMPORARY
+          example: PERMANENT
+        available:
+          type: boolean
+          description: Whether the account is active and available for deposits.
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-01-10T09:00:00Z'
+    PaymentLink:
+      type: object
+      description: A shareable payment link for merchant collections.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: c3d4e5f6-7890-1234-abcd-ef0123456789
+        tenant_id:
+          type: string
+          format: uuid
+        short_code:
+          type: string
+          description: Short code for the payment link URL.
+          example: pay_abc123
+        description:
+          type: string
+          example: 'Invoice #INV-2024-0042'
+        redirect_url:
+          type: string
+          format: uri
+          example: https://acmepay.com/payment/success
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - EXPIRED
+          - DISABLED
+          example: ACTIVE
+        amount:
+          type: string
+          description: Payment amount. Decimal string.
+          example: '100.00'
+        currency:
+          type: string
+          example: USD
+        chain:
+          type: string
+          example: tron
+        token:
+          type: string
+          example: USDT
+        settlement_pref:
+          type: string
+          enum:
+          - AUTO_CONVERT
+          - HOLD
+          - THRESHOLD
+        use_limit:
+          type: integer
+          description: Maximum redemptions. Null means unlimited.
+        use_count:
+          type: integer
+          description: Number of times redeemed.
+          example: 0
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-15T14:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+    Tenant:
+      type: object
+      description: Tenant profile with configuration, fee schedule, and KYB status.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: c3d4e5f6-7890-1234-abcd-ef0123456789
+        company_name:
+          type: string
+          example: Acme Payments Ltd
+        display_name:
+          type: string
+          example: Acme Pay
+        slug:
+          type: string
+          example: acme-payments
+        email:
+          type: string
+          format: email
+          example: admin@acmepay.com
+        kyb_status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - rejected
+          - under_review
+          example: approved
+        webhook_url:
+          type: string
+          format: uri
+          example: https://api.acmepay.com/webhooks/settla
+        settlement_model:
+          type: string
+          enum:
+          - INSTANT
+          - DAILY_NET
+          - WEEKLY_NET
+          example: DAILY_NET
+        fees:
+          $ref: '#/components/schemas/FeeSchedule'
+        limits:
+          type: object
+          properties:
+            max_single_transfer_usd:
+              type: string
+              example: '1000000.00'
+            daily_volume_limit_usd:
+              type: string
+              example: '10000000.00'
+            max_pending_transfers:
+              type: integer
+              example: 5000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    FeeSchedule:
+      type: object
+      description: Per-tenant fee schedule in basis points.
+      properties:
+        on_ramp_bps:
+          type: integer
+          description: On-ramp fee in basis points (1 bp = 0.01%).
+          example: 40
+        off_ramp_bps:
+          type: integer
+          description: Off-ramp fee in basis points.
+          example: 35
+        network_fee_usd:
+          type: string
+          description: Flat network fee in USD. Decimal string.
+          example: '0.50'
+    APIKey:
+      type: object
+      description: An API key for authenticating API requests. The full key is only shown at creation.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef0123456789
+        key_prefix:
+          type: string
+          description: First characters of the key, for identification.
+          example: sk_live_abc123
+        name:
+          type: string
+          example: Production Server
+        environment:
+          type: string
+          enum:
+          - live
+          - test
+          example: live
+        created_at:
+          type: string
+          format: date-time
+          example: '2024-03-01T10:00:00Z'
+        last_used_at:
+          type: string
+          format: date-time
+          description: When the key was last used for authentication.
+    DashboardMetrics:
+      type: object
+      description: Aggregated metrics for the tenant dashboard.
+      properties:
+        transfers_today:
+          type: integer
+          example: 142
+        volume_today_usd:
+          type: string
+          description: Today's total transfer volume in USD. Decimal string.
+          example: '875000.00'
+        success_rate_7d:
+          type: number
+          format: float
+          description: 7-day transfer success rate (0.0 to 1.0).
+          example: 0.985
+        avg_completion_time_ms:
+          type: integer
+          description: Average transfer completion time in milliseconds (7-day).
+          example: 65000
+        total_fees_today_usd:
+          type: string
+          description: Total fees collected today in USD. Decimal string.
+          example: '3500.00'
+        active_deposits:
+          type: integer
+          description: Number of active deposit sessions.
+          example: 5
+        treasury_available_usd:
+          type: string
+          description: Total available treasury balance in USD. Decimal string.
+          example: '325000.00'
+        pending_transfers:
+          type: integer
+          description: Number of in-flight transfers.
+          example: 23
+    RoutingOption:
+      type: object
+      description: A scored routing option for a currency pair.
+      properties:
+        provider:
+          type: string
+          description: On-ramp provider.
+          example: settla_onramp
+        off_ramp_provider:
+          type: string
+          description: Off-ramp provider.
+          example: settla_offramp
+        chain:
+          type: string
+          example: tron
+        stablecoin:
+          type: string
+          example: USDT
+        score:
+          type: number
+          format: float
+          description: Overall route score (0.0 to 1.0). Higher is better.
+          example: 0.92
+        estimated_fee_usd:
+          type: string
+          description: Estimated total fee in USD. Decimal string.
+          example: '6.00'
+        estimated_settlement_seconds:
+          type: integer
+          description: Estimated settlement time in seconds.
+          example: 180
+        score_breakdown:
+          $ref: '#/components/schemas/ScoreBreakdown'
+    ScoreBreakdown:
+      type: object
+      description: Breakdown of the route scoring components.
+      properties:
+        cost:
+          type: number
+          format: float
+          description: 'Cost score component (weight: 40%).'
+          example: 0.95
+        speed:
+          type: number
+          format: float
+          description: 'Speed score component (weight: 30%).'
+          example: 0.9
+        liquidity:
+          type: number
+          format: float
+          description: 'Liquidity score component (weight: 20%).'
+          example: 0.88
+        reliability:
+          type: number
+          format: float
+          description: 'Reliability score component (weight: 10%).'
+          example: 0.95
+    Account:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Account UUID
+          example: acc-12345678-abcd-1234-efgh-123456789012
+        tenant_id:
+          type: string
+          format: uuid
+          description: Tenant UUID (empty for system accounts)
+        code:
+          type: string
+          description: Hierarchical account code
+          example: tenant:korapay:assets:bank:gbp:clearing
+        name:
+          type: string
+          description: Human-readable account name
+          example: Korapay GBP Clearing
+        type:
+          type: string
+          enum:
+          - ASSET
+          - LIABILITY
+          - REVENUE
+          - EXPENSE
+          description: Account type
+        currency:
+          type: string
+          description: Account currency
+          example: GBP
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AccountBalance:
+      type: object
+      properties:
+        account_code:
+          type: string
+          description: Hierarchical account code
+          example: tenant:korapay:assets:bank:gbp:clearing
+        balance:
+          type: string
+          description: Current balance (decimal string)
+          example: '150000.00'
+        currency:
+          type: string
+          example: GBP
+    JournalEntryLine:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        account_code:
+          type: string
+          example: tenant:korapay:assets:bank:gbp:clearing
+        entry_type:
+          type: string
+          enum:
+          - DEBIT
+          - CREDIT
+        amount:
+          type: string
+          description: Always positive; direction determined by entry_type
+          example: '1000.00'
+        currency:
+          type: string
+          example: GBP
+        description:
+          type: string
+          example: GBP→NGN transfer settlement
+  responses:
+    BadRequest:
+      description: The request was malformed or contains invalid parameters.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: The source_amount field must be a positive decimal string.
+    Unauthorized:
+      description: Authentication failed. The API key is missing, invalid, or expired.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Invalid or missing API key.
+    Forbidden:
+      description: The authenticated tenant does not have permission to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: FORBIDDEN
+              message: Insufficient permissions for this operation.
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NOT_FOUND
+              message: Transfer not found.
+    Conflict:
+      description: The request conflicts with existing state (e.g. duplicate idempotency key, invalid state transition).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: CONFLICT
+              message: A transfer with this idempotency key already exists.
+    UnprocessableEntity:
+      description: The request was well-formed but semantically invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: UNPROCESSABLE_ENTITY
+              message: Insufficient treasury balance for this transfer.
+    TooManyRequests:
+      description: Rate limit exceeded. Retry after the indicated period.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: RATE_LIMITED
+              message: Rate limit exceeded. Try again in 30 seconds.
+    InternalServerError:
+      description: An unexpected error occurred. Contact support if the issue persists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred. Please try again.
+    ServiceUnavailable:
+      description: The service is temporarily unavailable (e.g. during maintenance or overload).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: SERVICE_UNAVAILABLE
+              message: Service temporarily unavailable. Please retry.

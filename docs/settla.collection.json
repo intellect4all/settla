@@ -1,0 +1,3219 @@
+{
+	"info": {
+		"_postman_id": "settla-api-collection-v1",
+		"name": "Settla API",
+		"description": "Settla B2B stablecoin settlement infrastructure API. Covers auth, tenant portal, quotes, transfers, treasury, crypto deposits, bank deposits, payment links, analytics, ops, and health endpoints.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "base_url", "value": "http://localhost:3000", "type": "string" },
+		{ "key": "api_key", "value": "sk_test_lemfi_demo_key_001", "type": "string" },
+		{ "key": "ops_key", "value": "settla-ops-demo-key-32chars-min", "type": "string" },
+		{ "key": "tenant_id", "value": "", "type": "string" },
+		{ "key": "transfer_id", "value": "", "type": "string" },
+		{ "key": "quote_id", "value": "", "type": "string" },
+		{ "key": "deposit_id", "value": "", "type": "string" },
+		{ "key": "bank_deposit_id", "value": "", "type": "string" },
+		{ "key": "payment_link_id", "value": "", "type": "string" },
+		{ "key": "payment_link_code", "value": "", "type": "string" },
+		{ "key": "access_token", "value": "", "type": "string" },
+		{ "key": "refresh_token", "value": "", "type": "string" },
+		{ "key": "verification_token", "value": "", "type": "string" },
+		{ "key": "position_tx_id", "value": "", "type": "string" },
+		{ "key": "export_job_id", "value": "", "type": "string" }
+	],
+	"item": [
+		{
+			"name": "Auth",
+			"description": "Tenant authentication: register, login, verify email, refresh tokens.",
+			"item": [
+				{
+					"name": "Register",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"company_name\": \"Korapay\",\n  \"email\": \"api@korapay.com\",\n  \"password\": \"SecureP@ss123\",\n  \"display_name\": \"Korapay Payments\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/register",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "register"]
+						},
+						"description": "Register a new tenant account."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has tenant_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('tenant_id');",
+									"    pm.collectionVariables.set('tenant_id', jsonData.tenant_id);",
+									"});",
+									"",
+									"if (pm.response.json().verification_token) {",
+									"    pm.collectionVariables.set('verification_token', pm.response.json().verification_token);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Login",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"api@korapay.com\",\n  \"password\": \"SecureP@ss123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/login",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "login"]
+						},
+						"description": "Login and obtain JWT tokens."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has access_token and refresh_token', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('access_token');",
+									"    pm.expect(jsonData).to.have.property('refresh_token');",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"});",
+									"",
+									"if (pm.response.json().tenant_id) {",
+									"    pm.collectionVariables.set('tenant_id', pm.response.json().tenant_id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Verify Email",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"token\": \"{{verification_token}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/verify-email",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "verify-email"]
+						},
+						"description": "Verify email address using the token received during registration."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Refresh Token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/refresh",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "refresh"]
+						},
+						"description": "Refresh the JWT access token using a valid refresh token."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has new access_token', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('access_token');",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"});",
+									"",
+									"if (pm.response.json().refresh_token) {",
+									"    pm.collectionVariables.set('refresh_token', pm.response.json().refresh_token);",
+									"}"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Tenant Portal",
+			"description": "Tenant self-service: profile, KYB, API keys, webhooks, dashboard.",
+			"item": [
+				{
+					"name": "My Profile",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/me",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me"]
+						},
+						"description": "Get the authenticated tenant's profile."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has tenant profile fields', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('tenant_id');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update Profile",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"webhook_url\": \"https://webhook.site/korapay\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me"]
+						},
+						"description": "Update the authenticated tenant's profile."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Submit KYB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"company_registration_number\": \"RC1234567\",\n  \"country\": \"NG\",\n  \"business_type\": \"fintech\",\n  \"contact_name\": \"Gbenga Agboola\",\n  \"contact_email\": \"gbenga@korapay.com\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/kyb",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "kyb"]
+						},
+						"description": "Submit Know Your Business (KYB) verification documents."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Dashboard",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/me/dashboard",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "dashboard"]
+						},
+						"description": "Get tenant dashboard summary data."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "API Keys",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/me/api-keys",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "api-keys"]
+						},
+						"description": "List all API keys for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create API Key",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Production Key\",\n  \"environment\": \"live\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/api-keys",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "api-keys"]
+						},
+						"description": "Create a new API key for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has api_key', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('api_key');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Webhook Config",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/me/webhooks",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "webhooks"]
+						},
+						"description": "Get the current webhook configuration for the tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update Webhooks",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"url\": \"https://webhook.site/korapay\",\n  \"events\": [\"transfer.completed\", \"transfer.failed\", \"deposit.confirmed\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/webhooks",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "webhooks"]
+						},
+						"description": "Update webhook URL and subscribed events."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Test Webhook",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/me/webhooks/test",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "webhooks", "test"]
+						},
+						"description": "Send a test webhook to the configured URL."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Quotes",
+			"description": "FX quote creation and retrieval.",
+			"item": [
+				{
+					"name": "Create Quote",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"source_currency\": \"GBP\",\n  \"source_amount\": \"1000\",\n  \"dest_currency\": \"NGN\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/quotes",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "quotes"]
+						},
+						"description": "Create a new FX quote for a currency pair."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has quote_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('quote_id');",
+									"    pm.collectionVariables.set('quote_id', jsonData.quote_id);",
+									"});",
+									"",
+									"pm.test('Response has rate and amounts', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('rate');",
+									"    pm.expect(jsonData).to.have.property('dest_amount');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Quote",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/quotes/{{quote_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "quotes", "{{quote_id}}"]
+						},
+						"description": "Retrieve an existing quote by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has quote_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('quote_id');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Transfers",
+			"description": "Cross-border transfer lifecycle: create, get, list, events, cancel.",
+			"item": [
+				{
+					"name": "Create Transfer",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"idempotency_key\": \"demo-transfer-001\",\n  \"source_currency\": \"GBP\",\n  \"source_amount\": \"1000\",\n  \"dest_currency\": \"NGN\",\n  \"quote_id\": \"{{quote_id}}\",\n  \"recipient\": {\n    \"name\": \"Adebayo Ogunlesi\",\n    \"account_number\": \"0123456789\",\n    \"bank_name\": \"GTBank\",\n    \"country\": \"NG\"\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/transfers",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers"]
+						},
+						"description": "Create a new cross-border transfer. Requires a valid quote_id."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has transfer_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('transfer_id');",
+									"    pm.collectionVariables.set('transfer_id', jsonData.transfer_id);",
+									"});",
+									"",
+									"pm.test('Response has status', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('status');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Transfer",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transfers/{{transfer_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers", "{{transfer_id}}"]
+						},
+						"description": "Get a single transfer by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has status field', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('status');",
+									"});",
+									"",
+									"pm.test('Response has transfer_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('transfer_id');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Transfers",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transfers?page_size=10",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers"],
+							"query": [
+								{ "key": "page_size", "value": "10" }
+							]
+						},
+						"description": "List transfers for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response is an array or has transfers array', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var transfers = jsonData.transfers || jsonData;",
+									"    pm.expect(transfers).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Transfer Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transfers/{{transfer_id}}/events",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers", "{{transfer_id}}", "events"]
+						},
+						"description": "Get the event history for a specific transfer."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has events', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var events = jsonData.events || jsonData;",
+									"    pm.expect(events).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cancel Transfer",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Customer requested\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/transfers/{{transfer_id}}/cancel",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers", "{{transfer_id}}", "cancel"]
+						},
+						"description": "Cancel a transfer that has not yet been completed."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 409', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 409]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Treasury",
+			"description": "Treasury position management: balances, top-up, withdrawal, transactions.",
+			"item": [
+				{
+					"name": "List Positions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/positions",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "positions"]
+						},
+						"description": "List all treasury positions for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has positions', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var positions = jsonData.positions || jsonData;",
+									"    pm.expect(positions).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Position",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/positions/GBP/bank:clearing",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "positions", "GBP", "bank:clearing"]
+						},
+						"description": "Get a specific treasury position by currency and location."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has position data', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('currency');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Liquidity Report",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/liquidity",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "liquidity"]
+						},
+						"description": "Get a liquidity report across all treasury positions."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Top Up",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currency\": \"GBP\",\n  \"location\": \"bank:clearing\",\n  \"amount\": \"50000\",\n  \"method\": \"bank_transfer\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/topup",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "topup"]
+						},
+						"description": "Top up a treasury position."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Withdraw",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currency\": \"NGN\",\n  \"location\": \"bank:clearing\",\n  \"amount\": \"10000000\",\n  \"method\": \"bank_transfer\",\n  \"destination\": \"GTBank-0123456789\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/withdraw",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "withdraw"]
+						},
+						"description": "Withdraw from a treasury position."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Transactions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/transactions?limit=20",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "transactions"],
+							"query": [
+								{ "key": "limit", "value": "20" }
+							]
+						},
+						"description": "List treasury transactions."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Transaction",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/transactions/{{position_tx_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "transactions", "{{position_tx_id}}"]
+						},
+						"description": "Get a specific treasury transaction by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Position Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/positions/GBP/bank:clearing/events?limit=50",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "positions", "GBP", "bank:clearing", "events"],
+							"query": [
+								{ "key": "limit", "value": "50" }
+							]
+						},
+						"description": "Get the event history for a specific treasury position."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Crypto Deposits",
+			"description": "Crypto deposit sessions: create, track, cancel, convert, balances.",
+			"item": [
+				{
+					"name": "Create Deposit",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"chain\": \"tron\",\n  \"token\": \"USDT\",\n  \"expected_amount\": \"1000\",\n  \"settlement_pref\": \"AUTO_CONVERT\",\n  \"idempotency_key\": \"deposit-001\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/deposits",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits"]
+						},
+						"description": "Create a new crypto deposit session."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has deposit_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var id = jsonData.deposit_id || jsonData.session_id || jsonData.id;",
+									"    pm.expect(id).to.not.be.undefined;",
+									"    pm.collectionVariables.set('deposit_id', id);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Deposit",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/{{deposit_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "{{deposit_id}}"]
+						},
+						"description": "Get a crypto deposit session by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Deposits",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits?limit=20",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits"],
+							"query": [
+								{ "key": "limit", "value": "20" }
+							]
+						},
+						"description": "List crypto deposit sessions."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cancel Deposit",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/{{deposit_id}}/cancel",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "{{deposit_id}}", "cancel"]
+						},
+						"description": "Cancel a crypto deposit session."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 409', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 409]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Crypto Balances",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/balance",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "balance"]
+						},
+						"description": "Get crypto balances for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Convert to Fiat",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"chain\": \"tron\",\n  \"token\": \"USDT\",\n  \"amount\": \"500\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/convert",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "convert"]
+						},
+						"description": "Convert crypto balance to fiat."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Public Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/{{deposit_id}}/public-status",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "{{deposit_id}}", "public-status"]
+						},
+						"description": "Get public deposit status (no auth required). Used for customer-facing status pages."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Bank Deposits",
+			"description": "Fiat bank deposit sessions via virtual accounts.",
+			"item": [
+				{
+					"name": "Create Bank Deposit",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currency\": \"GBP\",\n  \"expected_amount\": \"5000\",\n  \"account_type\": \"TEMPORARY\",\n  \"mismatch_policy\": \"ACCEPT\",\n  \"settlement_pref\": \"HOLD\",\n  \"idempotency_key\": \"bank-deposit-001\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/bank-deposits",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "bank-deposits"]
+						},
+						"description": "Create a new bank deposit session with a virtual account."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has bank_deposit_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var id = jsonData.bank_deposit_id || jsonData.session_id || jsonData.id;",
+									"    pm.expect(id).to.not.be.undefined;",
+									"    pm.collectionVariables.set('bank_deposit_id', id);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Bank Deposit",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/bank-deposits/{{bank_deposit_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "bank-deposits", "{{bank_deposit_id}}"]
+						},
+						"description": "Get a bank deposit session by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Bank Deposits",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/bank-deposits?limit=20",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "bank-deposits"],
+							"query": [
+								{ "key": "limit", "value": "20" }
+							]
+						},
+						"description": "List bank deposit sessions."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Cancel Bank Deposit",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/bank-deposits/{{bank_deposit_id}}/cancel",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "bank-deposits", "{{bank_deposit_id}}", "cancel"]
+						},
+						"description": "Cancel a bank deposit session."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 409', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 409]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Virtual Accounts",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/bank-deposits/accounts?limit=20",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "bank-deposits", "accounts"],
+							"query": [
+								{ "key": "limit", "value": "20" }
+							]
+						},
+						"description": "List virtual accounts assigned to the tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Payment Links",
+			"description": "Merchant payment link generation and redemption.",
+			"item": [
+				{
+					"name": "Create Payment Link",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"chain\": \"tron\",\n  \"token\": \"USDT\",\n  \"description\": \"Invoice #1234\",\n  \"use_limit\": 1,\n  \"settlement_pref\": \"AUTO_CONVERT\",\n  \"ttl_seconds\": 3600\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links"]
+						},
+						"description": "Create a new payment link for merchant collections."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has payment_link_id and code', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var id = jsonData.payment_link_id || jsonData.id;",
+									"    pm.expect(id).to.not.be.undefined;",
+									"    pm.collectionVariables.set('payment_link_id', id);",
+									"    if (jsonData.code) {",
+									"        pm.collectionVariables.set('payment_link_code', jsonData.code);",
+									"    }",
+									"    if (jsonData.link_code) {",
+									"        pm.collectionVariables.set('payment_link_code', jsonData.link_code);",
+									"    }",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Payment Links",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links?limit=20",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links"],
+							"query": [
+								{ "key": "limit", "value": "20" }
+							]
+						},
+						"description": "List payment links for the authenticated tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Payment Link",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links/{{payment_link_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links", "{{payment_link_id}}"]
+						},
+						"description": "Get a payment link by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Disable Payment Link",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links/{{payment_link_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links", "{{payment_link_id}}"]
+						},
+						"description": "Disable (soft-delete) a payment link."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 204', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Resolve Payment Link",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links/resolve/{{payment_link_code}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links", "resolve", "{{payment_link_code}}"]
+						},
+						"description": "Resolve a payment link by its public code (no auth required). Returns payment details for the payer."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has payment link details', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('amount');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Redeem Payment Link",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links/redeem/{{payment_link_code}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links", "redeem", "{{payment_link_code}}"]
+						},
+						"description": "Redeem a payment link (no auth required). Initiates the payment flow for the payer."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Routes",
+			"description": "Smart routing: get available routing options for a corridor.",
+			"item": [
+				{
+					"name": "Get Routing Options",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"from_currency\": \"GBP\",\n  \"to_currency\": \"NGN\",\n  \"amount\": \"5000\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/routes",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "routes"]
+						},
+						"description": "Get available routing options for a transfer corridor. Returns scored routes (cost 40%, speed 30%, liquidity 20%, reliability 10%)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Verification",
+			"description": "Transaction verification and lookup.",
+			"item": [
+				{
+					"name": "Verify Transaction",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transactions/verify/{{transfer_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transactions", "verify", "{{transfer_id}}"]
+						},
+						"description": "Verify a transaction by its transfer ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Lookup Transaction",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transactions/lookup?reference=demo-transfer-001",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transactions", "lookup"],
+							"query": [
+								{ "key": "reference", "value": "demo-transfer-001" }
+							]
+						},
+						"description": "Look up a transaction by its idempotency key / reference."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Analytics",
+			"description": "Tenant analytics: transfers, fees, providers, reconciliation, deposits, exports.",
+			"item": [
+				{
+					"name": "Transfer Analytics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/transfers?period=30d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "transfers"],
+							"query": [
+								{ "key": "period", "value": "30d" }
+							]
+						},
+						"description": "Get transfer analytics for the specified period."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Fee Analytics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/fees?period=30d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "fees"],
+							"query": [
+								{ "key": "period", "value": "30d" }
+							]
+						},
+						"description": "Get fee analytics for the specified period."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Provider Analytics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/providers?period=30d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "providers"],
+							"query": [
+								{ "key": "period", "value": "30d" }
+							]
+						},
+						"description": "Get provider performance analytics."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Reconciliation",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/reconciliation",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "reconciliation"]
+						},
+						"description": "Get the latest reconciliation results."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Deposit Analytics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/deposits?period=30d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "deposits"],
+							"query": [
+								{ "key": "period", "value": "30d" }
+							]
+						},
+						"description": "Get deposit analytics for the specified period."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Create Export",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"export_type\": \"transfers\",\n  \"period\": \"30d\",\n  \"format\": \"csv\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/export",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "export"]
+						},
+						"description": "Create a new data export job."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201 or 202', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has export job id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var id = jsonData.export_job_id || jsonData.job_id || jsonData.id;",
+									"    pm.expect(id).to.not.be.undefined;",
+									"    pm.collectionVariables.set('export_job_id', id);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Export Job",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/export/{{export_job_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "export", "{{export_job_id}}"]
+						},
+						"description": "Get the status of an export job."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Ops",
+			"description": "Operations endpoints for internal admin. Uses X-Ops-Api-Key authentication.",
+			"item": [
+				{
+					"name": "List Tenants",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants"]
+						},
+						"description": "List all tenants in the system."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has tenants', function () {",
+									"    var jsonData = pm.response.json();",
+									"    var tenants = jsonData.tenants || jsonData;",
+									"    pm.expect(tenants).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Tenant",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants/{{tenant_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants", "{{tenant_id}}"]
+						},
+						"description": "Get a specific tenant by ID."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});",
+									"",
+									"pm.test('Response has tenant_id', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('tenant_id');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update Tenant Status",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"status\": \"ACTIVE\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants/{{tenant_id}}/status",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants", "{{tenant_id}}", "status"]
+						},
+						"description": "Update a tenant's status (e.g., ACTIVE, SUSPENDED)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Approve KYB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"kyb_status\": \"VERIFIED\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants/{{tenant_id}}/kyb",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants", "{{tenant_id}}", "kyb"]
+						},
+						"description": "Approve or reject a tenant's KYB verification."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Update Fees",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"on_ramp_bps\": 40,\n  \"off_ramp_bps\": 35,\n  \"min_fee_usd\": \"0.50\",\n  \"max_fee_usd\": \"50.00\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants/{{tenant_id}}/fees",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants", "{{tenant_id}}", "fees"]
+						},
+						"description": "Update the fee schedule for a tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Manual Reviews",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/manual-reviews",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "manual-reviews"]
+						},
+						"description": "List transfers flagged for manual review."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Latest Reconciliation",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/reconciliation/latest",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "reconciliation", "latest"]
+						},
+						"description": "Get the latest reconciliation run results."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Run Reconciliation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/reconciliation/run",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "reconciliation", "run"]
+						},
+						"description": "Trigger a reconciliation run manually."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 202', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 202]);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Settlement Report",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/settlements/report?period=7d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "settlements", "report"],
+							"query": [
+								{ "key": "period", "value": "7d" }
+							]
+						},
+						"description": "Get the settlement report for a given period."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "DLQ Stats",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/ops/dlq/stats",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "dlq", "stats"]
+						},
+						"description": "Get dead-letter queue statistics."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Demo Flow",
+			"description": "Ordered sequence of requests for a live demo walkthrough. Run these in order to see the full Settla workflow.",
+			"item": [
+				{
+					"name": "01 - Register Tenant",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"company_name\": \"Korapay\",\n  \"email\": \"api@korapay.com\",\n  \"password\": \"SecureP@ss123\",\n  \"display_name\": \"Korapay Payments\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/register",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "register"]
+						},
+						"description": "Step 1: Register a new tenant."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.tenant_id) {",
+									"    pm.collectionVariables.set('tenant_id', jsonData.tenant_id);",
+									"}",
+									"if (jsonData.verification_token) {",
+									"    pm.collectionVariables.set('verification_token', jsonData.verification_token);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "02 - Login",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"api@korapay.com\",\n  \"password\": \"SecureP@ss123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/auth/login",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "auth", "login"]
+						},
+						"description": "Step 2: Login to get JWT tokens."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.access_token) {",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"}",
+									"if (jsonData.refresh_token) {",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"}",
+									"if (jsonData.tenant_id) {",
+									"    pm.collectionVariables.set('tenant_id', jsonData.tenant_id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "03 - Submit KYB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{access_token}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"company_registration_number\": \"RC1234567\",\n  \"country\": \"NG\",\n  \"business_type\": \"fintech\",\n  \"contact_name\": \"Gbenga Agboola\",\n  \"contact_email\": \"gbenga@korapay.com\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/kyb",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "kyb"]
+						},
+						"description": "Step 3: Submit KYB verification."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "04 - Approve KYB (Ops)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-Ops-Api-Key", "value": "{{ops_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"kyb_status\": \"VERIFIED\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/ops/tenants/{{tenant_id}}/kyb",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "ops", "tenants", "{{tenant_id}}", "kyb"]
+						},
+						"description": "Step 4: Ops approves the KYB submission."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "05 - Create API Key",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{access_token}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Production Key\",\n  \"environment\": \"live\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/api-keys",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "api-keys"]
+						},
+						"description": "Step 5: Create an API key for programmatic access."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.api_key) {",
+									"    pm.collectionVariables.set('api_key', jsonData.api_key);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "06 - Update Webhooks",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"url\": \"https://webhook.site/korapay\",\n  \"events\": [\"transfer.completed\", \"transfer.failed\", \"deposit.confirmed\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/me/webhooks",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "me", "webhooks"]
+						},
+						"description": "Step 6: Configure webhook delivery."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "07 - Create Quote",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"source_currency\": \"GBP\",\n  \"source_amount\": \"1000\",\n  \"dest_currency\": \"NGN\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/quotes",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "quotes"]
+						},
+						"description": "Step 7: Get an FX quote for GBP to NGN."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.quote_id) {",
+									"    pm.collectionVariables.set('quote_id', jsonData.quote_id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "08 - Create Transfer",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"idempotency_key\": \"demo-transfer-001\",\n  \"source_currency\": \"GBP\",\n  \"source_amount\": \"1000\",\n  \"dest_currency\": \"NGN\",\n  \"quote_id\": \"{{quote_id}}\",\n  \"recipient\": {\n    \"name\": \"Adebayo Ogunlesi\",\n    \"account_number\": \"0123456789\",\n    \"bank_name\": \"GTBank\",\n    \"country\": \"NG\"\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/transfers",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers"]
+						},
+						"description": "Step 8: Create a cross-border transfer using the quote."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.transfer_id) {",
+									"    pm.collectionVariables.set('transfer_id', jsonData.transfer_id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "09 - Get Transfer (poll status)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transfers/{{transfer_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers", "{{transfer_id}}"]
+						},
+						"description": "Step 9: Poll the transfer status."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response has status', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('status');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "10 - Get Transfer Events",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/transfers/{{transfer_id}}/events",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "transfers", "{{transfer_id}}", "events"]
+						},
+						"description": "Step 10: View the event trail for the transfer."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "11 - List Treasury Positions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/treasury/positions",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "treasury", "positions"]
+						},
+						"description": "Step 11: Check treasury positions after the transfer."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "12 - Create Deposit Session",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"chain\": \"tron\",\n  \"token\": \"USDT\",\n  \"expected_amount\": \"1000\",\n  \"settlement_pref\": \"AUTO_CONVERT\",\n  \"idempotency_key\": \"demo-deposit-001\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/deposits",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits"]
+						},
+						"description": "Step 12: Create a crypto deposit session."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"var id = jsonData.deposit_id || jsonData.session_id || jsonData.id;",
+									"if (id) {",
+									"    pm.collectionVariables.set('deposit_id', id);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "13 - Get Crypto Balances",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/deposits/balance",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "deposits", "balance"]
+						},
+						"description": "Step 13: Check crypto balances."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "14 - Create Payment Link",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"amount\": \"50\",\n  \"currency\": \"USD\",\n  \"chain\": \"tron\",\n  \"token\": \"USDT\",\n  \"description\": \"Invoice #1234\",\n  \"use_limit\": 1,\n  \"settlement_pref\": \"AUTO_CONVERT\",\n  \"ttl_seconds\": 3600\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links"]
+						},
+						"description": "Step 14: Create a payment link for merchant collections."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"var id = jsonData.payment_link_id || jsonData.id;",
+									"if (id) {",
+									"    pm.collectionVariables.set('payment_link_id', id);",
+									"}",
+									"if (jsonData.code) {",
+									"    pm.collectionVariables.set('payment_link_code', jsonData.code);",
+									"}",
+									"if (jsonData.link_code) {",
+									"    pm.collectionVariables.set('payment_link_code', jsonData.link_code);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "15 - Resolve Payment Link",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/v1/payment-links/resolve/{{payment_link_code}}",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "payment-links", "resolve", "{{payment_link_code}}"]
+						},
+						"description": "Step 15: Resolve the payment link as a payer would."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "16 - Transfer Analytics",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/v1/analytics/transfers?period=30d",
+							"host": ["{{base_url}}"],
+							"path": ["v1", "analytics", "transfers"],
+							"query": [
+								{ "key": "period", "value": "30d" }
+							]
+						},
+						"description": "Step 16: View transfer analytics to wrap up the demo."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Health",
+			"description": "Service health and readiness probes.",
+			"item": [
+				{
+					"name": "Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": ["{{base_url}}"],
+							"path": ["health"]
+						},
+						"description": "Basic health check. Returns 200 if the gateway is running."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 2000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(2000);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Ready",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/ready",
+							"host": ["{{base_url}}"],
+							"path": ["ready"]
+						},
+						"description": "Readiness probe. Checks gRPC backend and Redis connectivity."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response time is less than 5000ms', function () {",
+									"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}
