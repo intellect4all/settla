@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant S as Scheduler (00:30 UTC)
+    participant DB as Transfer DB
+    participant C as Calculator
+    participant NS as Net Settlements Table
+
+    S->>DB: ListActiveTenantIDsBySettlementModel(NET_SETTLEMENT)
+    DB-->>S: Tenant IDs (cursor pagination, 500/page)
+
+    loop 32 worker goroutines
+        S->>DB: AggregateCompletedTransfersByPeriod(tenantID, T-1 to T)
+        DB-->>S: CorridorAggregates (GROUP BY src, dest currency)
+
+        S->>C: CalculateNetSettlement(aggregates)
+        Note over C: Build corridor positions<br/>Net by currency (inflows - outflows)<br/>Sum fees in USD<br/>Generate instructions
+
+        C-->>S: NetSettlement (due_date = T+3)
+        S->>NS: CreateNetSettlement() [idempotent]
+    end
+
+    S->>DB: ListPendingSettlements()
+    Note over S: Escalate overdue:<br/>3d = reminder<br/>5d = warning<br/>7d = mark overdue

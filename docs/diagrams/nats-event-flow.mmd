@@ -1,0 +1,57 @@
+flowchart LR
+    subgraph Engine["Core Engine (settla-server)"]
+        SM[State Machine]
+        OB[Outbox Table]
+        SM -->|atomic write| OB
+    end
+
+    subgraph Relay["Outbox Relay"]
+        P["Poller (20ms, batch 500)"]
+    end
+
+    OB -->|poll| P
+
+    subgraph NATS["NATS JetStream (256 partitions)"]
+        S1[SETTLA_TRANSFERS]
+        S2[SETTLA_PROVIDERS]
+        S3[SETTLA_LEDGER]
+        S4[SETTLA_TREASURY]
+        S5[SETTLA_BLOCKCHAIN]
+        S6[SETTLA_WEBHOOKS]
+        S7[SETTLA_CRYPTO_DEPOSITS]
+        S8[SETTLA_BANK_DEPOSITS]
+        S9[SETTLA_EMAILS]
+        S10[SETTLA_PROVIDER_WEBHOOKS]
+        S11[SETTLA_POSITION_EVENTS]
+        S12[SETTLA_DLQ]
+    end
+
+    P -->|route by event type + tenant partition| S1 & S2 & S3 & S4 & S5 & S6 & S7 & S8 & S9
+
+    subgraph Workers["settla-node Workers"]
+        W1[TransferWorker]
+        W2[ProviderWorker]
+        W3[LedgerWorker]
+        W4[TreasuryWorker]
+        W5[BlockchainWorker]
+        W6[WebhookWorker]
+        W7[DepositWorker]
+        W8[BankDepositWorker]
+        W9[EmailWorker]
+        W10[InboundWebhookWorker]
+        W11[DLQMonitor]
+    end
+
+    S1 --> W1
+    S2 --> W2
+    S3 --> W3
+    S4 --> W4
+    S5 --> W5
+    S6 --> W6
+    S7 --> W7
+    S8 --> W8
+    S9 --> W9
+    S10 --> W10
+    S12 --> W11
+
+    W1 & W2 & W3 & W4 & W5 -->|HandleResult| SM

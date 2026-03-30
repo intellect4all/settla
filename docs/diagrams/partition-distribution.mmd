@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph Tenants["100,000 Tenants"]
+        T1["Tenant A (UUID)"]
+        T2["Tenant B (UUID)"]
+        TN["Tenant N (UUID)"]
+    end
+
+    subgraph Hash["FNV-1a Hash"]
+        H["partition = fnv32a(UUID) % 256"]
+    end
+
+    T1 --> H
+    T2 --> H
+    TN --> H
+
+    subgraph Partitions["256 Partitions (~400 tenants each)"]
+        P0["Partition 0"]
+        P1["Partition 1"]
+        PX["..."]
+        P255["Partition 255"]
+    end
+
+    H --> P0 & P1 & PX & P255
+
+    subgraph Streams["12 Streams (each partitioned)"]
+        ST["TRANSFERS | PROVIDERS | LEDGER<br/>TREASURY | BLOCKCHAIN | WEBHOOKS<br/>CRYPTO_DEPOSITS | BANK_DEPOSITS<br/>EMAILS | PROVIDER_WEBHOOKS<br/>POSITION_EVENTS | DLQ"]
+    end
+
+    Partitions --> Streams
+
+    subgraph Workers["8 settla-node Instances"]
+        N1["Node 1: partitions 0-31"]
+        N2["Node 2: partitions 32-63"]
+        N3["..."]
+        N8["Node 8: partitions 224-255"]
+    end
+
+    Streams --> N1 & N2 & N3 & N8

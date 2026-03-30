@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant BC as Blockchain (Tron/EVM)
+    participant CM as Chain Monitor
+    participant DB as Transfer DB
+    participant OR as Outbox Relay
+    participant NATS as NATS JetStream
+    participant DW as Deposit Worker
+    participant DE as Deposit Engine
+    participant LW as Ledger Worker
+    participant TB as TigerBeetle
+
+    CM->>BC: Poll for stablecoin transfers to watched addresses
+    BC-->>CM: Transfer events
+
+    CM->>DB: GetDepositTxByHash(txHash) [idempotency]
+    CM->>DB: GetSessionByAddress(toAddress)
+    DB-->>CM: DepositSession
+
+    CM->>DB: WriteDetectedTx(tx, outbox_entry) [atomic]
+
+    OR->>DB: Poll unpublished entries (20ms)
+    OR->>NATS: Publish deposit.tx.detected
+
+    NATS->>DW: Deliver to partition N
+    DW->>DE: HandleTransactionDetected()
+    Note over DE: PENDING_PAYMENT -> DETECTED
+
+    Note over CM: Wait for confirmations (19 Tron / 12 EVM)
+
+    DW->>DE: HandleTransactionConfirmed()
+    Note over DE: DETECTED -> CONFIRMED -> CREDITING<br/>Calculate collection fee<br/>Emit IntentCreditDeposit
+
+    NATS->>LW: IntentCreditDeposit
+    LW->>TB: Post ledger entries (debit system, credit tenant)
+    LW->>DE: HandleCreditResult(success)
+    Note over DE: CREDITING -> CREDITED<br/>AUTO_CONVERT -> SETTLING<br/>HOLD -> HELD (terminal)

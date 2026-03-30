@@ -1,0 +1,35 @@
+stateDiagram-v2
+    [*] --> ONBOARDING: Tenant registration
+
+    ONBOARDING --> ACTIVE: KYB verified
+
+    ACTIVE --> RATE_LIMITED: Volume/rate limit exceeded
+    ACTIVE --> SUSPENDED: Administrative hold
+
+    RATE_LIMITED --> ACTIVE: Limit window resets
+
+    SUSPENDED --> ACTIVE: Suspension lifted
+    SUSPENDED --> OFFBOARDED: Relationship ended
+
+    OFFBOARDED --> [*]
+
+    note right of ONBOARDING
+        API keys issued.
+        Transfers blocked until KYB verified.
+    end note
+
+    note right of ACTIVE
+        Full access.
+        Status=ACTIVE AND KYB=VERIFIED.
+    end note
+
+    note right of SUSPENDED
+        All API calls return 403.
+        Data retained, positions frozen.
+    end note
+
+    note right of OFFBOARDED
+        Settlements completed.
+        Data retained 7 years.
+        API keys revoked.
+    end note

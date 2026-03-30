@@ -1,0 +1,25 @@
+stateDiagram-v2
+    [*] --> CREATED: CreateTransfer()
+
+    CREATED --> FUNDED: HandleReserveResult(success)
+    CREATED --> FAILED: HandleReserveResult(failure)
+
+    FUNDED --> ON_RAMPING: HandleOnRampStart()
+    FUNDED --> REFUNDING: Compensation triggered
+
+    ON_RAMPING --> SETTLING: HandleOnRampResult(success)
+    ON_RAMPING --> REFUNDING: HandleOnRampResult(retriable failure)
+    ON_RAMPING --> FAILED: HandleOnRampResult(permanent failure)
+
+    SETTLING --> OFF_RAMPING: HandleSettlementResult(success)
+    SETTLING --> FAILED: HandleSettlementResult(failure)
+
+    OFF_RAMPING --> COMPLETED: HandleOffRampResult(success)
+    OFF_RAMPING --> FAILED: HandleOffRampResult(failure)
+
+    FAILED --> REFUNDING: Compensation initiated
+
+    REFUNDING --> REFUNDED: Refund completed
+
+    COMPLETED --> [*]
+    REFUNDED --> [*]
