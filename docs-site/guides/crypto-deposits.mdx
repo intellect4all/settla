@@ -19,7 +19,7 @@ curl -X POST https://sandbox.settla.io/v1/deposits \
     "chain": "tron",
     "token": "USDT",
     "expected_amount": "100",
-    "settlement_pref": "HOLD_CRYPTO"
+    "settlement_pref": "HOLD"
   }'
 ```
 
@@ -34,7 +34,7 @@ const session = await fetch("https://sandbox.settla.io/v1/deposits", {
     chain: "tron",
     token: "USDT",
     expected_amount: "100",
-    settlement_pref: "HOLD_CRYPTO",
+    settlement_pref: "HOLD",
   }),
 }).then(r => r.json());
 
@@ -47,15 +47,17 @@ console.log(`Deposit address: ${session.session.deposit_address}`);
 
 | Preference | Description |
 |-----------|-------------|
-| `HOLD_CRYPTO` | Keep deposited stablecoins as crypto balance |
+| `HOLD` | Keep deposited stablecoins as crypto balance |
 | `AUTO_CONVERT` | Automatically convert to fiat on receipt |
+| `THRESHOLD` | Accumulate deposits until a threshold, then convert in bulk |
 
 ## Monitor Deposits
 
 Settla monitors the blockchain for incoming transactions. When a deposit is detected:
-1. The session status moves to `CONFIRMING`
-2. After sufficient confirmations, it moves to `CONFIRMED`
-3. Based on settlement preference, funds are held or converted
+1. The session status moves to `DETECTED` (unconfirmed on-chain payment found)
+2. After sufficient block confirmations, it moves to `CONFIRMED`
+3. The tenant ledger is credited (`CREDITED`)
+4. Based on settlement preference: converted to fiat (`SETTLED`) or held as crypto (`HELD`)
 
 ## Public Status Page
 

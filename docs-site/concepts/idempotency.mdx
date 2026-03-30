@@ -42,8 +42,9 @@ If you send the same idempotency key with **different** request parameters, Sett
 
 ```json
 {
-  "error": "IDEMPOTENCY_CONFLICT",
-  "code": "IDEMPOTENCY_CONFLICT",
-  "message": "Idempotency key already used with different parameters"
+  "error": {
+    "code": "IDEMPOTENCY_CONFLICT",
+    "message": "Idempotency key already used with different parameters"
+  }
 }
 ```

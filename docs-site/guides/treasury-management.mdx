@@ -31,7 +31,7 @@ for (const pos of positions.positions) {
 ## View a Specific Position
 
 ```bash
-curl https://sandbox.settla.io/v1/treasury/positions/GBP/uk-clearing \
+curl https://sandbox.settla.io/v1/treasury/positions/GBP/bank:gbp \
   -H "Authorization: Bearer $API_KEY"
 ```
 
@@ -46,5 +46,36 @@ curl https://sandbox.settla.io/v1/treasury/liquidity \
 
 The report includes:
 - Total available balance per currency
-- Locked (reserved) amounts
-- Positions that are below alert thresholds
+- Locked (reserved) amounts for in-flight transfers
+- Positions that are below their `min_balance` threshold
+
+## Top Up & Withdraw
+
+Request a top-up to increase funds:
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/treasury/topup \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"currency": "GBP", "location": "bank:gbp", "amount": "50000", "method": "bank_transfer"}'
+```
+
+Request a withdrawal:
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/treasury/withdraw \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"currency": "GBP", "location": "bank:gbp", "amount": "10000", "method": "bank_transfer", "destination": "Barclays-12345678"}'
+```
+
+## Position Events (Audit Trail)
+
+View the full event history for any position:
+
+```bash
+curl "https://sandbox.settla.io/v1/treasury/positions/GBP/bank:gbp/events?limit=50" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+Events include CREDIT, DEBIT, RESERVE, RELEASE, COMMIT, and CONSUME with `balance_after` and `locked_after` for each.

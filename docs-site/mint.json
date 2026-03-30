@@ -77,6 +77,15 @@
       ]
     },
     {
+      "group": "Authentication",
+      "pages": [
+        "api-reference/auth/register",
+        "api-reference/auth/login",
+        "api-reference/auth/verify-email",
+        "api-reference/auth/refresh-token"
+      ]
+    },
+    {
       "group": "Quotes",
       "pages": [
         "api-reference/quotes/create-quote",
@@ -98,7 +107,12 @@
       "pages": [
         "api-reference/treasury/list-positions",
         "api-reference/treasury/get-position",
-        "api-reference/treasury/get-liquidity-report"
+        "api-reference/treasury/get-liquidity-report",
+        "api-reference/treasury/request-topup",
+        "api-reference/treasury/request-withdrawal",
+        "api-reference/treasury/list-transactions",
+        "api-reference/treasury/get-transaction",
+        "api-reference/treasury/get-position-events"
       ]
     },
     {
@@ -156,18 +170,66 @@
       ]
     },
     {
+      "group": "Analytics",
+      "pages": [
+        "api-reference/analytics/transfer-analytics",
+        "api-reference/analytics/fee-analytics",
+        "api-reference/analytics/provider-analytics",
+        "api-reference/analytics/reconciliation-analytics",
+        "api-reference/analytics/deposit-analytics",
+        "api-reference/analytics/create-export",
+        "api-reference/analytics/get-export-job"
+      ]
+    },
+    {
+      "group": "Tenant Portal",
+      "pages": [
+        "api-reference/tenant-portal/get-profile",
+        "api-reference/tenant-portal/update-profile",
+        "api-reference/tenant-portal/get-dashboard",
+        "api-reference/tenant-portal/submit-kyb",
+        "api-reference/tenant-portal/list-api-keys",
+        "api-reference/tenant-portal/create-api-key",
+        "api-reference/tenant-portal/revoke-api-key",
+        "api-reference/tenant-portal/rotate-api-key",
+        "api-reference/tenant-portal/get-webhook-config",
+        "api-reference/tenant-portal/update-webhooks",
+        "api-reference/tenant-portal/test-webhook",
+        "api-reference/tenant-portal/list-webhook-deliveries"
+      ]
+    },
+    {
       "group": "Webhooks",
       "pages": [
         "api-reference/webhooks/receive-provider-webhook"
       ]
     },
     {
-      "group": "Auth",
+      "group": "Ops (Internal)",
       "pages": [
-        "api-reference/auth/register",
-        "api-reference/auth/login",
-        "api-reference/auth/verify-email",
-        "api-reference/auth/refresh-token"
+        "api-reference/ops/list-tenants",
+        "api-reference/ops/get-tenant",
+        "api-reference/ops/update-tenant-status",
+        "api-reference/ops/update-kyb-status",
+        "api-reference/ops/update-fees",
+        "api-reference/ops/update-limits",
+        "api-reference/ops/manual-reviews",
+        "api-reference/ops/approve-review",
+        "api-reference/ops/reject-review",
+        "api-reference/ops/settlement-report",
+        "api-reference/ops/mark-settled",
+        "api-reference/ops/run-reconciliation",
+        "api-reference/ops/latest-reconciliation",
+        "api-reference/ops/dlq-stats",
+        "api-reference/ops/list-dlq-messages",
+        "api-reference/ops/replay-dlq-message"
+      ]
+    },
+    {
+      "group": "Health",
+      "pages": [
+        "api-reference/health/health",
+        "api-reference/health/ready"
       ]
     },
     {

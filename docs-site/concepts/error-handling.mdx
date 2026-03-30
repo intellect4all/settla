@@ -11,19 +11,17 @@ All Settla API errors follow a consistent JSON format.
 
 ```json
 {
-  "error": "TRANSFER_NOT_FOUND",
-  "code": "TRANSFER_NOT_FOUND",
-  "message": "Transfer with ID abc123 not found",
-  "request_id": "req_550e8400-e29b-41d4-a716-446655440000"
+  "error": {
+    "code": "TRANSFER_NOT_FOUND",
+    "message": "Transfer with ID abc123 not found"
+  }
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `error` | Machine-readable error code (use for programmatic handling) |
-| `code` | Same as `error` (for backwards compatibility) |
-| `message` | Human-readable description |
-| `request_id` | Unique request ID for support tickets |
+| `error.code` | Machine-readable error code (use for programmatic handling) |
+| `error.message` | Human-readable description (may change — do not parse) |
 
 ## HTTP Status Codes
 

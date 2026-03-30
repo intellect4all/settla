@@ -20,7 +20,7 @@ curl -X POST https://sandbox.settla.io/v1/bank-deposits \
     "expected_amount": "500000",
     "account_type": "TEMPORARY",
     "mismatch_policy": "ACCEPT",
-    "settlement_pref": "HOLD_FIAT"
+    "settlement_pref": "HOLD"
   }'
 ```
 
@@ -36,7 +36,7 @@ const session = await fetch("https://sandbox.settla.io/v1/bank-deposits", {
     expected_amount: "500000",
     account_type: "TEMPORARY",
     mismatch_policy: "ACCEPT",
-    settlement_pref: "HOLD_FIAT",
+    settlement_pref: "HOLD",
   }),
 }).then(r => r.json());
 ```

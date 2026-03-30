@@ -1,6 +1,6 @@
 ---
 title: "Currencies & Corridors"
-description: "Supported currencies, countries, and payment corridors"
+description: "Supported currencies, blockchains, and payment corridors"
 ---
 
 # Currencies & Corridors
@@ -9,19 +9,30 @@ description: "Supported currencies, countries, and payment corridors"
 
 | Currency | Country | Direction |
 |----------|---------|-----------|
-| GBP | United Kingdom | Source |
-| USD | United States | Source |
+| GBP | United Kingdom | Source & Destination |
+| USD | United States | Source & Destination |
 | EUR | Eurozone | Source |
-| NGN | Nigeria | Destination |
+| NGN | Nigeria | Source & Destination |
 | GHS | Ghana | Destination |
 | KES | Kenya | Destination |
 
 ## Stablecoins
 
-| Token | Chains | Usage |
-|-------|--------|-------|
-| USDT (Tether) | Tron, Ethereum, Polygon | Settlement rail |
-| USDC (Circle) | Tron, Ethereum, Polygon | Settlement rail |
+| Token | Supported Chains | Usage |
+|-------|-----------------|-------|
+| USDT (Tether) | Tron, Ethereum, Solana, Base, Polygon, Arbitrum | Settlement rail |
+| USDC (Circle) | Tron, Ethereum, Solana, Base, Polygon, Arbitrum | Settlement rail |
+
+## Blockchain Networks
+
+| Chain | Type | Confirmations | Typical Speed |
+|-------|------|---------------|---------------|
+| Tron | TRC-20 | 19 blocks | ~1 minute |
+| Ethereum | ERC-20 | 12 blocks | ~3 minutes |
+| Solana | SPL | 32 slots | ~15 seconds |
+| Base | ERC-20 | 12 blocks | ~2 seconds |
+| Polygon | ERC-20 | 128 blocks | ~5 minutes |
+| Arbitrum | ERC-20 | 12 blocks | ~1 second |
 
 ## Supported Corridors
 
@@ -32,5 +43,22 @@ description: "Supported currencies, countries, and payment corridors"
 | EUR → NGN | Europe → Nigeria | Tron, Polygon | USDT, USDC |
 | GBP → GHS | UK → Ghana | Tron | USDT |
 | USD → KES | US → Kenya | Tron | USDT |
+| NGN → GBP | Nigeria → UK | Tron, Ethereum | USDT, USDC |
+| NGN → USD | Nigeria → US | Tron, Ethereum | USDT, USDC |
 
-Use `POST /v1/routes` to check real-time availability and pricing for a specific corridor.
+<Note>
+Corridor availability and pricing depend on provider liquidity. Use `POST /v1/routes` to check real-time availability and scoring for a specific corridor.
+</Note>
+
+## Smart Routing
+
+When you create a quote or transfer, Settla's router evaluates all available routes and scores them:
+
+| Factor | Weight | Higher Score Means |
+|--------|--------|-------------------|
+| Cost | 40% | Lower total fees |
+| Speed | 30% | Faster settlement |
+| Liquidity | 20% | More available balance |
+| Reliability | 10% | Higher historical success rate |
+
+The highest-scoring route is selected automatically. Use the [routing options endpoint](/api-reference/routes/get-routing-options) to see all available routes with their scores.

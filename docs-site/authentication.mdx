@@ -27,7 +27,7 @@ Authorization: Bearer sk_live_your_api_key_here
 - Keys are stored as SHA-256 hashes — we never store raw keys
 - Keys are scoped to a single tenant
 - Revoked keys are invalidated across all gateway instances within milliseconds
-- Rotate keys regularly using the [key rotation endpoint](/api-reference/auth/rotate-api-key)
+- Rotate keys regularly using the [key rotation endpoint](/api-reference/tenant-portal/rotate-api-key)
 
 <Warning>
 Never expose API keys in client-side code, public repositories, or logs. Use environment variables and server-side code only.

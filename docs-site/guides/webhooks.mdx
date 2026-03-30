@@ -5,92 +5,358 @@ description: "Configure webhooks for real-time event notifications"
 
 # Webhooks
 
-Receive real-time notifications when transfer statuses change, deposits are confirmed, or other events occur.
+Receive real-time notifications when transfer statuses change, deposits are confirmed, or other events occur. Webhooks are the recommended way to track transfer progress — they eliminate polling and ensure you react to events in real time.
 
 ## Configure Your Webhook URL
+
+Set your webhook endpoint and choose which events to subscribe to:
 
 ```bash
 curl -X PUT https://sandbox.settla.io/v1/me/webhooks \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"webhook_url": "https://your-app.com/webhooks/settla"}'
+  -d '{
+    "url": "https://your-app.com/webhooks/settla",
+    "events": [
+      "transfer.completed",
+      "transfer.failed",
+      "deposit.confirmed",
+      "bank_deposit.received"
+    ]
+  }'
+```
+
+<Note>
+If you omit the `events` array, you'll receive all event types. We recommend subscribing only to the events you need.
+</Note>
+
+## Webhook Payload Format
+
+Every webhook delivery sends a POST request to your URL with this JSON structure:
+
+```json
+{
+  "id": "evt_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "event_type": "transfer.completed",
+  "created_at": "2025-01-15T14:30:00Z",
+  "data": {
+    "id": "tf_98765432-1234-5678-abcd-fedcba098765",
+    "tenant_id": "a0000000-0000-0000-0000-000000000001",
+    "status": "COMPLETED",
+    "source_currency": "GBP",
+    "source_amount": "1000.00",
+    "dest_currency": "NGN",
+    "dest_amount": "520000.00",
+    "completed_at": "2025-01-15T14:30:00Z"
+  }
+}
 ```
 
 ## Verify Webhook Signatures
 
-Every webhook includes an HMAC-SHA256 signature in the `X-Settla-Signature` header. Always verify this signature.
+Every webhook includes an HMAC-SHA256 signature in the `X-Settla-Signature` header and a timestamp in `X-Settla-Timestamp`. **Always verify signatures** to ensure the webhook came from Settla and wasn't tampered with.
+
+The signature is computed over the raw request body using your webhook secret.
+
+<Warning>
+Never skip signature verification in production. An unverified webhook endpoint is an attack vector — anyone who discovers your URL could send fake events.
+</Warning>
 
 <CodeGroup>
 
 ```javascript Node.js
 import crypto from "node:crypto";
 
-function verifyWebhook(payload, signature, secret) {
+function verifyWebhook(rawBody, signature, timestamp, secret) {
+  // Reject old timestamps (replay protection — 5 minute window)
+  const age = Date.now() / 1000 - Number(timestamp);
+  if (Math.abs(age) > 300) return false;
+
   const expected = crypto
     .createHmac("sha256", secret)
-    .update(payload)
+    .update(rawBody)
     .digest("hex");
   return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expected)
+    Buffer.from(signature, "utf8"),
+    Buffer.from(expected, "utf8")
   );
 }
 
-// In your webhook handler:
-app.post("/webhooks/settla", (req, res) => {
+// Express / Fastify handler:
+app.post("/webhooks/settla", { config: { rawBody: true } }, (req, res) => {
   const isValid = verifyWebhook(
-    JSON.stringify(req.body),
+    req.rawBody,                            // Use raw body, not parsed JSON
     req.headers["x-settla-signature"],
+    req.headers["x-settla-timestamp"],
     process.env.SETTLA_WEBHOOK_SECRET
   );
   if (!isValid) return res.status(401).send("Invalid signature");
 
-  // Process the event
-  console.log("Event:", req.body.event_type);
+  const event = JSON.parse(req.rawBody);
+  switch (event.event_type) {
+    case "transfer.completed":
+      console.log("Transfer completed:", event.data.id);
+      break;
+    case "transfer.failed":
+      console.log("Transfer failed:", event.data.id, event.data.failure_reason);
+      break;
+  }
   res.status(200).send("OK");
 });
+```
+
+```go Go
+package main
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"math"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+func verifyWebhook(body []byte, signature, timestamp, secret string) bool {
+	// Replay protection — reject timestamps older than 5 minutes
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	age := time.Since(time.Unix(ts, 0))
+	if math.Abs(age.Seconds()) > 300 {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(signature), []byte(expected))
+}
+
+func webhookHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if !verifyWebhook(
+		body,
+		r.Header.Get("X-Settla-Signature"),
+		r.Header.Get("X-Settla-Timestamp"),
+		"your_webhook_secret",
+	) {
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Process the event — parse body as JSON
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
 ```
 
 ```python Python
 import hmac
 import hashlib
+import time
+import json
+from flask import Flask, request, abort
 
-def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
+app = Flask(__name__)
+WEBHOOK_SECRET = "your_webhook_secret"
+
+def verify_webhook(payload: bytes, signature: str, timestamp: str, secret: str) -> bool:
+    # Replay protection — 5 minute window
+    try:
+        age = abs(time.time() - int(timestamp))
+        if age > 300:
+            return False
+    except (ValueError, TypeError):
+        return False
+
     expected = hmac.new(
         secret.encode(), payload, hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(signature, expected)
+
+@app.route("/webhooks/settla", methods=["POST"])
+def handle_webhook():
+    raw_body = request.get_data()
+    signature = request.headers.get("X-Settla-Signature", "")
+    timestamp = request.headers.get("X-Settla-Timestamp", "")
+
+    if not verify_webhook(raw_body, signature, timestamp, WEBHOOK_SECRET):
+        abort(401, "Invalid signature")
+
+    event = json.loads(raw_body)
+    event_type = event.get("event_type")
+
+    if event_type == "transfer.completed":
+        print(f"Transfer completed: {event['data']['id']}")
+    elif event_type == "transfer.failed":
+        print(f"Transfer failed: {event['data']['id']}")
+
+    return "OK", 200
+```
+
+```php PHP
+<?php
+
+function verifyWebhook(string $payload, string $signature, string $timestamp, string $secret): bool {
+    // Replay protection — 5 minute window
+    if (abs(time() - intval($timestamp)) > 300) {
+        return false;
+    }
+
+    $expected = hash_hmac('sha256', $payload, $secret);
+    return hash_equals($expected, $signature);
+}
+
+// Receive the webhook
+$rawBody = file_get_contents('php://input');
+$signature = $_SERVER['HTTP_X_SETTLA_SIGNATURE'] ?? '';
+$timestamp = $_SERVER['HTTP_X_SETTLA_TIMESTAMP'] ?? '';
+$secret = getenv('SETTLA_WEBHOOK_SECRET');
+
+if (!verifyWebhook($rawBody, $signature, $timestamp, $secret)) {
+    http_response_code(401);
+    echo 'Invalid signature';
+    exit;
+}
+
+$event = json_decode($rawBody, true);
+
+switch ($event['event_type']) {
+    case 'transfer.completed':
+        error_log("Transfer completed: " . $event['data']['id']);
+        break;
+    case 'transfer.failed':
+        error_log("Transfer failed: " . $event['data']['id']);
+        break;
+}
+
+http_response_code(200);
+echo 'OK';
 ```
 
 </CodeGroup>
 
 ## Event Types
 
+### Transfer Events
+
+| Event | Description | Trigger |
+|-------|-------------|---------|
+| `transfer.created` | New transfer submitted | POST /v1/transfers |
+| `transfer.funded` | Treasury funds reserved | Engine state transition |
+| `transfer.on_ramping` | Fiat→stablecoin conversion started | ProviderWorker |
+| `transfer.settling` | On-chain settlement started | BlockchainWorker |
+| `transfer.off_ramping` | Stablecoin→fiat conversion started | ProviderWorker |
+| `transfer.completed` | Transfer delivered to recipient | Engine terminal state |
+| `transfer.failed` | Transfer encountered an error | Any worker failure |
+| `transfer.refunding` | Refund initiated | CompensationStrategy |
+| `transfer.refunded` | Refund completed | Engine terminal state |
+
+### Deposit Events
+
 | Event | Description |
 |-------|-------------|
-| `transfer.created` | New transfer created |
-| `transfer.completed` | Transfer delivered successfully |
-| `transfer.failed` | Transfer failed |
-| `deposit.confirmed` | Crypto deposit confirmed on-chain |
-| `bank_deposit.received` | Bank deposit received |
-| `settlement.completed` | Daily settlement completed |
+| `deposit.detected` | On-chain payment found (unconfirmed) |
+| `deposit.confirmed` | On-chain payment has enough confirmations |
+| `deposit.credited` | Tenant ledger credited |
+| `deposit.settled` | Crypto converted to fiat (AUTO_CONVERT) |
+| `deposit.held` | Crypto held in balance (HOLD preference) |
+| `deposit.failed` | Deposit processing failed |
+| `deposit.expired` | Deposit session expired without payment |
+
+### Bank Deposit Events
+
+| Event | Description |
+|-------|-------------|
+| `bank_deposit.received` | Bank credit matched to session |
+| `bank_deposit.credited` | Tenant ledger credited |
+| `bank_deposit.settled` | Fiat converted to stablecoin |
+| `bank_deposit.failed` | Bank deposit processing failed |
+| `bank_deposit.underpaid` | Received amount below expected |
+| `bank_deposit.overpaid` | Received amount exceeds expected |
+
+### Settlement Events
+
+| Event | Description |
+|-------|-------------|
+| `settlement.completed` | Daily net settlement run completed |
+| `settlement.failed` | Settlement run encountered errors |
 
 ## Retry Policy
 
 Failed webhook deliveries are retried with exponential backoff:
-- Attempt 1: Immediate
-- Attempt 2: 1 minute
-- Attempt 3: 5 minutes
-- Attempt 4: 30 minutes
-- Attempt 5: 2 hours
 
-After 5 failed attempts, the delivery is moved to the dead letter queue. View failed deliveries via `GET /v1/me/webhooks/deliveries`.
+| Attempt | Delay | Cumulative |
+|---------|-------|-----------|
+| 1 | Immediate | 0 |
+| 2 | 1 minute | 1 min |
+| 3 | 5 minutes | 6 min |
+| 4 | 30 minutes | 36 min |
+| 5 | 2 hours | 2h 36m |
+
+After 5 failed attempts, the delivery is moved to the dead letter queue. Your endpoint must return a `2xx` status code within 10 seconds to be considered successful.
+
+<AccordionGroup>
+  <Accordion title="What counts as a failure?">
+    - HTTP status code outside 200-299
+    - Connection timeout (10 seconds)
+    - DNS resolution failure
+    - TLS handshake failure
+  </Accordion>
+  <Accordion title="How to monitor failed deliveries">
+    View delivery history and failures via the portal API:
+    ```bash
+    # List recent deliveries
+    curl https://sandbox.settla.io/v1/me/webhooks/deliveries?limit=20 \
+      -H "Authorization: Bearer $API_KEY"
+
+    # Filter by failed status
+    curl https://sandbox.settla.io/v1/me/webhooks/deliveries?status=failed \
+      -H "Authorization: Bearer $API_KEY"
+
+    # Get delivery stats
+    curl https://sandbox.settla.io/v1/me/webhooks/stats?period=7d \
+      -H "Authorization: Bearer $API_KEY"
+    ```
+  </Accordion>
+</AccordionGroup>
 
 ## Test Webhooks
 
-Send a test event to verify your endpoint:
+Send a test event to verify your endpoint is correctly configured:
 
 ```bash
 curl -X POST https://sandbox.settla.io/v1/me/webhooks/test \
   -H "Authorization: Bearer $API_KEY"
 ```
+
+This sends a `test.ping` event with a dummy payload. Use it to verify:
+1. Your endpoint is reachable
+2. Signature verification works
+3. Your handler processes events correctly
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Respond quickly" icon="bolt">
+    Return 200 immediately, then process the event asynchronously. Long-running handlers delay retries.
+  </Card>
+  <Card title="Handle duplicates" icon="copy">
+    Webhooks may be delivered more than once. Use the event `id` field for idempotent processing.
+  </Card>
+  <Card title="Verify signatures" icon="shield-check">
+    Always verify the HMAC-SHA256 signature. Never trust unverified payloads.
+  </Card>
+  <Card title="Use event subscriptions" icon="filter">
+    Subscribe only to events you handle. Reduces noise and improves reliability.
+  </Card>
+</CardGroup>

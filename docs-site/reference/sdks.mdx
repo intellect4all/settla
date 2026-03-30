@@ -1,43 +1,141 @@
 ---
 title: "SDKs & Libraries"
-description: "Client libraries and code generation"
+description: "Client libraries, code generation, and the Postman collection"
 ---
 
 # SDKs & Libraries
 
 ## OpenAPI Specification
 
-The Settla API publishes a complete OpenAPI 3.0 specification that you can use to generate typed client libraries in any language.
+The Settla API publishes a complete **OpenAPI 3.1** specification. Use it to generate typed client libraries in any language, import into API tools, or build documentation.
 
 ```bash
 # Download the spec
 curl https://api.settla.io/openapi.json -o settla-openapi.json
 ```
 
+## Postman / Bruno Collection
+
+Import the ready-made collection for interactive testing:
+
+1. Download `settla.collection.json` from the [repository](https://github.com/settla-io/settla/tree/main/docs/settla.collection.json)
+2. Import into Postman or Bruno
+3. Set the `base_url` variable to your environment
+4. Set `api_key` to your test key (`sk_test_...`)
+
+The collection includes **84 requests** across 14 folders, with test scripts and a **Demo Flow** folder for guided walkthroughs.
+
 ## Code Generation
 
-Use [OpenAPI Generator](https://openapi-generator.tech/) to create a typed client:
+Use [OpenAPI Generator](https://openapi-generator.tech/) to create typed clients:
 
-```bash
-# TypeScript
+<CodeGroup>
+
+```bash TypeScript
 npx @openapitools/openapi-generator-cli generate \
   -i settla-openapi.json \
   -g typescript-fetch \
-  -o ./settla-client
+  -o ./settla-client \
+  --additional-properties=supportsES6=true,typescriptThreePlus=true
+```
 
-# Python
+```bash Python
+pip install openapi-generator-cli
 openapi-generator generate \
   -i settla-openapi.json \
   -g python \
-  -o ./settla-client
+  -o ./settla-client \
+  --additional-properties=packageName=settla
+```
 
-# Go
+```bash Go
 openapi-generator generate \
   -i settla-openapi.json \
   -g go \
-  -o ./settla-client
+  -o ./settla-client \
+  --additional-properties=packageName=settla
 ```
+
+```bash Java
+openapi-generator generate \
+  -i settla-openapi.json \
+  -g java \
+  -o ./settla-client \
+  --additional-properties=library=okhttp-gson,groupId=io.settla
+```
+
+```bash C#
+openapi-generator generate \
+  -i settla-openapi.json \
+  -g csharp \
+  -o ./settla-client \
+  --additional-properties=packageName=Settla.Client
+```
+
+</CodeGroup>
+
+## Quick Start (No SDK)
+
+You don't need an SDK to use the Settla API. It's a standard REST API with JSON payloads. Here's a minimal integration:
+
+<CodeGroup>
+
+```javascript Node.js (fetch)
+const SETTLA_BASE = "https://sandbox.settla.io";
+const API_KEY = "sk_test_your_key";
+
+async function settla(method, path, body) {
+  const res = await fetch(`${SETTLA_BASE}${path}`, {
+    method,
+    headers: {
+      "Authorization": `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(`${err.error.code}: ${err.error.message}`);
+  }
+  return res.json();
+}
+
+// Create a transfer
+const transfer = await settla("POST", "/v1/transfers", {
+  idempotency_key: crypto.randomUUID(),
+  source_currency: "GBP",
+  source_amount: "1000",
+  dest_currency: "NGN",
+  recipient: { name: "Adebayo", country: "NG" },
+});
+```
+
+```python Python (requests)
+import requests
+import uuid
+
+BASE = "https://sandbox.settla.io"
+HEADERS = {
+    "Authorization": "Bearer sk_test_your_key",
+    "Content-Type": "application/json",
+}
+
+def settla(method, path, json=None):
+    r = requests.request(method, f"{BASE}{path}", headers=HEADERS, json=json)
+    r.raise_for_status()
+    return r.json()
+
+transfer = settla("POST", "/v1/transfers", json={
+    "idempotency_key": str(uuid.uuid4()),
+    "source_currency": "GBP",
+    "source_amount": "1000",
+    "dest_currency": "NGN",
+    "recipient": {"name": "Adebayo", "country": "NG"},
+})
+```
+
+</CodeGroup>
 
 ## Community SDKs
 
-Community-maintained SDKs will be listed here as they become available. If you've built a Settla client library, let us know at support@settla.io.
+Community-maintained SDKs will be listed here as they become available. If you've built a Settla client library, let us know at [support@settla.io](mailto:support@settla.io).

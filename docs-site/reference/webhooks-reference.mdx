@@ -1,78 +1,220 @@
 ---
 title: "Webhooks Reference"
-description: "Event types, payload format, and HMAC verification"
+description: "Complete event catalog, payload format, and signature verification"
 ---
 
 # Webhooks Reference
 
 ## Payload Format
 
+Every webhook delivery is a POST request with this JSON structure:
+
 ```json
 {
-  "event_id": "evt_550e8400-e29b-41d4-a716-446655440000",
+  "id": "evt_550e8400-e29b-41d4-a716-446655440000",
   "event_type": "transfer.completed",
-  "timestamp": "2025-01-15T10:00:00Z",
+  "created_at": "2025-01-15T10:00:00Z",
   "data": {
-    "transfer_id": "tx_abc123",
+    "id": "tf_98765432-1234-5678-abcd-fedcba098765",
+    "tenant_id": "a0000000-0000-0000-0000-000000000001",
     "status": "COMPLETED",
     "source_currency": "GBP",
-    "source_amount": "1000",
+    "source_amount": "1000.00",
     "dest_currency": "NGN",
-    "dest_amount": "520000"
+    "dest_amount": "520000.00",
+    "completed_at": "2025-01-15T10:00:00Z"
   }
 }
 ```
 
+## Headers
+
+| Header | Description |
+|--------|-------------|
+| `Content-Type` | `application/json` |
+| `X-Settla-Signature` | HMAC-SHA256 hex digest of the raw request body |
+| `X-Settla-Timestamp` | Unix timestamp (seconds) when the event was signed |
+| `X-Settla-Event` | Event type (same as `event_type` in body) |
+| `X-Settla-Delivery-Id` | Unique delivery attempt ID for idempotent processing |
+
 ## HMAC-SHA256 Verification
 
-Every webhook includes a signature header:
+Compute the HMAC-SHA256 of the **raw request body** (not parsed JSON) using your webhook secret. Compare using a timing-safe function. Also validate the timestamp is within 5 minutes to prevent replay attacks.
 
-```
-X-Settla-Signature: sha256=abc123...
-```
-
-Compute the HMAC-SHA256 of the raw request body using your webhook secret, and compare using a timing-safe function.
+See the [Webhooks Guide](/guides/webhooks) for verification code in Node.js, Go, Python, and PHP.
 
 ## Event Types
 
 ### Transfer Events
-| Event | Trigger |
-|-------|---------|
-| `transfer.created` | Transfer created |
-| `transfer.treasury_reserved` | Funds reserved |
-| `transfer.onramp_completed` | Fiat converted to stablecoin |
-| `transfer.blockchain_confirmed` | On-chain transfer confirmed |
-| `transfer.completed` | Transfer delivered |
-| `transfer.failed` | Transfer failed |
 
-### Deposit Events
-| Event | Trigger |
-|-------|---------|
-| `deposit.created` | Deposit session created |
-| `deposit.confirming` | On-chain deposit detected |
-| `deposit.confirmed` | Deposit confirmed |
-| `deposit.expired` | Session expired without payment |
+| Event | Trigger | `data` contains |
+|-------|---------|-----------------|
+| `transfer.created` | Transfer submitted via API | Full transfer object |
+| `transfer.funded` | Treasury funds reserved | Transfer with `funded_at` set |
+| `transfer.on_ramping` | Fiat→stablecoin conversion started | Transfer + on-ramp provider ref |
+| `transfer.settling` | On-chain stablecoin transfer submitted | Transfer + blockchain tx hash |
+| `transfer.off_ramping` | Stablecoin→fiat conversion started | Transfer + off-ramp provider ref |
+| `transfer.completed` | Funds delivered to recipient | Full transfer with `completed_at` |
+| `transfer.failed` | Transfer encountered unrecoverable error | Transfer with `failure_reason` and `failure_code` |
+| `transfer.refunding` | Compensation/refund initiated | Transfer + compensation details |
+| `transfer.refunded` | Refund completed | Transfer with final state |
+
+### Crypto Deposit Events
+
+| Event | Trigger | `data` contains |
+|-------|---------|-----------------|
+| `deposit.detected` | On-chain payment found (unconfirmed) | Session with `received_amount`, tx hash |
+| `deposit.confirmed` | Payment has required confirmations | Session with `confirmed_at` |
+| `deposit.credited` | Tenant ledger credited | Session with `credited_at`, `net_amount` |
+| `deposit.settled` | Crypto converted to fiat (AUTO_CONVERT) | Session with `settled_at` |
+| `deposit.held` | Crypto held in balance (HOLD pref) | Session in terminal HELD state |
+| `deposit.failed` | Processing error | Session with `failure_reason` |
+| `deposit.expired` | Session expired without payment | Session with `expired_at` |
 
 ### Bank Deposit Events
-| Event | Trigger |
-|-------|---------|
-| `bank_deposit.created` | Bank deposit session created |
-| `bank_deposit.received` | Bank deposit received |
-| `bank_deposit.settled` | Deposit settled |
+
+| Event | Trigger | `data` contains |
+|-------|---------|-----------------|
+| `bank_deposit.received` | Bank credit matched to session | Session with payer details |
+| `bank_deposit.credited` | Tenant ledger credited | Session with `credited_at` |
+| `bank_deposit.settled` | Fiat converted to stablecoin | Session with `settled_at` |
+| `bank_deposit.failed` | Processing error | Session with `failure_reason` |
+| `bank_deposit.underpaid` | Received amount below expected | Session with actual `received_amount` |
+| `bank_deposit.overpaid` | Received amount exceeds expected | Session with actual `received_amount` |
 
 ### Settlement Events
-| Event | Trigger |
-|-------|---------|
-| `settlement.completed` | Daily net settlement completed |
+
+| Event | Trigger | `data` contains |
+|-------|---------|-----------------|
+| `settlement.completed` | Daily net settlement run completed | Settlement report summary |
+| `settlement.failed` | Settlement run encountered errors | Error details |
+
+### Test Events
+
+| Event | Trigger | `data` contains |
+|-------|---------|-----------------|
+| `test.ping` | `POST /v1/me/webhooks/test` called | `{"message": "Webhook test successful"}` |
+
+## Example Payloads
+
+### transfer.completed
+
+```json
+{
+  "id": "evt_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "event_type": "transfer.completed",
+  "created_at": "2025-01-15T14:30:00Z",
+  "data": {
+    "id": "tf_98765432-1234-5678-abcd-fedcba098765",
+    "tenant_id": "a0000000-0000-0000-0000-000000000001",
+    "external_ref": "INV-2025-0042",
+    "status": "COMPLETED",
+    "source_currency": "GBP",
+    "source_amount": "1000.00",
+    "dest_currency": "NGN",
+    "dest_amount": "520000.00",
+    "fx_rate": "520.00",
+    "fees": {
+      "on_ramp_fee": "2.00",
+      "network_fee": "0.50",
+      "off_ramp_fee": "1.50",
+      "total_fee_usd": "4.00"
+    },
+    "chain": "tron",
+    "stable_coin": "USDT",
+    "created_at": "2025-01-15T14:29:42Z",
+    "completed_at": "2025-01-15T14:30:00Z"
+  }
+}
+```
+
+### deposit.confirmed
+
+```json
+{
+  "id": "evt_b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "event_type": "deposit.confirmed",
+  "created_at": "2025-01-15T15:00:00Z",
+  "data": {
+    "id": "dep_11111111-2222-3333-4444-555555555555",
+    "tenant_id": "a0000000-0000-0000-0000-000000000001",
+    "status": "CONFIRMED",
+    "chain": "tron",
+    "token": "USDT",
+    "deposit_address": "TXyz...abc",
+    "expected_amount": "1000.00",
+    "received_amount": "1000.00",
+    "confirmed_at": "2025-01-15T15:00:00Z"
+  }
+}
+```
+
+### bank_deposit.received
+
+```json
+{
+  "id": "evt_c3d4e5f6-a7b8-9012-cdef-123456789012",
+  "event_type": "bank_deposit.received",
+  "created_at": "2025-01-15T16:00:00Z",
+  "data": {
+    "id": "bdep_22222222-3333-4444-5555-666666666666",
+    "tenant_id": "a0000000-0000-0000-0000-000000000001",
+    "status": "PAYMENT_RECEIVED",
+    "currency": "GBP",
+    "expected_amount": "5000.00",
+    "received_amount": "5000.00",
+    "payer_name": "John Doe",
+    "payer_reference": "INV-2025",
+    "bank_reference": "FPS-REF-123456",
+    "payment_received_at": "2025-01-15T16:00:00Z"
+  }
+}
+```
 
 ## Retry Schedule
 
-| Attempt | Delay |
-|---------|-------|
-| 1 | Immediate |
-| 2 | 1 minute |
-| 3 | 5 minutes |
-| 4 | 30 minutes |
-| 5 | 2 hours |
+| Attempt | Delay | Cumulative Wait |
+|---------|-------|-----------------|
+| 1 | Immediate | 0 |
+| 2 | 1 minute | 1 min |
+| 3 | 5 minutes | 6 min |
+| 4 | 30 minutes | 36 min |
+| 5 | 2 hours | 2h 36m |
 
-After 5 failures, the delivery is sent to the dead letter queue.
+Your endpoint must return a `2xx` status within **10 seconds**. Any other response triggers a retry.
+
+After 5 failed attempts, the delivery moves to the dead letter queue. View and replay failed deliveries via the [webhook deliveries API](/api-reference/tenant-portal/list-webhook-deliveries).
+
+## Event Subscriptions
+
+Subscribe to specific events to reduce noise:
+
+```bash
+curl -X PUT https://sandbox.settla.io/v1/me/webhooks \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-app.com/webhooks/settla",
+    "events": ["transfer.completed", "transfer.failed", "deposit.confirmed"]
+  }'
+```
+
+Omitting the `events` array subscribes to all events.
+
+## Idempotent Processing
+
+Webhooks may be delivered more than once (at-least-once delivery). Use the `X-Settla-Delivery-Id` header or the `id` field in the payload to deduplicate:
+
+```javascript
+const processedEvents = new Set(); // or Redis/DB set
+
+app.post("/webhooks/settla", (req, res) => {
+  const deliveryId = req.headers["x-settla-delivery-id"];
+  if (processedEvents.has(deliveryId)) {
+    return res.status(200).send("Already processed");
+  }
+  processedEvents.add(deliveryId);
+  // Process the event...
+  res.status(200).send("OK");
+});
+```

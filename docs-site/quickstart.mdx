@@ -192,14 +192,14 @@ console.log(`Status: ${status.status}`);
 | State | Description |
 |-------|-------------|
 | `CREATED` | Transfer accepted, pending processing |
-| `TREASURY_RESERVED` | Funds reserved in treasury |
-| `ONRAMP_PENDING` | Fiat-to-stablecoin conversion in progress |
-| `ONRAMP_COMPLETED` | Stablecoins acquired |
-| `BLOCKCHAIN_PENDING` | On-chain transfer submitted |
-| `BLOCKCHAIN_CONFIRMED` | On-chain transfer confirmed |
-| `OFFRAMP_PENDING` | Stablecoin-to-fiat conversion in progress |
+| `FUNDED` | Funds reserved in treasury |
+| `ON_RAMPING` | Fiat→stablecoin conversion in progress |
+| `SETTLING` | On-chain stablecoin transfer in progress |
+| `OFF_RAMPING` | Stablecoin→fiat conversion in progress |
 | `COMPLETED` | Transfer delivered to recipient |
 | `FAILED` | Transfer failed (check events for details) |
+| `REFUNDING` | Compensation/refund in progress |
+| `REFUNDED` | Refund completed |
 
 ## Next Steps
 

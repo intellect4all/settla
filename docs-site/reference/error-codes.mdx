@@ -1,97 +1,123 @@
 ---
 title: "Error Codes"
-description: "Complete list of Settla API error codes"
+description: "Complete list of Settla API error codes with causes and fixes"
 ---
 
 # Error Codes
 
-All error responses include a machine-readable `error` code. Use these codes for programmatic error handling.
+All error responses follow this format:
+
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_FUNDS",
+    "message": "Not enough available balance in GBP position"
+  }
+}
+```
+
+Use the `code` field for programmatic error handling. The `message` field is human-readable and may change.
+
+## Retryable Errors
+
+These errors are transient and should be retried with exponential backoff:
+
+| Code | HTTP | Description | Backoff |
+|------|------|-------------|---------|
+| `PROVIDER_ERROR` | 503 | Payment provider returned an error | 5s, 15s, 30s |
+| `PROVIDER_UNAVAILABLE` | 503 | Provider temporarily unreachable | 5s, 15s, 30s |
+| `NETWORK_ERROR` | 503 | Network connectivity issue | 2s, 5s, 15s |
+| `RESERVATION_LOCK_TIMEOUT` | 429 | Temporary lock contention on treasury position | 100ms, 500ms, 1s |
+| `OPTIMISTIC_LOCK` | 409 | Concurrent modification detected | Immediate, 100ms, 500ms |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests | Use `Retry-After` header |
 
 ## 400 -- Bad Request
 
-| Code | Description |
-|------|-------------|
-| `AMOUNT_TOO_LOW` | Transfer amount below minimum threshold |
-| `AMOUNT_TOO_HIGH` | Transfer amount exceeds maximum limit |
-| `CURRENCY_MISMATCH` | Source and destination currencies don't form a valid corridor |
-| `LEDGER_IMBALANCE` | Internal ledger inconsistency detected |
-| `PAYMENT_MISMATCH` | Payment amount doesn't match expected amount |
-| `CRYPTO_DISABLED` | Crypto deposits are disabled for this tenant |
-| `CHAIN_NOT_SUPPORTED` | Requested blockchain is not supported |
-| `BANK_DEPOSITS_DISABLED` | Bank deposits are disabled for this tenant |
-| `CURRENCY_NOT_SUPPORTED` | Requested currency is not supported |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `AMOUNT_TOO_LOW` | Amount below minimum threshold | Sending less than 0.01 | Increase amount to at least 0.01 |
+| `AMOUNT_TOO_HIGH` | Amount exceeds maximum limit | Exceeding 10,000,000 per transfer | Split into multiple transfers or contact support for higher limits |
+| `CURRENCY_MISMATCH` | Currencies don't form a valid corridor | Requesting USD→USD or unsupported pair | Check [supported corridors](/concepts/currencies-corridors) |
+| `LEDGER_IMBALANCE` | Internal ledger inconsistency | Internal error (should not occur) | Contact support |
+| `PAYMENT_MISMATCH` | Received amount doesn't match expected | Bank deposit amount differs from `expected_amount` | Check `mismatch_policy`; set to `ACCEPT` to allow variance |
+| `CRYPTO_DISABLED` | Crypto deposits not enabled | Tenant crypto config disabled | Enable crypto in tenant portal settings |
+| `CHAIN_NOT_SUPPORTED` | Blockchain not supported for tenant | Requesting a chain not in tenant's `supported_chains` | Use a supported chain (tron, ethereum, solana, base, polygon, arbitrum) |
+| `BANK_DEPOSITS_DISABLED` | Bank deposits not enabled | Tenant bank config disabled | Enable bank deposits in portal settings |
+| `CURRENCY_NOT_SUPPORTED` | Currency not supported | Using a currency not in supported list | Use NGN, USD, GBP, EUR, GHS, KES, USDT, or USDC |
 
 ## 401 -- Unauthorized
 
-| Code | Description |
-|------|-------------|
-| `UNAUTHORIZED` | Missing or invalid authentication |
-| `INVALID_CREDENTIALS` | Wrong email or password |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `UNAUTHORIZED` | Missing or invalid authentication | Missing `Authorization` header or expired/revoked key | Check API key is valid; re-authenticate if using JWT |
+| `INVALID_CREDENTIALS` | Wrong email or password | Incorrect login credentials | Verify email and password; use forgot password flow |
 
 ## 403 -- Forbidden
 
-| Code | Description |
-|------|-------------|
-| `TENANT_SUSPENDED` | Tenant account has been suspended |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `TENANT_SUSPENDED` | Tenant account suspended | Account suspended by ops team | Contact support to resolve suspension |
 
 ## 404 -- Not Found
 
-| Code | Description |
-|------|-------------|
-| `TRANSFER_NOT_FOUND` | Transfer with given ID does not exist |
-| `ACCOUNT_NOT_FOUND` | Ledger account not found |
-| `TENANT_NOT_FOUND` | Tenant does not exist |
-| `DEPOSIT_NOT_FOUND` | Deposit session not found |
-| `BANK_DEPOSIT_NOT_FOUND` | Bank deposit session not found |
-| `PAYMENT_LINK_NOT_FOUND` | Payment link not found |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `TRANSFER_NOT_FOUND` | Transfer does not exist | Wrong transfer ID or querying another tenant's transfer | Verify the UUID; transfers are tenant-scoped |
+| `ACCOUNT_NOT_FOUND` | Ledger account not found | Wrong account code | Check account code format: `tenant:{slug}:assets:bank:gbp:clearing` |
+| `TENANT_NOT_FOUND` | Tenant does not exist | Invalid tenant ID in internal calls | Verify tenant was created and KYB approved |
+| `DEPOSIT_NOT_FOUND` | Deposit session not found | Wrong deposit session ID | Verify the UUID |
+| `BANK_DEPOSIT_NOT_FOUND` | Bank deposit session not found | Wrong session ID | Verify the UUID |
+| `PAYMENT_LINK_NOT_FOUND` | Payment link not found | Wrong link ID or short code | Verify the ID or code |
 
 ## 409 -- Conflict
 
-| Code | Description |
-|------|-------------|
-| `IDEMPOTENCY_CONFLICT` | Same idempotency key used with different parameters |
-| `EMAIL_ALREADY_EXISTS` | Email address already registered |
-| `SLUG_CONFLICT` | Tenant slug already taken |
-| `OPTIMISTIC_LOCK` | Concurrent modification detected, retry the request |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `IDEMPOTENCY_CONFLICT` | Same key used with different parameters | Reusing an idempotency key with different request body | Use a unique idempotency key per distinct request |
+| `EMAIL_ALREADY_EXISTS` | Email already registered | Attempting to register with an existing email | Login instead, or use a different email |
+| `SLUG_CONFLICT` | Tenant slug already taken | Company name generates a duplicate slug | Choose a different company name |
+| `OPTIMISTIC_LOCK` | Concurrent modification detected | Two requests modifying the same resource simultaneously | **Retryable** -- retry immediately with the same request |
 
 ## 422 -- Unprocessable Entity
 
-| Code | Description |
-|------|-------------|
-| `QUOTE_EXPIRED` | Quote has expired, request a new one |
-| `INVALID_TRANSITION` | Invalid state transition for this transfer |
-| `POSITION_LOCKED` | Treasury position is locked |
-| `CORRIDOR_DISABLED` | This corridor is currently disabled |
-| `EMAIL_NOT_VERIFIED` | Email must be verified before this action |
-| `TOKEN_EXPIRED` | Verification or reset token has expired |
-| `DEPOSIT_EXPIRED` | Deposit session has expired |
-| `PAYMENT_LINK_EXPIRED` | Payment link has expired |
-| `PAYMENT_LINK_EXHAUSTED` | Payment link has reached its use limit |
-| `PAYMENT_LINK_DISABLED` | Payment link has been disabled |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `QUOTE_EXPIRED` | Quote has expired | Using a quote older than 5 minutes | Request a fresh quote and create the transfer immediately |
+| `INVALID_TRANSITION` | Invalid state machine transition | Attempting an action not valid for current state | Check the transfer's current status before acting |
+| `POSITION_LOCKED` | Treasury position is locked | Position undergoing maintenance | Wait and retry |
+| `CORRIDOR_DISABLED` | Settlement corridor disabled | Corridor temporarily unavailable | Try an alternative corridor or wait |
+| `EMAIL_NOT_VERIFIED` | Email must be verified first | Attempting KYB before email verification | Complete email verification flow |
+| `TOKEN_EXPIRED` | Verification token expired | Using an old email verification link | Request a new verification email |
+| `DEPOSIT_EXPIRED` | Deposit session expired | Payment wasn't received before TTL | Create a new deposit session |
+| `PAYMENT_LINK_EXPIRED` | Payment link has expired | Link past its `expires_at` time | Create a new payment link |
+| `PAYMENT_LINK_EXHAUSTED` | Link reached use limit | Redemptions reached `use_limit` | Create a new link with higher limit |
+| `PAYMENT_LINK_DISABLED` | Link has been disabled | Link was disabled via DELETE | Create a new payment link |
 
 ## 429 -- Rate Limited / Resource Exhausted
 
-| Code | Description |
-|------|-------------|
-| `INSUFFICIENT_FUNDS` | Not enough funds in treasury position |
-| `RESERVATION_FAILED` | Failed to reserve funds (concurrent pressure) |
-| `DAILY_LIMIT_EXCEEDED` | Tenant's daily transfer limit exceeded |
-| `RATE_LIMIT_EXCEEDED` | Too many requests, slow down |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `INSUFFICIENT_FUNDS` | Not enough available balance | Treasury position has insufficient available funds | Top up the position via `POST /v1/treasury/topup` |
+| `RESERVATION_INSUFFICIENT_FUNDS` | Insufficient balance for reservation | Available balance (after locked) is too low | Top up or wait for in-flight transfers to complete |
+| `RESERVATION_LOCK_TIMEOUT` | Lock contention on position | Many concurrent transfers reserving from same position | **Retryable** -- retry after 100ms with backoff |
+| `DAILY_LIMIT_EXCEEDED` | Daily transfer limit exceeded | Total daily volume exceeds tenant's `daily_limit_usd` | Wait until next UTC day or request limit increase |
+| `RATE_LIMIT_EXCEEDED` | Too many requests | Exceeding per-tenant request rate | **Retryable** -- back off and retry; check `Retry-After` header |
 
 ## 500 -- Internal Error
 
-| Code | Description |
-|------|-------------|
-| `BLOCKCHAIN_REORG` | Blockchain reorganization detected |
-| `COMPENSATION_FAILED` | Automatic compensation/refund failed |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `BLOCKCHAIN_REORG` | Blockchain reorganization detected | Chain reorg invalidated a confirmed transaction | Wait for re-confirmation; system handles this automatically |
+| `COMPENSATION_FAILED` | Automatic compensation failed | Refund or reversal could not be completed automatically | Escalated to manual review; ops team will resolve |
 
 ## 503 -- Service Unavailable
 
-| Code | Description |
-|------|-------------|
-| `PROVIDER_ERROR` | Payment provider returned an error |
-| `CHAIN_ERROR` | Blockchain RPC error |
-| `PROVIDER_UNAVAILABLE` | Payment provider is temporarily unavailable |
-| `NETWORK_ERROR` | Network connectivity issue |
-| `ADDRESS_POOL_EMPTY` | No available deposit addresses |
-| `VIRTUAL_ACCOUNT_POOL_EMPTY` | No available virtual accounts |
+| Code | Description | Common Cause | Fix |
+|------|-------------|-------------|-----|
+| `PROVIDER_ERROR` | Payment provider error | External provider returned an error | **Retryable** -- system retries automatically; no action needed |
+| `CHAIN_ERROR` | Blockchain RPC error | Blockchain node returned an error | **Retryable** -- system retries automatically |
+| `PROVIDER_UNAVAILABLE` | Provider temporarily unreachable | Provider API is down | **Retryable** -- circuit breaker will route to fallback if available |
+| `NETWORK_ERROR` | Network connectivity issue | DNS, TLS, or TCP failure to external service | **Retryable** -- system retries automatically |
+| `ADDRESS_POOL_EMPTY` | No deposit addresses available | All addresses in the pool are assigned | Contact support to provision more addresses |
+| `VIRTUAL_ACCOUNT_POOL_EMPTY` | No virtual accounts available | All virtual accounts are assigned | Contact support to provision more accounts |
+| `SHORT_CODE_COLLISION` | Short code already exists | Extremely rare hash collision | Retry the request -- a new code will be generated |

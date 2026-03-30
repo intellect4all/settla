@@ -5,27 +5,63 @@ description: "API changelog and versioning"
 
 # Changelog
 
+The Settla API follows semantic versioning. Breaking changes result in a new major version. New features and non-breaking enhancements are added to the current version.
+
 ## v1.0.0 -- Current
 
 Initial public release of the Settla API.
 
-### Features
+### Core Features
 - Cross-border transfers via stablecoin rails (GBP, USD, EUR to NGN, GHS, KES)
-- Smart routing with cost/speed/liquidity/reliability scoring
-- Crypto deposit sessions with on-chain monitoring
-- Bank deposit sessions with virtual accounts
-- Payment links for shareable crypto payments
-- Real-time treasury positions and liquidity reports
-- Webhook notifications with HMAC-SHA256 verification
-- Ledger accounts with full transaction history
-- Transaction verification and lookup
-- Per-tenant rate limiting and idempotency
+- Smart routing with cost/speed/liquidity/reliability scoring (40/30/20/10 weights)
+- Real-time FX quotes with 5-minute expiry and 30-second caching
+- Per-transfer idempotency with 2-hour key TTL
+
+### Deposit Products
+- Crypto deposit sessions with on-chain monitoring and auto-confirmation
+- Bank deposit sessions with virtual accounts (permanent and temporary)
+- Payment links with shareable short codes and configurable use limits
+- Three settlement preferences: AUTO_CONVERT, HOLD, THRESHOLD
+
+### Treasury & Ledger
+- Real-time treasury positions with in-memory atomic reservations
+- Full double-entry ledger powered by TigerBeetle (1M+ writes/sec)
+- Position event audit trail with 6 event types
+- Top-up and withdrawal request management
+
+### Analytics & Reporting
+- Transfer, fee, and provider analytics with configurable periods
+- Deposit analytics (crypto + bank)
+- Reconciliation reporting (6 automated checks)
+- CSV export for transfers, fees, deposits, and settlements
+
+### Portal & Self-Service
+- Tenant registration with KYB verification flow
+- API key management (create, rotate, revoke)
+- Webhook configuration with event subscriptions
+- Dashboard metrics and activity feed
+
+### Infrastructure
+- Webhook notifications with HMAC-SHA256 verification and 5-attempt retry
+- Per-tenant rate limiting with sliding window algorithm
+- 3-level auth cache (in-process → Redis → DB)
 
 ### Supported Chains
 - Tron (TRC-20)
 - Ethereum (ERC-20)
+- Solana (SPL)
+- Base (ERC-20)
 - Polygon (ERC-20)
+- Arbitrum (ERC-20)
 
 ### Supported Stablecoins
 - USDT (Tether)
 - USDC (Circle)
+
+### Supported Fiat Currencies
+- GBP (British Pound)
+- USD (US Dollar)
+- EUR (Euro)
+- NGN (Nigerian Naira)
+- GHS (Ghanaian Cedi)
+- KES (Kenyan Shilling)

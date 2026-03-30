@@ -1,25 +1,36 @@
 ---
 title: "Rate Limits"
-description: "Per-tenant rate limiting"
+description: "Per-tenant and per-endpoint rate limiting"
 ---
 
 # Rate Limits
 
-Settla enforces per-tenant rate limits to ensure fair usage and system stability.
+Settla enforces rate limits at multiple levels to ensure fair usage and system stability. Rate limiting uses a sliding window algorithm with local counters synced to Redis every 5 seconds.
 
-## Default Limits
+## Per-Tenant Limits
 
-| Endpoint | Limit | Window |
-|----------|-------|--------|
-| All API endpoints | 1,000 requests | Per second |
-| `POST /v1/auth/login` | 10 requests | Per minute |
-| `POST /v1/auth/register` | 5 requests | Per minute |
+| Scope | Limit | Window | Notes |
+|-------|-------|--------|-------|
+| All API endpoints | 1,000 requests | Per second | Per-tenant aggregate |
+| Daily transfer volume | Configurable | Per UTC day | `daily_limit_usd` in tenant config |
+| Per-transfer amount | Configurable | Per request | `per_transfer_limit` in tenant config |
+| Max pending transfers | Configurable | Concurrent | `max_pending_transfers` in tenant config |
+
+## Per-Endpoint Limits
+
+| Endpoint | Limit | Window | Scope |
+|----------|-------|--------|-------|
+| `POST /v1/auth/login` | 10 requests | Per minute | Per IP |
+| `POST /v1/auth/login` | 100 requests | Per hour | Per IP |
+| `POST /v1/auth/register` | 5 requests | Per minute | Per IP |
+| Public endpoints (`/resolve`, `/redeem`, `/public-status`) | 20 requests | Per second | Per IP |
+| Inbound webhooks (`/webhooks/providers/*`) | Configurable | Per second | Global + per-IP + per-provider |
 
 ## Rate Limit Headers
 
 Every response includes rate limit headers:
 
-```
+```http
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 997
 X-RateLimit-Reset: 1705312800
@@ -27,9 +38,10 @@ X-RateLimit-Reset: 1705312800
 
 | Header | Description |
 |--------|-------------|
-| `X-RateLimit-Limit` | Maximum requests per window |
+| `X-RateLimit-Limit` | Maximum requests allowed per window |
 | `X-RateLimit-Remaining` | Requests remaining in current window |
 | `X-RateLimit-Reset` | Unix timestamp when the window resets |
+| `Retry-After` | Seconds to wait (only on 429 responses) |
 
 ## 429 Response
 
@@ -37,15 +49,37 @@ When rate limited, the API returns:
 
 ```json
 {
-  "error": "rate_limit_exceeded",
-  "message": "Rate limit exceeded. Try again later.",
-  "retry_after": 1
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Rate limit exceeded. Try again in 1 second."
+  }
 }
 ```
 
+## Tenant Isolation
+
+Rate limits are **per-tenant**. One tenant hitting their rate limit does not affect any other tenant. This is enforced at the auth layer — each request is attributed to a tenant before rate limit checks.
+
 ## Best Practices
 
-- Implement exponential backoff on 429 responses
-- Cache responses where possible (quotes are valid for 5 minutes)
-- Use webhooks instead of polling for status updates
-- Contact support if you need higher limits for your use case
+<CardGroup cols={2}>
+  <Card title="Exponential backoff" icon="clock-rotate-left">
+    On 429 responses, wait for `Retry-After` seconds, then retry with exponential backoff (1s, 2s, 4s, 8s).
+  </Card>
+  <Card title="Use webhooks" icon="webhook">
+    Don't poll for transfer status. Subscribe to [webhooks](/guides/webhooks) for real-time updates.
+  </Card>
+  <Card title="Cache quotes" icon="database">
+    Quotes are valid for 5 minutes. Cache them client-side instead of re-requesting.
+  </Card>
+  <Card title="Batch operations" icon="layer-group">
+    For high-volume integrations, batch your transfer creation and use idempotency keys for safe retries.
+  </Card>
+</CardGroup>
+
+## Need Higher Limits?
+
+Enterprise tenants can request custom rate limits. Contact [support@settla.io](mailto:support@settla.io) with:
+- Your tenant ID
+- Current usage patterns
+- Requested limits and justification
