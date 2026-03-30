@@ -22,6 +22,9 @@ This document covers every secret used by Settla, minimum security requirements,
 | `SLACK_WEBHOOK_URL` | AlertManager Slack | N/A (URL) | On revocation | `settla/production/alertmanager` in AWS Secrets Manager |
 | `PAGERDUTY_SERVICE_KEY` | AlertManager PagerDuty | N/A (UUID) | On revocation | `settla/production/alertmanager` in AWS Secrets Manager |
 | `REMEDIATION_WEBHOOK_TOKEN` | Auto-remediation auth | 256-bit (32-char hex) | Quarterly | `settla/production/alertmanager` in AWS Secrets Manager |
+| `SETTLA_API_KEY_HMAC_SECRET` | API key hashing (gateway + server) | 256-bit (32-char hex) | Quarterly | `settla/production/app` in AWS Secrets Manager |
+| `SETTLA_NATS_TOKEN` | NATS JetStream auth | 256-bit (32-char hex) | Quarterly | `settla/production/app` in AWS Secrets Manager |
+| `SETTLA_JWT_SECRET` | Portal JWT signing | 256-bit (32-char base64) | Quarterly | `settla/production/app` in AWS Secrets Manager |
 
 ---
 
@@ -53,7 +56,7 @@ settla/
 ├── production/
 │   ├── db                    # POSTGRES_PASSWORD, app-role passwords
 │   ├── wallets               # SETTLA_WALLET_ENCRYPTION_KEY, SETTLA_MASTER_SEED
-│   ├── app                   # SETTLA_OPS_API_KEY, TYK_SECRET, GRAFANA_ADMIN_PASSWORD
+│   ├── app                   # SETTLA_OPS_API_KEY, TYK_SECRET, GRAFANA_ADMIN_PASSWORD, SETTLA_API_KEY_HMAC_SECRET, SETTLA_NATS_TOKEN, SETTLA_JWT_SECRET
 │   ├── webhooks              # Per-tenant outbound webhook HMAC secrets
 │   ├── providers             # Per-provider inbound webhook HMAC secrets
 │   └── alertmanager          # SLACK_WEBHOOK_URL, PAGERDUTY_SERVICE_KEY, REMEDIATION_WEBHOOK_TOKEN
@@ -67,7 +70,7 @@ ESO ExternalSecrets are defined in `deploy/k8s/base/secrets/`. Each one maps a S
 
 Key ExternalSecrets:
 - `settla-db-credentials` → DB passwords for all three databases
-- `settla-app-secrets` → ops key, Tyk secret, Grafana password
+- `settla-app-secrets` → ops key, Tyk secret, Grafana password, API key HMAC secret, NATS token, JWT secret
 - `settla-webhook-secrets` → per-tenant HMAC secrets
 - `alertmanager-secrets` → Slack/PagerDuty/remediation tokens
 
@@ -81,6 +84,7 @@ Key ExternalSecrets:
 2. Update the secret in AWS Secrets Manager (keep old value as a staged version for zero-downtime rollover)
 3. Trigger ESO sync: `kubectl annotate externalsecret settla-app-secrets force-sync=$(date +%s)`
 4. Perform a rolling restart: `kubectl rollout restart deployment/settla-server deployment/settla-gateway`
+   > **SETTLA_API_KEY_HMAC_SECRET note:** This secret must be identical across all gateway AND settla-server instances. Rolling restart must complete before any API key creation or validation occurs with the new secret. Coordinate the rollout to avoid a window where some instances use the old secret and others use the new one.
 5. Verify health: check `/health` on all services
 6. Delete the old staged version from Secrets Manager after 15 minutes
 

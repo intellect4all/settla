@@ -71,6 +71,10 @@ The timestamp is prepended to the body before signing to bind the signature to a
 - **Dual-signature rotation**: During key rotation, both `X-Settla-Signature` and `X-Settla-Signature-V2` headers are sent (signed with old and new keys respectively) for a configurable transition period. The tenant can switch to the new key at their convenience.
 - **Dead letter queue**: Failed deliveries (including those rejected due to signature mismatches during rotation) are preserved in the dead letter queue and can be replayed after the issue is resolved.
 
+## Related: API Key HMAC Hashing
+
+Following the same HMAC-SHA256 pattern, API key storage was upgraded from plain SHA-256 to HMAC-SHA256 with a server-side secret (`SETTLA_API_KEY_HMAC_SECRET`). This provides defense-in-depth: even if the `api_keys.key_hash` column is leaked, an attacker cannot verify candidate keys without the HMAC secret. See `api/grpc/tenant_portal_service.go:hashAPIKey()` and `api/gateway/src/auth/plugin.ts:hashApiKey()`.
+
 ## References
 
 - [Stripe Webhook Signatures](https://stripe.com/docs/webhooks/signatures) — industry standard reference implementation

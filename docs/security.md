@@ -17,7 +17,7 @@ Authorization: Bearer sk_live_<random-32-bytes-base64>
 ```
 
 **Token handling:**
-1. API key is SHA-256 hashed before storage in the Transfer DB (`api_keys` table)
+1. API key is HMAC-SHA256 hashed (with server-side `SETTLA_API_KEY_HMAC_SECRET`) before storage in the Transfer DB (`api_keys` table). This prevents offline brute-force attacks even if the key_hash database column is leaked.
 2. Raw key is shown once at creation, never stored or logged
 3. Hash lookup resolves to `tenant_id`, which scopes all subsequent operations
 4. Key rotation: tenants can have multiple active keys; old keys are revoked, not deleted (audit trail)
@@ -78,11 +78,11 @@ Every mutation endpoint requires an `Idempotency-Key` header.
 |------|----------|---------|
 | Client to Tyk Gateway | TLS 1.3 | AWS ALB terminates TLS, minimum TLS 1.2 enforced |
 | Tyk to Fastify Gateway | TLS 1.2+ | Internal ALB or service mesh |
-| Gateway to settla-server (gRPC) | Plain TCP | NetworkPolicy isolation is the current control; no mTLS |
-| settla-server to PostgreSQL | TLS (production) / Plain (dev) | PgBouncer `sslmode=verify-full` in production, `sslmode=disable` in dev |
+| Gateway to settla-server (gRPC) | TLS (production) / Plain (dev) | `SETTLA_GRPC_TLS=true` enables TLS with optional mTLS via `SETTLA_GRPC_CA_CERT`, `SETTLA_GRPC_CERT`, `SETTLA_GRPC_KEY` |
+| settla-server to PostgreSQL | TLS (production) / Plain (dev) | PgBouncer `sslmode=verify-full` in production, `sslmode=prefer` in dev; `sslmode=disable` rejected in production at startup |
 | settla-server to TigerBeetle | Plain TCP | TigerBeetle does not support TLS; isolated in private subnet, network policy restricts access |
 | settla-server to Redis | TLS (production) / Plain (dev) | ElastiCache in-transit encryption in production; password-authenticated in dev |
-| settla-server to NATS | TLS (production) / Plain (dev) | NATS TLS with client certificates in production |
+| settla-server to NATS | TLS (production) / Plain (dev) | NATS TLS with client certificates in production; token auth (`SETTLA_NATS_TOKEN`) or user/password (`SETTLA_NATS_USER`/`SETTLA_NATS_PASSWORD`) required in production |
 | Inter-pod (Kubernetes) | Plain TCP | NetworkPolicy isolation is the current control; no service mesh mTLS deployed |
 
 ---
@@ -135,10 +135,11 @@ Every mutation endpoint requires an `Idempotency-Key` header.
 
 ### API Key Management
 
-- Raw API keys generated using cryptographically secure random bytes (32 bytes, base64-encoded)
-- Only the SHA-256 hash is stored; raw key shown once at creation
+- Raw API keys generated using cryptographically secure random bytes (32 bytes, hex-encoded)
+- Only the HMAC-SHA256 hash (keyed with `SETTLA_API_KEY_HMAC_SECRET`) is stored; raw key shown once at creation
 - Key prefixes (`sk_live_`, `sk_test_`) indicate environment
 - Rotation: create new key, migrate traffic, revoke old key (no hard cut-over)
+- The HMAC secret must be identical across all gateway and settla-server instances
 
 ### TLS Certificate Management
 
