@@ -49,6 +49,14 @@ gen/
 /loadtest
 /chaos
 
+# Sensitive / internal-only
+CLAUDE.md
+AGENTS.md
+SECURITY_AUDIT.md
+AUDIT_REPORT.md
+phase-*.md
+docs/todo-mfa.md
+
 # Generated reports
 bench-results.txt
 tests/loadtest/reports/
