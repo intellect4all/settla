@@ -44,7 +44,7 @@ Built for **50 million transactions/day** — 580 TPS sustained, 5,000 TPS peak.
 └─────────────────────────────────────────────────────────────────────────┘
                               │
                    ┌──────────┴──────────┐
-                   │  Outbox Relay        │  settla-node polls every 50ms,
+                   │  Outbox Relay        │  settla-node polls every 20ms,
                    │  (node/outbox)       │  publishes to NATS JetStream
                    └──────────┬──────────┘
                               │
@@ -59,9 +59,16 @@ Built for **50 million transactions/day** — 580 TPS sustained, 5,000 TPS peak.
 │  Worker  │ │  Worker  │ │  Worker  │ │  Worker  │ │  Worker  │ │  Worker  │
 │ (saga    │ │(reserve/ │ │ (post /  │ │(on-ramp/ │ │(on-chain │ │(deliver  │
 │ orch.)   │ │ release) │ │ reverse) │ │ off-ramp)│ │  send)   │ │webhooks) │
-└────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └──────────┘
-     │            │            │            │            │
-     └────────────┴────────────┴────────────┴────────────┘
+└────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+     │            │            │            │            │            │
+┌────┴─────┐ ┌────┴─────┐ ┌────┴─────┐ ┌────┴─────┐ ┌────┴─────┐    │
+│ Inbound  │ │ Deposit  │ │  Bank    │ │  Email   │ │   DLQ    │    │
+│ Webhook  │ │  Worker  │ │ Deposit  │ │  Worker  │ │ Monitor  │    │
+│ (provider│ │ (crypto  │ │  Worker  │ │ (notifs) │ │ (retry/  │    │
+│ callbacks│ │ deposits)│ │ (fiat)   │ │          │ │  alert)  │    │
+└────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘    │
+     │            │            │            │            │            │
+     └────────────┴────────────┴────────────┴────────────┴────────────┘
                               │ writes
           ┌───────────────────┼───────────────────┐
           ▼                   ▼                   ▼
@@ -77,10 +84,11 @@ Built for **50 million transactions/day** — 580 TPS sustained, 5,000 TPS peak.
 
 1. **Gateway** receives `POST /v1/transfers`, authenticates the tenant (local cache → Redis → gRPC), and forwards to `settla-server` via gRPC.
 2. **Engine** (pure state machine) validates the request, generates a quote, creates the transfer record, and writes a `transfer.created` outbox entry — all in a single Postgres transaction. Zero network calls.
-3. **Outbox relay** polls the outbox table every 50ms and publishes pending entries to NATS JetStream.
+3. **Outbox relay** polls the outbox table every 20ms (batch 500) and publishes pending entries to NATS JetStream.
 4. **Transfer worker** (saga orchestrator) consumes `transfer.created` and drives the state machine: fund → on-ramp → settle → off-ramp → complete. Each step calls back into the engine, which writes the next outbox intent.
-5. **Dedicated workers** execute the actual side effects: treasury reserves/releases, ledger postings, provider API calls, blockchain transactions, and tenant webhook deliveries.
+5. **Dedicated workers** execute the actual side effects: treasury reserves/releases, ledger postings, provider API calls, blockchain transactions, tenant webhook deliveries, crypto/bank deposit processing, and email notifications.
 6. **Inbound provider webhooks** arrive at `api/webhook`, are HMAC-verified, deduplicated, and published to NATS where the **inbound webhook worker** maps them back to engine callbacks.
+7. **Chain monitor** watches on-chain stablecoin transfers (Tron, EVM) and triggers deposit session processing for incoming crypto payments.
 
 ### Transactional Outbox
 
@@ -106,22 +114,29 @@ See [ADR-001: Modular Monolith](docs/adr/001-modular-monolith.md) for extraction
 | Tyk Gateway | `deploy/tyk` | Edge gateway: TLS, auth key validation, rate limiting, CORS, analytics |
 | Settla Core | `core` | Pure state machine engine — transfer lifecycle, outbox intent writes, no side-effect deps |
 | Core: Compensation | `core/compensation` | Refund and recovery strategies for partial failures (simple refund, reverse on-ramp, credit stablecoin, manual review) |
-| Core: Recovery | `core/recovery` | Stuck-transfer detector (60s interval) — re-publishes intents or escalates to manual review |
-| Core: Reconciliation | `core/reconciliation` | 5 automated checks: treasury-ledger balance, transfer state consistency, outbox health, provider tx lag, daily volume sanity |
+| Core: Recovery | `core/recovery` | Stuck-transfer detector (60s interval, panic-safe) — re-publishes intents or escalates to manual review |
+| Core: Reconciliation | `core/reconciliation` | 6 automated checks: treasury-ledger balance, transfer state, outbox health, provider tx, daily volume, settlement fees |
 | Core: Settlement | `core/settlement` | Net settlement calculator and daily scheduler for NET_SETTLEMENT tenants |
 | Core: Maintenance | `core/maintenance` | Partition lifecycle (create ahead, drop old), vacuum manager, capacity monitor |
+| Core: Deposit | `core/deposit` | Crypto deposit session engine — on-chain payment detection, confirmation tracking, auto-convert/hold strategies |
+| Core: Bank Deposit | `core/bankdeposit` | Fiat deposit via virtual bank accounts — bank credit detection, partner reconciliation |
+| Core: Analytics | `core/analytics` | Analytics snapshots and data exports for tenant reporting |
+| Core: Payment Links | `core/paymentlink` | Payment link generation and public redemption flow for merchant collections |
 | Settla Ledger | `ledger` | Immutable double-entry ledger — TigerBeetle write path, Postgres CQRS read path, write-ahead batching |
 | Settla Rail | `rail` | Smart payment router (cost 40%, speed 30%, liquidity 20%, reliability 10%), provider adapters, blockchain clients |
 | Settla Treasury | `treasury` | In-memory atomic reservations, 100ms DB flush, per-tenant position tracking |
-| Outbox Relay | `node/outbox` | Polls outbox table every 50ms, publishes to NATS JetStream with deduplication and partition cleanup |
-| Settla Node | `node/worker` | 7 dedicated workers: transfer (saga), treasury, ledger, provider, blockchain, outbound webhook, inbound webhook (provider callbacks) |
+| Chain Monitor | `node/chainmonitor` | Watches on-chain stablecoin transfers (Tron, EVM) and triggers deposit sessions |
+| Outbox Relay | `node/outbox` | Polls outbox table every 20ms, publishes to NATS JetStream with deduplication and partition cleanup |
+| Settla Node | `node/worker` | 11 dedicated workers: transfer (saga), treasury, ledger, provider, blockchain, outbound webhook, inbound webhook, deposit, bank deposit, email, DLQ monitor |
 | Settla API Gateway | `api/gateway` | Fastify BFF — tenant resolution, idempotency, gRPC pool, REST→gRPC transform, OpenAPI at `/docs` |
 | Settla Webhook | `api/webhook` | Outbound webhook dispatcher (HMAC-SHA256, exponential backoff, dead letter) + inbound provider webhook ingestion |
-| Settla Dashboard | `dashboard` | Vue 3 + Nuxt ops console: transfers, treasury, ledger, reconciliation, net settlements, manual reviews |
+| Settla Dashboard | `dashboard` | Vue 3 + Nuxt ops console: transfers, treasury, ledger, reconciliation, net settlements, manual reviews, tenant listing |
+| Settla Portal | `portal` | Vue 3 + Nuxt tenant self-service portal — auth, onboarding/KYB, deposits, payment links, analytics, crypto balances |
+| Shared UI | `packages/ui` | Shared Vue component library used by Dashboard and Portal |
 
 ## Prerequisites
 
-- **Go** 1.22+
+- **Go** 1.25+
 - **Node.js** 22+ with **pnpm**
 - **Docker** and **Docker Compose**
 - **buf** (protobuf toolchain)
@@ -132,8 +147,12 @@ See [ADR-001: Modular Monolith](docs/adr/001-modular-monolith.md) for extraction
 ## Quickstart
 
 ```bash
-# 1. Create local env file
+# 1. Create local env file and generate required secrets
 cp .env.example .env
+# Generate JWT secret (required):
+echo "SETTLA_JWT_SECRET=$(openssl rand -base64 32)" >> .env
+# Generate API key HMAC secret (required for API key creation):
+echo "SETTLA_API_KEY_HMAC_SECRET=$(openssl rand -hex 32)" >> .env
 
 # 2. Start all infrastructure + application containers
 #    (TigerBeetle, Postgres x3, PgBouncer x3, NATS, Redis, Tyk, settla-server, settla-node, gateway, webhook)
@@ -212,12 +231,18 @@ make proto                   # buf lint + generate (Go to gen/, TS to api/gatewa
 | `make loadtest-burst` | Burst recovery: ramp 600 → 8,000 → 600 TPS |
 | `make loadtest-flood` | Single-tenant flood: 3,000 TPS |
 | `make loadtest-multi` | Multi-tenant: 50 tenants × 100 TPS |
+| `make loadtest-daily` | Simulated daily volume: 580 TPS for 1 hour |
 | `make soak` | 2-hour soak at 1,000 TPS |
 | `make soak-short` | 15-minute soak at 1,000 TPS |
 | `make chaos` | Run all chaos test scenarios |
 | `make report` | Full benchmark report (bench + loadtest-quick + soak-short) |
 | `make demo` | Run interactive demo scenarios |
 | `make profile` | Capture heap/CPU/goroutine pprof profiles |
+| `make api-test` | Run tenant API tests against running services |
+| `make api-test-full` | Start Docker, seed, then run API tests |
+| `make docs-openapi` | Export OpenAPI spec and copy to docs site |
+| `make docs-dev` | Run Mintlify docs dev server |
+| `make docs-build` | Build the documentation site |
 | `make provider-mode-mock` | Switch provider mode to mock |
 | `make provider-mode-testnet` | Switch provider mode to testnet |
 | `make testnet-setup` | Initialize testnet wallets and faucet funding |
@@ -232,9 +257,13 @@ settla/
 ├── core/              # Settlement engine + state machine
 │   ├── compensation/  # Refund strategies for partial failures
 │   ├── recovery/      # Stuck-transfer detector and escalation
-│   ├── reconciliation/# 5-check automated reconciliation engine
+│   ├── reconciliation/# 6-check automated reconciliation engine
 │   ├── settlement/    # Net settlement calculator and scheduler
-│   └── maintenance/   # Partition lifecycle, vacuum, capacity monitoring
+│   ├── maintenance/   # Partition lifecycle, vacuum, capacity monitoring
+│   ├── deposit/       # Crypto deposit session engine
+│   ├── bankdeposit/   # Fiat deposit via virtual bank accounts
+│   ├── analytics/     # Analytics snapshots and data exports
+│   └── paymentlink/   # Payment link generation and redemption
 ├── ledger/            # Double-entry ledger (TigerBeetle + Postgres CQRS)
 ├── rail/              # Router, providers, blockchain clients
 │   ├── router/        # Smart routing with scoring and tenant fee application
@@ -243,8 +272,9 @@ settla/
 ├── treasury/          # In-memory position tracking + 100ms DB flush
 ├── node/              # NATS workers + event-driven saga processing
 │   ├── outbox/        # Outbox relay: polls Transfer DB → publishes to NATS
-│   ├── messaging/     # NATS client, publisher, subscriber, stream definitions
-│   └── worker/        # 7 workers: transfer, treasury, ledger, provider, blockchain, webhook, inbound webhook
+│   ├── messaging/     # NATS client, publisher, subscriber, 12 stream definitions
+│   ├── chainmonitor/  # On-chain stablecoin transfer watcher (Tron, EVM)
+│   └── worker/        # 11 workers: transfer, treasury, ledger, provider, blockchain, webhook, inbound webhook, deposit, bank deposit, email, DLQ monitor
 ├── domain/            # Shared domain types, interfaces, outbox entry types
 ├── store/             # Database repositories (SQLC-generated)
 │   ├── ledgerdb/
@@ -252,13 +282,17 @@ settla/
 │   └── treasurydb/
 ├── cache/             # Two-level cache (LRU → Redis), rate limiting, idempotency
 ├── observability/     # slog logger, Prometheus metrics, gRPC interceptors
-├── api/               # TypeScript services
+├── api/               # TypeScript + Go services
 │   ├── gateway/       # Fastify BFF (REST + OpenAPI at /docs)
-│   └── webhook/       # Outbound dispatcher + inbound provider webhook ingestion
+│   ├── webhook/       # Outbound dispatcher + inbound provider webhook ingestion
+│   └── grpc/          # Go gRPC server (transfers, deposits, analytics, portal auth)
 ├── dashboard/         # Vue 3 + Nuxt ops console
+├── portal/            # Vue 3 + Nuxt tenant self-service portal
+├── packages/          # Shared libraries
+│   └── ui/            # Shared Vue component library
 ├── cmd/               # Go entrypoints
 │   ├── settla-server/ # Core + Ledger + Rail + Treasury (gRPC :9090, HTTP :8080)
-│   └── settla-node/   # Outbox relay + worker process
+│   └── settla-node/   # Outbox relay + chain monitor + worker process
 ├── proto/             # Protobuf definitions (settla/v1/)
 ├── gen/               # Generated Go protobuf code
 ├── db/                # Migrations + SQLC queries
@@ -271,13 +305,14 @@ settla/
 │   ├── tyk/           # Tyk API definitions, policies, middleware
 │   └── runbooks/      # Operational runbooks
 ├── tests/             # Test harnesses
-│   ├── integration/   # E2E tests (tenant isolation, concurrency, corridors)
+│   ├── integration/   # E2E tests (tenant isolation, concurrency, corridors, deposits)
 │   ├── loadtest/      # Go load test harness (multi-scenario, not k6)
 │   ├── chaos/         # Chaos test framework (failure recovery)
 │   └── benchmarks/    # Benchmark comparison tooling
 ├── scripts/           # Dev tooling (demo, testnet setup, report generation)
-└── docs/              # Architecture docs + ADRs
-    └── adr/           # 018 decision records
+├── docs/              # Architecture docs + ADRs
+│   └── adr/           # 018 decision records
+└── docs-site/         # Mintlify API documentation site
 ```
 
 ## Capacity at a Glance

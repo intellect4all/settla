@@ -2,7 +2,10 @@
        seed demo clean bench loadtest loadtest-quick loadtest-sustained loadtest-burst loadtest-flood \
        loadtest-multi loadtest-daily soak soak-short chaos report test-integration profile \
        testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet \
-       tyk-setup openapi-export docs-openapi docs-dev docs-build api-test api-test-full
+       tyk-setup openapi-export docs-openapi docs-dev docs-build api-test api-test-full \
+       bench-smoke bench-sustained bench-peak bench-soak bench-spike bench-hotspot \
+       bench-tenants-20k bench-tenants-100k bench-tenants-peak bench-settlement \
+       bench-micro bench-all bench-report bench-seed bench-seed-20k bench-seed-100k bench-cleanup
 
 # Go
 GO := go
@@ -156,6 +159,50 @@ report:
 demo:
 	bash scripts/demo.sh
 
+## demo-up: Start full demo environment (builds, seeds, prints URLs)
+demo-up:
+	bash scripts/demo-up.sh
+
+## demo-up-scale: Start demo with 20K tenants for scale demonstration
+demo-up-scale:
+	bash scripts/demo-up.sh --profile=scale
+
+## demo-down: Stop demo environment and remove volumes
+demo-down:
+	bash scripts/demo-down.sh
+
+## demo-reset: Reset demo data without restarting containers
+demo-reset:
+	bash scripts/demo-reset.sh
+
+## demo-status: Show health status of all demo services
+demo-status:
+	bash scripts/demo-status.sh
+
+## demo-seed-quick: Seed 10 tenants (quick profile)
+demo-seed-quick:
+	bash scripts/demo-seed.sh --profile=quick
+
+## demo-seed-scale: Seed 20K tenants (scale profile)
+demo-seed-scale:
+	bash scripts/demo-seed.sh --profile=scale
+
+## demo-seed-stress: Seed 100K tenants (stress profile)
+demo-seed-stress:
+	bash scripts/demo-seed.sh --profile=stress
+
+## demo-logs: Tail application logs
+demo-logs:
+	bash scripts/demo-logs.sh
+
+## demo-scale-check: Verify scale-test tenant provisioning
+demo-scale-check:
+	bash scripts/demo-scale-check.sh
+
+## demo-record: Record terminal session for demo
+demo-record:
+	bash scripts/demo-record.sh
+
 ## profile: Capture and compare profiles from running settla-server
 profile:
 	@mkdir -p tests/loadtest/profiles
@@ -245,6 +292,132 @@ api-test-full:
 	$(MAKE) db-seed
 	$(GO) run ./tests/api-test/ -gateway=$(GATEWAY_URL)
 
+## init-testnet-wallets: Generate wallet encryption key and master seed for testnet mode
+init-testnet-wallets:
+	@bash scripts/init-testnet-wallets.sh
+
+## fund-testnet-wallets: Print instructions for funding testnet wallets
+fund-testnet-wallets:
+	@bash scripts/fund-testnet-wallets.sh
+
 ## clean: Remove build artifacts
 clean:
 	rm -rf $(BIN_DIR) bench-results.txt
+
+# ===========================================================================
+# Scenario-based load test suite (A-J)
+# All scenarios output structured JSON results to tests/loadtest/results/
+# ===========================================================================
+
+LOADTEST_CMD = $(GO) run ./tests/loadtest/
+SEED_CMD = $(GO) run ./tests/loadtest/ seed
+
+## bench-seed: Provision scale-test tenants (default 50, set TENANT_COUNT for more)
+TENANT_COUNT ?= 50
+bench-seed:
+	$(SEED_CMD) -count=$(TENANT_COUNT) \
+		-transfer-db=$${SETTLA_TRANSFER_DB_MIGRATE_URL} \
+		-treasury-db=$${SETTLA_TREASURY_DB_MIGRATE_URL}
+
+## bench-seed-20k: Provision 20,000 scale-test tenants
+bench-seed-20k:
+	$(SEED_CMD) -count=20000 \
+		-transfer-db=$${SETTLA_TRANSFER_DB_MIGRATE_URL} \
+		-treasury-db=$${SETTLA_TREASURY_DB_MIGRATE_URL}
+
+## bench-seed-100k: Provision 100,000 scale-test tenants
+bench-seed-100k:
+	$(SEED_CMD) -count=100000 \
+		-transfer-db=$${SETTLA_TRANSFER_DB_MIGRATE_URL} \
+		-treasury-db=$${SETTLA_TREASURY_DB_MIGRATE_URL}
+
+## bench-cleanup: Remove all scale-test tenants
+bench-cleanup:
+	$(SEED_CMD) -cleanup \
+		-transfer-db=$${SETTLA_TRANSFER_DB_MIGRATE_URL} \
+		-treasury-db=$${SETTLA_TREASURY_DB_MIGRATE_URL}
+
+## bench-smoke: Scenario A — 10 TPS for 60s, single tenant, sanity check
+bench-smoke:
+	$(LOADTEST_CMD) -scenario=SmokeTest -gateway=$(GATEWAY_URL) -json -drain=30s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-sustained: Scenario B — 580 TPS sustained, 50 tenants, multi-currency
+bench-sustained:
+	$(LOADTEST_CMD) -scenario=SustainedLoad -gateway=$(GATEWAY_URL) -json -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-peak: Scenario C — 5,000 TPS peak burst, 200 tenants
+bench-peak:
+	$(LOADTEST_CMD) -scenario=PeakBurst -gateway=$(GATEWAY_URL) -json -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-soak: Scenario D — 580 TPS for 1 hour, resource stability
+bench-soak:
+	$(LOADTEST_CMD) -scenario=SoakTest -gateway=$(GATEWAY_URL) -json -soak -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-spike: Scenario E — instant 100→5,000→100 TPS spike
+bench-spike:
+	$(LOADTEST_CMD) -scenario=SpikeTest -gateway=$(GATEWAY_URL) -json -drain=60s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-hotspot: Scenario F — 580 TPS, 80% to one tenant
+bench-hotspot:
+	$(LOADTEST_CMD) -scenario=HotSpot -gateway=$(GATEWAY_URL) -json -drain=60s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-tenants-20k: Scenario G — 580 TPS across 20K tenants (Zipf)
+bench-tenants-20k:
+	$(LOADTEST_CMD) -scenario=TenantScale20K -gateway=$(GATEWAY_URL) -json -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-tenants-100k: Scenario H — 580 TPS across 100K tenants (Zipf)
+bench-tenants-100k:
+	$(LOADTEST_CMD) -scenario=TenantScale100K -gateway=$(GATEWAY_URL) -json -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-tenants-peak: Scenario I — 5,000 TPS across 20K tenants (Zipf)
+bench-tenants-peak:
+	$(LOADTEST_CMD) -scenario=TenantScalePeak -gateway=$(GATEWAY_URL) -json -drain=120s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-settlement: Scenario J — 580 TPS for 1h then settlement batch across 20K tenants
+bench-settlement:
+	$(LOADTEST_CMD) -scenario=SettlementBatch -gateway=$(GATEWAY_URL) -json -drain=300s \
+		$(if $(TRANSFER_DB_URL),-transfer-db=$(TRANSFER_DB_URL)) \
+		$(if $(LEDGER_DB_URL),-ledger-db=$(LEDGER_DB_URL))
+
+## bench-micro: Run component-level microbenchmarks (Go testing.B)
+bench-micro:
+	@echo "=== Component Microbenchmarks ==="
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./tests/loadtest/ | tee tests/loadtest/results/micro-benchmarks.txt
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./treasury/... | tee -a tests/loadtest/results/micro-benchmarks.txt
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./cache/... | tee -a tests/loadtest/results/micro-benchmarks.txt
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./ledger/... | tee -a tests/loadtest/results/micro-benchmarks.txt
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./core/... | tee -a tests/loadtest/results/micro-benchmarks.txt
+	$(GO) test -bench=Benchmark -benchmem -benchtime=3s -run='^$$' -count=1 ./node/outbox/... | tee -a tests/loadtest/results/micro-benchmarks.txt
+	@echo "Results written to tests/loadtest/results/micro-benchmarks.txt"
+
+## bench-all: Run all scenarios in sequence (A through J + microbenchmarks)
+bench-all: bench-micro bench-smoke bench-sustained bench-peak bench-spike bench-hotspot bench-soak
+	@echo ""
+	@echo "=== Core scenarios complete. Scale tests require pre-provisioned tenants. ==="
+	@echo "Run 'make bench-seed-20k' then 'make bench-tenants-20k bench-tenants-peak bench-settlement'"
+	@echo "Run 'make bench-seed-100k' then 'make bench-tenants-100k'"
+
+## bench-report: Aggregate all JSON results into a single report
+bench-report:
+	@mkdir -p tests/loadtest/results
+	$(LOADTEST_CMD) report tests/loadtest/results tests/loadtest/results/aggregate-report.json
+	@echo "Aggregate report: tests/loadtest/results/aggregate-report.json"
+	@echo "Report template: tests/loadtest/REPORT_TEMPLATE.md"
