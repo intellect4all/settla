@@ -1,0 +1,20 @@
+---
+title: "Request Top-Up"
+openapi: "POST /v1/treasury/topup"
+---
+
+Request a top-up to increase funds in a treasury position. Top-ups can be funded via bank transfer, crypto, or internal rebalancing.
+
+The request creates a `PositionTransaction` in `PENDING` status. Once the funding is confirmed, the position balance increases automatically.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/treasury/topup \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currency": "GBP",
+    "location": "bank:clearing",
+    "amount": "50000.00",
+    "method": "bank_transfer"
+  }'
+```

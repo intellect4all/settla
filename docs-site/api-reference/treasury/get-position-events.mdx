@@ -1,0 +1,24 @@
+---
+title: "Get Position Events"
+openapi: "GET /v1/treasury/positions/{currency}/{location}/events"
+---
+
+Retrieve the event history for a specific treasury position. Events provide an immutable audit trail of every balance change.
+
+## Event Types
+
+| Type | Effect |
+|------|--------|
+| `CREDIT` | Balance increased (deposit, top-up) |
+| `DEBIT` | Balance decreased (withdrawal) |
+| `RESERVE` | Funds reserved for in-flight transfer |
+| `RELEASE` | Reserved funds released (transfer failed/cancelled) |
+| `COMMIT` | Reserved funds moved to locked |
+| `CONSUME` | Reserved + balance decreased (transfer completed) |
+
+Each event records the `balance_after` and `locked_after` values for full auditability.
+
+```bash
+curl "https://sandbox.settla.io/v1/treasury/positions/GBP/bank:clearing/events?limit=50" \
+  -H "Authorization: Bearer $API_KEY"
+```

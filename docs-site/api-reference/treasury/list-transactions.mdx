@@ -1,0 +1,15 @@
+---
+title: "List Position Transactions"
+openapi: "GET /v1/treasury/transactions"
+---
+
+List treasury position transactions (top-ups, withdrawals, deposit credits, rebalances) with pagination.
+
+## Transaction Types
+
+| Type | Description |
+|------|-------------|
+| `TOP_UP` | Tenant deposits funds into treasury |
+| `WITHDRAWAL` | Tenant withdraws from treasury |
+| `DEPOSIT_CREDIT` | Credit from a crypto or bank deposit session |
+| `INTERNAL_REBALANCE` | Internal position adjustment |

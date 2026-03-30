@@ -1,0 +1,21 @@
+---
+title: "Request Withdrawal"
+openapi: "POST /v1/treasury/withdraw"
+---
+
+Request a withdrawal from a treasury position. Requires sufficient available balance (balance minus locked funds).
+
+The `destination` field is required — provide a bank account reference for bank transfers or a blockchain address for crypto withdrawals.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/treasury/withdraw \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currency": "NGN",
+    "location": "bank:clearing",
+    "amount": "10000000.00",
+    "method": "bank_transfer",
+    "destination": "GTBank-0123456789"
+  }'
+```
