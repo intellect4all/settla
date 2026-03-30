@@ -125,7 +125,7 @@ func runSetup(logger *slog.Logger) error {
 	}
 	defer mgr.Close()
 
-	chains := wallet.ValidChains()
+	chains := []wallet.Chain{wallet.ChainTron, wallet.ChainSolana, wallet.ChainEthereum, wallet.ChainBase}
 	ctx := context.Background()
 
 	fmt.Println("--- Creating system wallets ---")

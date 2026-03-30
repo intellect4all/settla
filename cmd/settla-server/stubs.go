@@ -24,6 +24,10 @@ func (s *stubTreasuryStore) LoadAllPositions(ctx context.Context) ([]domain.Posi
 	return nil, nil
 }
 
+func (s *stubTreasuryStore) LoadPositionsPaginated(ctx context.Context, limit, offset int32) ([]domain.Position, error) {
+	return nil, nil
+}
+
 func (s *stubTreasuryStore) UpdatePosition(ctx context.Context, id uuid.UUID, balance, locked decimal.Decimal) error {
 	return nil
 }

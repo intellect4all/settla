@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -25,16 +28,17 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	settlagrpc "github.com/intellect4all/settla/api/grpc"
+	"github.com/intellect4all/settla/cache"
 	"github.com/intellect4all/settla/core"
-	settladb "github.com/intellect4all/settla/db"
-	"github.com/intellect4all/settla/db/automigrate"
+	"github.com/intellect4all/settla/core/analytics"
 	bankdepositcore "github.com/intellect4all/settla/core/bankdeposit"
 	depositcore "github.com/intellect4all/settla/core/deposit"
-	paymentlinkcore "github.com/intellect4all/settla/core/paymentlink"
-	"github.com/intellect4all/settla/core/analytics"
 	"github.com/intellect4all/settla/core/maintenance"
+	paymentlinkcore "github.com/intellect4all/settla/core/paymentlink"
 	"github.com/intellect4all/settla/core/reconciliation"
 	"github.com/intellect4all/settla/core/settlement"
+	settladb "github.com/intellect4all/settla/db"
+	"github.com/intellect4all/settla/db/automigrate"
 	"github.com/intellect4all/settla/domain"
 	pb "github.com/intellect4all/settla/gen/settla/v1"
 	"github.com/intellect4all/settla/ledger"
@@ -44,8 +48,9 @@ import (
 	"github.com/intellect4all/settla/observability/synthetic"
 	"github.com/intellect4all/settla/rail/blockchain"
 	"github.com/intellect4all/settla/rail/provider"
-	"github.com/intellect4all/settla/rail/provider/mock"
-	settlaprovider "github.com/intellect4all/settla/rail/provider/settla"
+	"github.com/intellect4all/settla/rail/wallet"
+	_ "github.com/intellect4all/settla/rail/provider/all" // triggers provider init() self-registration
+	"github.com/intellect4all/settla/rail/provider/factory"
 	"github.com/intellect4all/settla/rail/router"
 	"github.com/intellect4all/settla/resilience"
 	"github.com/intellect4all/settla/resilience/drain"
@@ -67,40 +72,56 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// ── Distributed tracing (OpenTelemetry) ─────────────────────────
+	// Configured via standard OTEL_* env vars (e.g. OTEL_EXPORTER_OTLP_ENDPOINT).
+	// No-op if endpoint is not set.
+	tracerShutdown, err := observability.InitTracer(ctx, "settla-server", version, logger)
+	if err != nil {
+		logger.Warn("settla-server: tracer init failed, continuing without tracing", "error", err)
+	} else {
+		defer tracerShutdown(ctx)
+	}
+
 	// ── Infrastructure ──────────────────────────────────────────────
 
 	// Transfer DB (PgBouncer :6434)
 	transferDBURL := envOrDefault("SETTLA_TRANSFER_DB_URL",
-		"postgres://settla:settla@localhost:6434/settla_transfer?sslmode=disable")
+		"postgres://settla:settla@localhost:6434/settla_transfer?sslmode=prefer")
+	rejectInsecureSSLInProduction("SETTLA_TRANSFER_DB_URL", transferDBURL, logger)
 	transferPool, err := newPgxPool(ctx, transferDBURL)
 	if err != nil {
 		logger.Error("settla-server: failed to connect to transfer DB", "url", transferDBURL, "error", err)
 		os.Exit(1)
 	}
 	defer transferPool.Close()
+	observability.RegisterPoolMetrics(ctx, transferPool, "transfer", metrics)
 	logger.Info("settla-server: connected to transfer DB")
 
 	// Ledger DB (PgBouncer :6433)
 	ledgerDBURL := envOrDefault("SETTLA_LEDGER_DB_URL",
-		"postgres://settla:settla@localhost:6433/settla_ledger?sslmode=disable")
+		"postgres://settla:settla@localhost:6433/settla_ledger?sslmode=prefer")
+	rejectInsecureSSLInProduction("SETTLA_LEDGER_DB_URL", ledgerDBURL, logger)
 	ledgerPool, err := newPgxPool(ctx, ledgerDBURL)
 	if err != nil {
 		logger.Warn("settla-server: ledger DB unavailable, PG read path disabled", "error", err)
 		ledgerPool = nil
 	} else {
 		defer ledgerPool.Close()
+		observability.RegisterPoolMetrics(ctx, ledgerPool, "ledger", metrics)
 		logger.Info("settla-server: connected to ledger DB")
 	}
 
 	// Treasury DB (PgBouncer :6435)
 	treasuryDBURL := envOrDefault("SETTLA_TREASURY_DB_URL",
-		"postgres://settla:settla@localhost:6435/settla_treasury?sslmode=disable")
+		"postgres://settla:settla@localhost:6435/settla_treasury?sslmode=prefer")
+	rejectInsecureSSLInProduction("SETTLA_TREASURY_DB_URL", treasuryDBURL, logger)
 	treasuryPool, err := newPgxPool(ctx, treasuryDBURL)
 	if err != nil {
 		logger.Warn("settla-server: treasury DB unavailable, using stub store", "error", err)
 		treasuryPool = nil
 	} else {
 		defer treasuryPool.Close()
+		observability.RegisterPoolMetrics(ctx, treasuryPool, "treasury", metrics)
 		logger.Info("settla-server: connected to treasury DB")
 	}
 
@@ -141,9 +162,19 @@ func main() {
 	// SETTLA_NATS_REPLICAS controls JetStream stream replication factor.
 	// 1 = dev/staging (single broker), 3 = production (3-node cluster, R=3).
 	natsReplicas := envIntOrDefault("SETTLA_NATS_REPLICAS", 1)
+	var natsAuthOpts []messaging.ClientOption
+	natsAuthOpts = append(natsAuthOpts, messaging.WithReplicas(natsReplicas))
+	if natsToken := os.Getenv("SETTLA_NATS_TOKEN"); natsToken != "" {
+		natsAuthOpts = append(natsAuthOpts, messaging.WithNATSToken(natsToken))
+	} else if natsUser := os.Getenv("SETTLA_NATS_USER"); natsUser != "" {
+		natsAuthOpts = append(natsAuthOpts, messaging.WithNATSUserInfo(natsUser, os.Getenv("SETTLA_NATS_PASSWORD")))
+	} else if os.Getenv("SETTLA_ENV") == "production" || os.Getenv("SETTLA_ENV") == "staging" {
+		logger.Error("settla-server: FATAL — NATS authentication required in " + os.Getenv("SETTLA_ENV") + ". Set SETTLA_NATS_TOKEN or SETTLA_NATS_USER/SETTLA_NATS_PASSWORD")
+		os.Exit(1)
+	}
 	var publisher domain.EventPublisher
 	natsClient, err := messaging.NewClient(natsURL, numPartitions, logger,
-		messaging.WithReplicas(natsReplicas),
+		natsAuthOpts...,
 	)
 	if err != nil {
 		logger.Warn("settla-server: NATS unavailable, events will be dropped", "error", err)
@@ -175,18 +206,68 @@ func main() {
 		}
 	}
 
-	// In production, RLS enforcement is mandatory — running without it means
-	// all queries bypass row-level security, risking cross-tenant data leakage.
-	if os.Getenv("SETTLA_ENV") == "production" && transferAppPool == nil {
-		logger.Error("settla-server: FATAL — production requires RLS-enforced DB pool (SETTLA_TRANSFER_APP_DB_URL)")
-		os.Exit(1)
-	} else if transferAppPool == nil && os.Getenv("SETTLA_ENV") != "production" {
-		logger.Warn("settla-server: RLS not enforced — SETTLA_TRANSFER_APP_DB_URL is unset, all queries bypass row-level security")
+	// RLS enforcement is mandatory in production and staging — running without it
+	// means all queries bypass row-level security, risking cross-tenant data leakage.
+	// Only local development (SETTLA_ENV unset or "development") may skip RLS.
+	settlaEnv := os.Getenv("SETTLA_ENV")
+	if transferAppPool == nil {
+		switch settlaEnv {
+		case "production", "staging":
+			logger.Error("settla-server: FATAL — "+settlaEnv+" requires RLS-enforced DB pool (SETTLA_TRANSFER_APP_DB_URL)")
+			os.Exit(1)
+		default:
+			logger.Warn("settla-server: RLS not enforced — SETTLA_TRANSFER_APP_DB_URL is unset, all queries bypass row-level security")
+		}
 	}
 
 	// ── Stores ──────────────────────────────────────────────────────
 
 	transferQueries := transferdb.New(transferPool)
+
+	// ── Redis — tenant index + daily volume counter ────────────────
+	var tenantIndex *cache.TenantIndex
+	var redisCache *cache.RedisCache
+	if redisURL := envOrDefault("SETTLA_REDIS_URL", ""); redisURL != "" {
+		if redisOpts, redisErr := cache.ParseRedisURL(redisURL); redisErr != nil {
+			logger.Warn("settla-server: invalid SETTLA_REDIS_URL, tenant index disabled", "error", redisErr)
+		} else if redisOpts != nil {
+			redisClient := cache.NewRedisClientFromOpts(redisOpts)
+			if pingErr := redisClient.Ping(ctx).Err(); pingErr != nil {
+				logger.Warn("settla-server: Redis unavailable, tenant index will use Postgres fallback", "error", pingErr)
+				redisClient.Close()
+			} else {
+				defer redisClient.Close()
+				redisCache = cache.NewRedisCacheFromClient(redisClient)
+				paginatedFetcher := func(ctx context.Context, limit, offset int32) ([]uuid.UUID, error) {
+					return transferQueries.ListActiveTenantIDsPaginated(ctx, transferdb.ListActiveTenantIDsPaginatedParams{
+						Limit: limit, Offset: offset,
+					})
+				}
+				tenantIndex = cache.NewTenantIndex(redisClient, paginatedFetcher, logger)
+				if rebuildErr := tenantIndex.Rebuild(ctx); rebuildErr != nil {
+					logger.Warn("settla-server: tenant index initial rebuild failed", "error", rebuildErr)
+				} else {
+					count, _ := tenantIndex.Count(ctx)
+					logger.Info("settla-server: tenant index initialized", "tenants", count)
+				}
+				// Periodic reconciliation sweep
+				go func() {
+					ticker := time.NewTicker(15 * time.Minute)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							if err := tenantIndex.Rebuild(ctx); err != nil {
+								logger.Warn("settla-server: tenant index reconciliation failed", "error", err)
+							}
+						}
+					}
+				}()
+			}
+		}
+	}
 	storeOpts := []transferdb.TransferStoreOption{
 		transferdb.WithTxPool(transferPool),
 	}
@@ -248,9 +329,20 @@ func main() {
 
 	// Treasury: in-memory reservations + background DB flush
 	flushIntervalMs := envIntOrDefault("SETTLA_TREASURY_FLUSH_INTERVAL_MS", 100)
-	treasurySvc := treasury.NewManager(treasuryStore, publisher, logger, metrics,
-		treasury.WithFlushInterval(time.Duration(flushIntervalMs)*time.Millisecond),
-	)
+	treasuryOpts := []treasury.Option{
+		treasury.WithFlushInterval(time.Duration(flushIntervalMs) * time.Millisecond),
+	}
+	if syncThresholds := parseSyncThresholds(os.Getenv("SETTLA_TREASURY_SYNC_THRESHOLDS")); len(syncThresholds) > 0 {
+		treasuryOpts = append(treasuryOpts, treasury.WithSyncThresholds(syncThresholds))
+	}
+	if v := os.Getenv("SETTLA_TREASURY_SYNC_THRESHOLD_DEFAULT"); v != "" {
+		if amount, err := decimal.NewFromString(v); err == nil {
+			treasuryOpts = append(treasuryOpts, treasury.WithSyncThresholdDefault(amount))
+		} else {
+			logger.Warn("settla-server: invalid SETTLA_TREASURY_SYNC_THRESHOLD_DEFAULT, using built-in default", "value", v, "error", err)
+		}
+	}
+	treasurySvc := treasury.NewManager(treasuryStore, publisher, logger, metrics, treasuryOpts...)
 	if err := treasurySvc.LoadPositions(ctx); err != nil {
 		logger.Error("settla-server: failed to load treasury positions", "error", err)
 		os.Exit(1)
@@ -369,6 +461,9 @@ func main() {
 	// daily volume, settlement fee reconciliation (ENG-8), and — when the
 	// ledger DB is available — treasury-ledger balance alignment.
 	reconAdapter := transferdb.NewReconciliationAdapter(transferQueries)
+	if tenantIndex != nil {
+		reconAdapter.WithTenantForEach(tenantIndex.ForEach)
+	}
 	reconChecks := []reconciliation.Check{
 		reconciliation.NewTransferStateCheck(reconAdapter, logger, nil),
 		reconciliation.NewOutboxCheck(reconAdapter, logger, 0),
@@ -444,10 +539,10 @@ func main() {
 	if envOrDefault("SETTLA_SYNTHETIC_CANARY_ENABLED", "false") == "true" {
 		canaryInterval := time.Duration(envIntOrDefault("SETTLA_SYNTHETIC_INTERVAL_S", 30)) * time.Second
 		canary := synthetic.NewCanary(synthetic.Config{
-			Enabled:     true,
-			GatewayURL:  envOrDefault("SETTLA_SYNTHETIC_GATEWAY_URL", "http://gateway:3000"),
-			APIKey:      os.Getenv("SETTLA_SYNTHETIC_API_KEY"),
-			Interval:    canaryInterval,
+			Enabled:    true,
+			GatewayURL: envOrDefault("SETTLA_SYNTHETIC_GATEWAY_URL", "http://gateway:3000"),
+			APIKey:     os.Getenv("SETTLA_SYNTHETIC_API_KEY"),
+			Interval:   canaryInterval,
 		}, logger)
 		canary.Start()
 		defer canary.Stop()
@@ -465,33 +560,111 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Rail: provider registry — mode-switched via SETTLA_PROVIDER_MODE
-	providerMode := provider.ProviderModeFromEnv()
-	switch providerMode {
-	case provider.ProviderModeMock, provider.ProviderModeTestnet, provider.ProviderModeLive:
-		// valid
-	default:
-		logger.Error("settla-server: unknown SETTLA_PROVIDER_MODE",
-			"mode", string(providerMode),
-			"valid_values", "mock, testnet, live",
-		)
+	// Rail: provider registry — factory-bootstrapped via SETTLA_PROVIDER_MODE.
+	// Providers self-register via init() in their packages (triggered by blank
+	// imports in rail/provider/all). Bootstrap calls each factory matching
+	// the current mode and populates the registry.
+	providerMode := provider.ModeFromEnv()
+	var chainReg *blockchain.Registry
+	var walletMgr *wallet.Manager
+	if providerMode == provider.ProviderModeTestnet || providerMode == provider.ProviderModeLive {
+		// Create wallet manager for blockchain transaction signing.
+		encKey := os.Getenv("SETTLA_WALLET_ENCRYPTION_KEY")
+		masterSeedHex := os.Getenv("SETTLA_MASTER_SEED")
+		storagePath := envOrDefault("SETTLA_WALLET_STORAGE_PATH", ".settla/wallets")
+
+		if encKey != "" && masterSeedHex != "" {
+			masterSeed, err := hexDecodeSecure(masterSeedHex)
+			if err != nil {
+				logger.Error("settla-server: invalid SETTLA_MASTER_SEED hex", "error", err)
+				os.Exit(1)
+			}
+			walletMgr, err = wallet.NewManager(wallet.ManagerConfig{
+				MasterSeed:    masterSeed,
+				EncryptionKey: encKey,
+				StoragePath:   storagePath,
+				Logger:        logger,
+			})
+			if err != nil {
+				logger.Error("settla-server: failed to create wallet manager", "error", err)
+				os.Exit(1)
+			}
+			defer walletMgr.Close()
+			logger.Info("settla-server: wallet manager initialized", "storage_path", storagePath)
+		} else {
+			logger.Warn("settla-server: SETTLA_WALLET_ENCRYPTION_KEY or SETTLA_MASTER_SEED not set — blockchain clients will be read-only (no signing)")
+		}
+
+		chainCfg := blockchain.LoadConfigFromEnv()
+		var err error
+		chainReg, err = blockchain.NewRegistryFromConfig(chainCfg, walletMgr, logger)
+		if err != nil {
+			logger.Error("settla-server: failed to create blockchain registry", "error", err)
+			os.Exit(1)
+		}
+
+		// Register system hot wallets for all chains so signers can resolve
+		// address → wallet path when building transactions.
+		if walletMgr != nil {
+			if err := chainReg.RegisterSystemWallets(walletMgr); err != nil {
+				logger.Warn("settla-server: some system wallets failed to register", "error", err)
+			}
+		}
+	}
+	bootstrapResult, err := factory.Bootstrap(factory.ProviderMode(providerMode), factory.Deps{
+		Logger:        logger,
+		BlockchainReg: chainReg,
+	})
+	if err != nil {
+		logger.Error("settla-server: provider bootstrap failed", "error", err)
 		os.Exit(1)
 	}
-
-	var providerReg *provider.Registry
-	switch providerMode {
-	case provider.ProviderModeTestnet:
-		providerReg = initTestnetProviders(logger)
-	default:
-		providerReg = provider.NewRegistry()
-		registerMockProviders(providerReg)
+	providerReg := provider.NewRegistry()
+	for _, p := range bootstrapResult.OnRamps {
+		providerReg.RegisterOnRamp(p)
+	}
+	for _, p := range bootstrapResult.OffRamps {
+		providerReg.RegisterOffRamp(p)
+	}
+	for _, c := range bootstrapResult.Blockchains {
+		providerReg.RegisterBlockchainClient(c)
+	}
+	for slug, n := range bootstrapResult.Normalizers {
+		providerReg.RegisterNormalizer(slug, n)
+	}
+	for slug, l := range bootstrapResult.Listeners {
+		providerReg.RegisterListener(slug, l)
+	}
+	// Register blockchain clients from chainReg if not already from factory.
+	if chainReg != nil {
+		for _, ch := range chainReg.Chains() {
+			c, _ := chainReg.GetClient(ch)
+			if c != nil {
+				providerReg.RegisterBlockchainClient(c)
+			}
+		}
 	}
 	logger.Info("settla-server: provider mode", "mode", string(providerMode))
 	// Router: smart routing with tenant fee schedules
-	railRouter := router.NewRouter(providerReg, tenantStore, logger)
+	var routerOpts []router.RouterOption
+	if chainReg != nil {
+		routerOpts = append(routerOpts, router.WithExplorerUrl(blockchain.Explorer{}))
+	}
+	railRouter := router.NewRouter(providerReg, tenantStore, logger, routerOpts...)
 	coreRouterAdapter := router.NewCoreRouterAdapter(railRouter, tenantStore, logger)
 
 	// Core engine (pure state machine — outbox pattern, no side-effect deps)
+	var engineOpts []core.EngineOption
+	if redisCache != nil {
+		engineOpts = append(engineOpts, core.WithDailyVolumeCounter(
+			cache.NewRedisDailyVolumeCounter(redisCache),
+		))
+		logger.Info("settla-server: daily volume limit enforcement via Redis (atomic)")
+	}
+	if settlaEnv == "production" || settlaEnv == "staging" {
+		engineOpts = append(engineOpts, core.WithRequireDailyVolumeCounter())
+		logger.Info("settla-server: daily volume counter enforcement enabled", "env", settlaEnv)
+	}
 	engine := core.NewEngine(
 		transferStore,
 		tenantStore,
@@ -499,20 +672,30 @@ func main() {
 		providerReg,
 		logger,
 		metrics,
+		engineOpts...,
 	)
 
 	// Deposit engine (pure state machine for crypto deposit sessions)
 	depositStoreAdapter := transferdb.NewDepositStoreAdapter(transferQueries, transferPool)
+	if transferAppPool != nil {
+		depositStoreAdapter.WithDepositAppPool(transferAppPool)
+	}
 	depositEngine := depositcore.NewEngine(depositStoreAdapter, tenantStore, logger)
 	logger.Info("settla-server: deposit engine initialized")
 
 	// Bank deposit engine (pure state machine for bank deposit sessions)
 	bankDepositStoreAdapter := transferdb.NewBankDepositStoreAdapter(transferQueries, transferPool)
+	if transferAppPool != nil {
+		bankDepositStoreAdapter.WithBankDepositAppPool(transferAppPool)
+	}
 	bankDepositEngine := bankdepositcore.NewEngine(bankDepositStoreAdapter, tenantStore, logger)
 	logger.Info("settla-server: bank deposit engine initialized")
 
 	// Payment link service (CRUD + redemption via deposit engine)
 	paymentLinkStore := transferdb.NewPaymentLinkStoreAdapter(transferQueries, transferPool)
+	if transferAppPool != nil {
+		paymentLinkStore.WithPaymentLinkAppPool(transferAppPool)
+	}
 	paymentLinkBaseURL := envOrDefault("SETTLA_PAYMENT_LINK_BASE_URL", "http://localhost:3003/p")
 	paymentLinkSvc := paymentlinkcore.NewService(paymentLinkStore, depositEngine, tenantStore, logger, paymentLinkBaseURL)
 	logger.Info("settla-server: payment link service initialized")
@@ -562,7 +745,7 @@ func main() {
 	// ── HTTP health/readiness server ────────────────────────────────
 	httpPort := envOrDefault("SETTLA_SERVER_HTTP_PORT", "8080")
 
-	opsStore := transferdb.NewOpsAdapter(transferQueries)
+	opsStore := transferdb.NewOpsAdapter(transferQueries, tenantIndex)
 	auditAdapter := transferdb.NewAuditAdapter(transferPool)
 	logger.Info("settla-server: audit logger initialized")
 
@@ -594,12 +777,22 @@ func main() {
 	// ── gRPC server ────────────────────────────────────────────────
 	grpcPort := envOrDefault("SETTLA_SERVER_GRPC_PORT", "9090")
 
+	// gRPC auth interceptor — validates API keys on all methods except
+	// public portal auth endpoints and health checks.
+	grpcAuthValidator := &apiKeyValidatorAdapter{q: transferQueries}
+	grpcHMACSecret := []byte(os.Getenv("SETTLA_API_KEY_HMAC_SECRET"))
+
 	grpcServer := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
 			drain.GRPCUnaryInterceptor(drainer),
 			observability.UnaryServerInterceptor(metrics),
+			settlagrpc.APIKeyAuthInterceptor(grpcAuthValidator, grpcHMACSecret, logger),
 		),
-		grpc.StreamInterceptor(drain.GRPCStreamInterceptor(drainer)),
+		grpc.ChainStreamInterceptor(
+			drain.GRPCStreamInterceptor(drainer),
+			settlagrpc.APIKeyAuthStreamInterceptor(grpcAuthValidator, grpcHMACSecret, logger),
+		),
 		grpc.MaxConcurrentStreams(1000),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    30 * time.Second,
@@ -613,18 +806,33 @@ func main() {
 
 	authStore := &apiKeyValidatorAdapter{q: transferQueries}
 	portalStore := transferdb.NewPortalStoreAdapter(transferQueries)
+	if transferAppPool != nil {
+		portalStore.WithPortalAppPool(transferAppPool)
+	}
 	webhookMgmtStore := transferdb.NewWebhookAdapter(transferQueries)
 	analyticsStore := transferdb.NewAnalyticsAdapter(transferQueries)
+	if transferAppPool != nil {
+		analyticsStore.WithAnalyticsAppPool(transferAppPool)
+	}
 	extAnalyticsStore := transferdb.NewExtendedAnalyticsAdapter(transferQueries, transferPool)
+	if transferAppPool != nil {
+		extAnalyticsStore.WithExtAnalyticsAppPool(transferAppPool)
+	}
 	exportStore := transferdb.NewExportAdapter(transferQueries, transferPool)
+	if transferAppPool != nil {
+		exportStore.WithExportAppPool(transferAppPool)
+	}
 	snapshotStore := transferdb.NewSnapshotAdapter(transferQueries, transferPool)
+	if tenantIndex != nil {
+		snapshotStore.WithTenantForEach(tenantIndex.ForEach)
+	}
 	// Wrap ledger with circuit breaker for gRPC callers.
 	ledgerCB := resilience.NewCircuitBreaker("ledger",
 		resilience.WithFailureThreshold(5),
 		resilience.WithResetTimeout(30*time.Second),
 	)
 	ledgerWithCB := resilience.NewCircuitBreakerLedger(ledgerSvc, ledgerCB)
-	portalAuthStore := transferdb.NewPortalAuthStoreAdapter(transferQueries, transferPool)
+	portalAuthStore := transferdb.NewPortalAuthStoreAdapter(transferQueries, transferPool, tenantIndex)
 	grpcSvc := settlagrpc.NewServer(engine, treasurySvc, ledgerWithCB, logger,
 		settlagrpc.WithAuthStore(authStore),
 		settlagrpc.WithTenantPortalStore(portalStore),
@@ -639,6 +847,8 @@ func main() {
 		settlagrpc.WithPaymentLinkService(paymentLinkSvc),
 		settlagrpc.WithPaymentLinkBaseURL(paymentLinkBaseURL),
 		settlagrpc.WithAuditLogger(auditAdapter),
+		settlagrpc.WithAPIKeyHMACSecret([]byte(os.Getenv("SETTLA_API_KEY_HMAC_SECRET"))),
+		settlagrpc.WithOpsAPIKey(os.Getenv("SETTLA_OPS_API_KEY")),
 	)
 	pb.RegisterSettlementServiceServer(grpcServer, grpcSvc)
 	pb.RegisterTreasuryServiceServer(grpcServer, grpcSvc)
@@ -748,86 +958,34 @@ func main() {
 	logger.Info("settla-server shutdown complete")
 }
 
-// registerMockProviders populates the registry with mock providers for development.
-func registerMockProviders(reg *provider.Registry) {
-	delayMs := envIntOrDefault("SETTLA_MOCK_DELAY_MS", 500)
-	delay := time.Duration(delayMs) * time.Millisecond
+// (registerMockProviders and initTestnetProviders removed — replaced by
+// factory.Bootstrap() in main(). Providers self-register via init() in their
+// packages; see rail/provider/mock/register.go and rail/provider/settla/register.go.)
 
-	// On-ramp: GBP→USDT
-	reg.RegisterOnRamp(mock.NewOnRampProvider("mock-onramp-gbp",
-		[]domain.CurrencyPair{{From: domain.CurrencyGBP, To: domain.CurrencyUSDT}},
-		decimal.NewFromFloat(1.25), decimal.NewFromFloat(0.50), delay,
-	))
-
-	// On-ramp: NGN→USDT
-	reg.RegisterOnRamp(mock.NewOnRampProvider("mock-onramp-ngn",
-		[]domain.CurrencyPair{{From: domain.CurrencyNGN, To: domain.CurrencyUSDT}},
-		decimal.NewFromFloat(0.00065), decimal.NewFromFloat(0.50), delay,
-	))
-
-	// Off-ramp: USDT→NGN (fee is 0.50 USDT per transaction)
-	reg.RegisterOffRamp(mock.NewOffRampProvider("mock-offramp-ngn",
-		[]domain.CurrencyPair{{From: domain.CurrencyUSDT, To: domain.CurrencyNGN}},
-		decimal.NewFromFloat(1550), decimal.NewFromFloat(0.50), delay,
-	))
-
-	// Off-ramp: USDT→GBP
-	reg.RegisterOffRamp(mock.NewOffRampProvider("mock-offramp-gbp",
-		[]domain.CurrencyPair{{From: domain.CurrencyUSDT, To: domain.CurrencyGBP}},
-		decimal.NewFromFloat(0.80), decimal.NewFromFloat(0.30), delay,
-	))
-
-	// Blockchain: Tron
-	reg.RegisterBlockchainClient(mock.NewBlockchainClient("tron", decimal.NewFromFloat(0.10)))
-}
-
-// initTestnetProviders creates a registry with Settla testnet on/off-ramp
-// providers backed by real blockchain clients (Tron Nile, Sepolia, etc.).
-func initTestnetProviders(logger *slog.Logger) *provider.Registry {
-	// Blockchain registry from env (RPC URLs).
-	chainCfg := blockchain.LoadConfigFromEnv()
-	chainReg, err := blockchain.NewRegistryFromConfig(chainCfg, logger)
-	if err != nil {
-		logger.Error("settla-server: failed to create blockchain registry, falling back to mock", "error", err)
-		reg := provider.NewRegistry()
-		registerMockProviders(reg)
-		return reg
-	}
-
-	// Shared dependencies for Settla providers.
-	fxOracle := settlaprovider.NewFXOracle()
-	fiatSim := settlaprovider.NewFiatSimulator(settlaprovider.DefaultSimulatorConfig())
-
-	// On-ramp: fiat → stablecoin (real blockchain delivery).
-	onRamp := settlaprovider.NewOnRampProvider(fxOracle, fiatSim, chainReg, nil, /* wallet manager — nil for read-only mode */
-		settlaprovider.DefaultOnRampConfig(),
-	)
-
-	// Off-ramp: stablecoin → fiat (simulated crypto receipt + simulated payout).
-	offRamp := settlaprovider.NewOffRampProvider(fxOracle, fiatSim, chainReg, nil, /* wallet manager */ logger)
-
-	// Build provider registry from testnet deps.
-	var chains []domain.BlockchainClient
-	for _, ch := range chainReg.Chains() {
-		c, _ := chainReg.GetClient(ch)
-		if c != nil {
-			chains = append(chains, c)
-		}
-	}
-
-	reg := provider.NewRegistryFromMode(provider.ProviderModeTestnet, &provider.SettlaProviderDeps{
-		OnRamp:  onRamp,
-		OffRamp: offRamp,
-		Chains:  chains,
-	}, logger)
-
-	return reg
-}
-
-// newPgxPool creates a pgxpool. In development we connect directly to Postgres.
+// newPgxPool creates a pgxpool with explicit connection limits.
+// Pool sizes are configurable via SETTLA_DB_MAX_CONNS / SETTLA_DB_MIN_CONNS.
 // In production with PgBouncer, configure statement_pool_mode or session mode.
 func newPgxPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	return pgxpool.New(ctx, connString)
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, err
+	}
+	config.MaxConns = int32(envIntOrDefault("SETTLA_DB_MAX_CONNS", 50))
+	config.MinConns = int32(envIntOrDefault("SETTLA_DB_MIN_CONNS", 10))
+	config.MaxConnIdleTime = 2 * time.Minute
+	config.MaxConnLifetime = 30 * time.Minute
+	return pgxpool.NewWithConfig(ctx, config)
+}
+
+// rejectInsecureSSLInProduction terminates the process if a database URL uses
+// sslmode=disable in a production environment. This prevents accidental
+// deployment of plaintext database connections.
+func rejectInsecureSSLInProduction(envKey, url string, logger *slog.Logger) {
+	if os.Getenv("SETTLA_ENV") == "production" && strings.Contains(url, "sslmode=disable") {
+		logger.Error("FATAL: sslmode=disable is not allowed in production — use sslmode=verify-ca or sslmode=verify-full",
+			"env_key", envKey)
+		os.Exit(1)
+	}
 }
 
 func envOrDefault(key, fallback string) string {
@@ -849,6 +1007,35 @@ func envIntOrDefault(key string, fallback int) int {
 	return n
 }
 
+// hexDecodeSecure decodes a hex string to bytes. Used for master seed loading.
+func hexDecodeSecure(s string) ([]byte, error) {
+	return hex.DecodeString(s)
+}
+
+// parseSyncThresholds parses a comma-separated list of CURRENCY:AMOUNT pairs.
+// Example: "NGN:200000000,GHS:2000000,USD:150000"
+// Invalid entries are silently skipped.
+func parseSyncThresholds(raw string) map[domain.Currency]decimal.Decimal {
+	if raw == "" {
+		return nil
+	}
+	result := make(map[domain.Currency]decimal.Decimal)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		currency := domain.Currency(strings.TrimSpace(parts[0]))
+		amount, err := decimal.NewFromString(strings.TrimSpace(parts[1]))
+		if err != nil {
+			continue
+		}
+		result[currency] = amount
+	}
+	return result
+}
+
 // ── Postgres Treasury Store ─────────────────────────────────────────────────
 
 type postgresTreasuryStore struct {
@@ -864,6 +1051,30 @@ func (s *postgresTreasuryStore) LoadAllPositions(ctx context.Context) ([]domain.
 	rows, err := s.q.ListAllPositions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("settla-treasury: loading positions: %w", err)
+	}
+	positions := make([]domain.Position, len(rows))
+	for i, row := range rows {
+		positions[i] = domain.Position{
+			ID:            row.ID,
+			TenantID:      row.TenantID,
+			Currency:      domain.Currency(row.Currency),
+			Location:      row.Location,
+			Balance:       decimalFromNumeric(row.Balance),
+			Locked:        decimalFromNumeric(row.Locked),
+			MinBalance:    decimalFromNumeric(row.MinBalance),
+			TargetBalance: decimalFromNumeric(row.TargetBalance),
+			UpdatedAt:     row.UpdatedAt,
+		}
+	}
+	return positions, nil
+}
+
+func (s *postgresTreasuryStore) LoadPositionsPaginated(ctx context.Context, limit, offset int32) ([]domain.Position, error) {
+	rows, err := s.q.ListPositionsPaginated(ctx, treasurydb.ListPositionsPaginatedParams{
+		Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settla-treasury: loading positions page at offset %d: %w", offset, err)
 	}
 	positions := make([]domain.Position, len(rows))
 	for i, row := range rows {
@@ -929,7 +1140,7 @@ func (s *postgresTreasuryStore) GetUncommittedOps(ctx context.Context) ([]treasu
 		   AND NOT EXISTS (
 		       SELECT 1 FROM reserve_ops c
 		       WHERE c.reference = r.reference
-		         AND c.op_type IN ('commit', 'release')
+		         AND c.op_type IN ('commit', 'release', 'consume')
 		   )
 		 ORDER BY r.created_at ASC`)
 	if err != nil {
@@ -962,14 +1173,141 @@ func (s *postgresTreasuryStore) CleanupOldOps(ctx context.Context, before time.T
 		DELETE FROM reserve_ops
 		WHERE created_at < $1
 		  AND (
-		      op_type IN ('commit', 'release')
+		      op_type IN ('commit', 'release', 'consume')
 		      OR EXISTS (
 		          SELECT 1 FROM reserve_ops c
 		          WHERE c.reference = reserve_ops.reference
-		            AND c.op_type IN ('commit', 'release')
+		            AND c.op_type IN ('commit', 'release', 'consume')
 		      )
 		  )`, before)
 	return err
+}
+
+func (s *postgresTreasuryStore) BatchWriteEvents(ctx context.Context, events []domain.PositionEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Build arrays for the batch INSERT using unnest.
+	ids := make([]uuid.UUID, len(events))
+	positionIDs := make([]uuid.UUID, len(events))
+	tenantIDs := make([]uuid.UUID, len(events))
+	eventTypes := make([]string, len(events))
+	amounts := make([]string, len(events))
+	balanceAfters := make([]string, len(events))
+	lockedAfters := make([]string, len(events))
+	referenceIDs := make([]uuid.UUID, len(events))
+	referenceTypes := make([]string, len(events))
+	idempotencyKeys := make([]string, len(events))
+	recordedAts := make([]time.Time, len(events))
+
+	for i, e := range events {
+		ids[i] = e.ID
+		positionIDs[i] = e.PositionID
+		tenantIDs[i] = e.TenantID
+		eventTypes[i] = string(e.EventType)
+		amounts[i] = e.Amount.String()
+		balanceAfters[i] = e.BalanceAfter.String()
+		lockedAfters[i] = e.LockedAfter.String()
+		referenceIDs[i] = e.ReferenceID
+		referenceTypes[i] = e.ReferenceType
+		idempotencyKeys[i] = e.IdempotencyKey
+		recordedAts[i] = e.RecordedAt
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO position_events (
+			id, position_id, tenant_id, event_type, amount,
+			balance_after, locked_after, reference_id, reference_type,
+			idempotency_key, recorded_at
+		)
+		SELECT
+			unnest($1::uuid[]),
+			unnest($2::uuid[]),
+			unnest($3::uuid[]),
+			unnest($4::text[]),
+			unnest($5::numeric[]),
+			unnest($6::numeric[]),
+			unnest($7::numeric[]),
+			unnest($8::uuid[]),
+			unnest($9::text[]),
+			unnest($10::text[]),
+			unnest($11::timestamptz[])
+		ON CONFLICT (idempotency_key, recorded_at) DO NOTHING`,
+		ids, positionIDs, tenantIDs, eventTypes, amounts,
+		balanceAfters, lockedAfters, referenceIDs, referenceTypes,
+		idempotencyKeys, recordedAts,
+	)
+	return err
+}
+
+func (s *postgresTreasuryStore) GetEventsAfter(ctx context.Context, positionID uuid.UUID, after time.Time) ([]domain.PositionEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, position_id, tenant_id, event_type, amount,
+		       balance_after, locked_after, reference_id, reference_type,
+		       idempotency_key, recorded_at
+		FROM position_events
+		WHERE position_id = $1 AND recorded_at > $2
+		ORDER BY recorded_at ASC`, positionID, after)
+	if err != nil {
+		return nil, fmt.Errorf("settla-treasury: loading events after %v for position %s: %w", after, positionID, err)
+	}
+	defer rows.Close()
+
+	var events []domain.PositionEvent
+	for rows.Next() {
+		var e domain.PositionEvent
+		var eventType, amount, balanceAfter, lockedAfter string
+		if err := rows.Scan(
+			&e.ID, &e.PositionID, &e.TenantID, &eventType, &amount,
+			&balanceAfter, &lockedAfter, &e.ReferenceID, &e.ReferenceType,
+			&e.IdempotencyKey, &e.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		e.EventType = domain.PositionEventType(eventType)
+		e.Amount, _ = decimal.NewFromString(amount)
+		e.BalanceAfter, _ = decimal.NewFromString(balanceAfter)
+		e.LockedAfter, _ = decimal.NewFromString(lockedAfter)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+func (s *postgresTreasuryStore) GetPositionEventHistory(ctx context.Context, tenantID, positionID uuid.UUID, from, to time.Time, limit, offset int32) ([]domain.PositionEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, position_id, tenant_id, event_type, amount,
+		       balance_after, locked_after, reference_id, reference_type,
+		       idempotency_key, recorded_at
+		FROM position_events
+		WHERE tenant_id = $1 AND position_id = $2
+		  AND recorded_at >= $3 AND recorded_at <= $4
+		ORDER BY recorded_at DESC
+		LIMIT $5 OFFSET $6`,
+		tenantID, positionID, from, to, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("settla-treasury: loading event history for position %s: %w", positionID, err)
+	}
+	defer rows.Close()
+
+	var events []domain.PositionEvent
+	for rows.Next() {
+		var e domain.PositionEvent
+		var eventType, amount, balanceAfter, lockedAfter string
+		if err := rows.Scan(
+			&e.ID, &e.PositionID, &e.TenantID, &eventType, &amount,
+			&balanceAfter, &lockedAfter, &e.ReferenceID, &e.ReferenceType,
+			&e.IdempotencyKey, &e.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		e.EventType = domain.PositionEventType(eventType)
+		e.Amount, _ = decimal.NewFromString(amount)
+		e.BalanceAfter, _ = decimal.NewFromString(balanceAfter)
+		e.LockedAfter, _ = decimal.NewFromString(lockedAfter)
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 // ── Conversion helpers ──────────────────────────────────────────────────────
