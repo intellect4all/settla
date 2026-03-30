@@ -1,0 +1,12 @@
+---
+title: "Update Tenant Status"
+api: "POST /v1/ops/tenants/{id}/status"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Update a tenant's operational status. Valid statuses: `ACTIVE`, `SUSPENDED`, `ONBOARDING`.
+
+Suspending a tenant immediately blocks all API access and in-flight transfers will complete but no new ones can be created.

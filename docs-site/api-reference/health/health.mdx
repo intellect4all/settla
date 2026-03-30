@@ -1,0 +1,8 @@
+---
+title: "Health Check"
+openapi: "GET /health"
+---
+
+Simple liveness probe. Returns `200 OK` if the gateway process is running. No authentication required.
+
+Use this for load balancer health checks and container orchestration liveness probes.

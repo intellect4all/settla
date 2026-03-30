@@ -1,0 +1,20 @@
+---
+title: "Readiness Check"
+openapi: "GET /ready"
+---
+
+Readiness probe that verifies the gateway can serve traffic. Checks connectivity to upstream dependencies (gRPC backend, Redis cache). No authentication required.
+
+Returns `200` with `status: "ok"` when all checks pass, or `503` with `status: "not_ready"` and details of which checks failed.
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "grpc": "ok",
+    "redis": "ok"
+  }
+}
+```
+
+Use this for Kubernetes readiness probes to remove unhealthy instances from the service mesh.

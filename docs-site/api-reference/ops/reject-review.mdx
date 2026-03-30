@@ -1,0 +1,10 @@
+---
+title: "Reject Review"
+api: "POST /v1/ops/manual-reviews/{id}/reject"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Reject a manually reviewed transfer, triggering the compensation/refund flow.

@@ -1,0 +1,11 @@
+---
+title: "Fee Analytics"
+openapi: "GET /v1/analytics/fees"
+---
+
+Get fee analytics broken down by currency corridor. Shows on-ramp, off-ramp, and network fees separately for full transparency.
+
+```bash
+curl "https://sandbox.settla.io/v1/analytics/fees?period=30d" \
+  -H "Authorization: Bearer $API_KEY"
+```

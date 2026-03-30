@@ -1,0 +1,10 @@
+---
+title: "Run Reconciliation"
+api: "POST /v1/ops/reconciliation/run"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Trigger an ad-hoc reconciliation run. Executes all 6 consistency checks: treasury-ledger balance, transfer state, outbox health, provider tx, daily volume, and settlement fees.

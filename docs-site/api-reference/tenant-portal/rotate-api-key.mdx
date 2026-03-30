@@ -1,0 +1,13 @@
+---
+title: "Rotate API Key"
+openapi: "POST /v1/me/api-keys/{keyId}/rotate"
+---
+
+Rotate an API key — revokes the old key and generates a new one in a single atomic operation. The new full key is returned in the response.
+
+Use this for periodic key rotation or if you suspect a key has been compromised.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/me/api-keys/KEY_ID/rotate \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```

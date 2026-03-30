@@ -1,0 +1,19 @@
+---
+title: "List Webhook Deliveries"
+openapi: "GET /v1/me/webhooks/deliveries"
+---
+
+List webhook delivery attempts for your tenant. Filter by status or event type to find failed deliveries.
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Queued for delivery |
+| `delivered` | Successfully delivered (2xx response) |
+| `failed` | All retry attempts exhausted |
+| `dead_letter` | Moved to dead letter queue |
+
+```bash
+# View failed deliveries
+curl "https://sandbox.settla.io/v1/me/webhooks/deliveries?status=failed&limit=20" \
+  -H "Authorization: Bearer $API_KEY"
+```

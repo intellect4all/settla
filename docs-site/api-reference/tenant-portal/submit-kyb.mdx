@@ -1,0 +1,17 @@
+---
+title: "Submit KYB"
+openapi: "POST /v1/me/kyb"
+---
+
+Submit Know Your Business (KYB) verification documentation. Required before your tenant can process transfers.
+
+## Business Types
+
+| Type | Description |
+|------|-------------|
+| `fintech` | Licensed fintech / payment company |
+| `bank` | Licensed bank or banking institution |
+| `payment_processor` | Payment processor / PSP |
+| `other` | Other financial services |
+
+After submission, your KYB status changes to `IN_REVIEW`. A Settla operations team member will verify the information and either approve (`VERIFIED`) or reject (`REJECTED`) the application.

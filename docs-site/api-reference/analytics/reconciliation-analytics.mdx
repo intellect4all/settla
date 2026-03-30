@@ -1,0 +1,13 @@
+---
+title: "Reconciliation Analytics"
+openapi: "GET /v1/analytics/reconciliation"
+---
+
+Get a summary of automated reconciliation runs. Settla runs 6 consistency checks:
+
+1. **Treasury-ledger balance**: Treasury positions match ledger balances
+2. **Transfer state**: No transfers stuck in non-terminal states
+3. **Outbox health**: No unpublished outbox entries older than threshold
+4. **Provider tx**: Provider transactions match transfer records
+5. **Daily volume**: Actual volume matches expected range
+6. **Settlement fees**: Collected fees match fee schedule calculations

@@ -1,0 +1,24 @@
+---
+title: "Create Export"
+openapi: "POST /v1/analytics/export"
+---
+
+Create an asynchronous data export job. The export runs in the background and produces a downloadable file (CSV by default).
+
+## Export Types
+
+| Type | Description |
+|------|-------------|
+| `transfers` | All transfers with full details |
+| `fees` | Fee breakdown by transfer |
+| `deposits` | Crypto and bank deposit sessions |
+| `settlements` | Net settlement reports |
+
+Poll the [Get Export Job](/api-reference/analytics/get-export-job) endpoint to check when the export is ready.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/analytics/export \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"export_type": "transfers", "period": "30d", "format": "csv"}'
+```

@@ -1,0 +1,24 @@
+---
+title: "Create API Key"
+openapi: "POST /v1/me/api-keys"
+---
+
+Generate a new API key for your tenant. The full key is returned **only once** in this response — store it securely.
+
+## Environments
+
+| Environment | Prefix | Usage |
+|-------------|--------|-------|
+| `live` | `sk_live_` | Production transactions |
+| `test` | `sk_test_` | Sandbox testing |
+
+<Warning>
+The full API key is shown only in this response. If lost, use [Rotate API Key](/api-reference/tenant-portal/rotate-api-key) to generate a replacement.
+</Warning>
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/me/api-keys \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Production Backend", "environment": "live"}'
+```

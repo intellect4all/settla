@@ -1,0 +1,16 @@
+---
+title: "Update Webhook Config"
+openapi: "PUT /v1/me/webhooks"
+---
+
+Update your webhook endpoint URL and event subscriptions. See [Webhooks Guide](/guides/webhooks) for setup instructions and signature verification code.
+
+```bash
+curl -X PUT https://sandbox.settla.io/v1/me/webhooks \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-app.com/webhooks/settla",
+    "events": ["transfer.completed", "transfer.failed", "deposit.confirmed"]
+  }'
+```

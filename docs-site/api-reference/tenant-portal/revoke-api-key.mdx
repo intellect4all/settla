@@ -1,0 +1,12 @@
+---
+title: "Revoke API Key"
+openapi: "DELETE /v1/me/api-keys/{keyId}"
+---
+
+Permanently revoke an API key. The key will immediately stop working across all Settla instances (revocation propagates via Redis pub/sub within seconds).
+
+Returns `204 No Content` on success.
+
+<Warning>
+This action is irreversible. Any systems using this key will lose access immediately.
+</Warning>

@@ -1,0 +1,11 @@
+---
+title: "Deposit Analytics"
+openapi: "GET /v1/analytics/deposits"
+---
+
+Get deposit analytics covering both crypto and bank deposit channels. Includes session counts, completion rates, fee totals, and net amounts credited.
+
+```bash
+curl "https://sandbox.settla.io/v1/analytics/deposits?period=30d" \
+  -H "Authorization: Bearer $API_KEY"
+```

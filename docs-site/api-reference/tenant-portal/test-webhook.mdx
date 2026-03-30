@@ -1,0 +1,11 @@
+---
+title: "Test Webhook"
+openapi: "POST /v1/me/webhooks/test"
+---
+
+Send a test `test.ping` event to your configured webhook URL. Use this to verify your endpoint is reachable and signature verification is working correctly.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/me/webhooks/test \
+  -H "Authorization: Bearer $API_KEY"
+```

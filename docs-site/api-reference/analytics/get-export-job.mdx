@@ -1,0 +1,8 @@
+---
+title: "Get Export Job"
+openapi: "GET /v1/analytics/export/{jobId}"
+---
+
+Check the status of an export job. When `status` is `completed`, the `download_url` field contains a signed URL to download the exported file.
+
+Download URLs expire after 1 hour. Request a new export if the URL has expired.

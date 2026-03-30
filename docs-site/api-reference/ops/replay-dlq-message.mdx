@@ -1,0 +1,10 @@
+---
+title: "Replay DLQ Message"
+api: "POST /v1/ops/dlq/messages/{id}/replay"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Replay a dead-lettered message by re-publishing it to the original stream. The message will be processed by the appropriate worker with a fresh retry count.

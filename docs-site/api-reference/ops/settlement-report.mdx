@@ -1,0 +1,10 @@
+---
+title: "Settlement Report"
+api: "GET /v1/ops/settlements/report"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Get the settlement report showing net positions across all tenants. The daily settlement run (00:30 UTC) reduces N transfers into 1 net position per currency pair per tenant.

@@ -1,0 +1,12 @@
+---
+title: "DLQ Statistics"
+api: "GET /v1/ops/dlq/stats"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Get dead letter queue statistics. Shows the count of messages that exhausted retries across all worker streams.
+
+A non-zero DLQ count indicates events that need manual investigation or replay.

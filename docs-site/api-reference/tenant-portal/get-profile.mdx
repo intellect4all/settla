@@ -1,0 +1,12 @@
+---
+title: "Get Tenant Profile"
+openapi: "GET /v1/me"
+---
+
+Retrieve your tenant's full profile including fee schedule, limits, KYB status, and configuration. This is the primary endpoint for the tenant self-service portal.
+
+The response includes:
+- **Fee schedule**: On-ramp/off-ramp basis points, min/max fees
+- **Limits**: Daily USD limit, per-transfer limit, max pending transfers
+- **KYB status**: Current verification state
+- **Crypto/bank config**: Enabled features and supported chains/currencies

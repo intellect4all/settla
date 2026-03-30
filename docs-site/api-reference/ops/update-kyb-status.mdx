@@ -1,0 +1,12 @@
+---
+title: "Update KYB Status"
+api: "POST /v1/ops/tenants/{id}/kyb"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Update a tenant's KYB verification status. Valid statuses: `PENDING`, `IN_REVIEW`, `VERIFIED`, `REJECTED`.
+
+Setting status to `VERIFIED` (combined with `ACTIVE` tenant status) enables the tenant to process transfers.

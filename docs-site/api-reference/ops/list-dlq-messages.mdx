@@ -1,0 +1,10 @@
+---
+title: "List DLQ Messages"
+api: "GET /v1/ops/dlq/messages"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+List messages in the dead letter queue. Each message includes the original event data, failure reason, and retry count.

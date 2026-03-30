@@ -1,0 +1,17 @@
+---
+title: "Update Tenant Limits"
+api: "POST /v1/ops/tenants/{id}/limits"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Update a tenant's transfer limits.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/ops/tenants/TENANT_ID/limits \
+  -H "X-Ops-Api-Key: $OPS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"daily_limit_usd": "1000000", "per_transfer_limit": "100000"}'
+```

@@ -1,0 +1,8 @@
+---
+title: "List API Keys"
+openapi: "GET /v1/me/api-keys"
+---
+
+List all API keys for your tenant. Keys are returned with masked values (only the prefix is visible, e.g., `sk_live_kora...`).
+
+The full key value is only shown once at creation time. If you lose a key, rotate it to get a new one.

@@ -1,0 +1,16 @@
+---
+title: "Update Tenant Profile"
+openapi: "PUT /v1/me"
+---
+
+Update your tenant profile settings. Currently supports updating the webhook URL and settlement model.
+
+```bash
+curl -X PUT https://sandbox.settla.io/v1/me \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhook_url": "https://your-app.com/webhooks/settla",
+    "settlement_model": "PREFUNDED"
+  }'
+```

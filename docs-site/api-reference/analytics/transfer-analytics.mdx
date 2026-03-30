@@ -1,0 +1,26 @@
+---
+title: "Transfer Analytics"
+openapi: "GET /v1/analytics/transfers"
+---
+
+Get aggregate transfer analytics for your tenant over a specified period. Includes corridor breakdown, status distribution, volume totals, and latency percentiles.
+
+## Periods
+
+| Value | Description |
+|-------|-------------|
+| `7d` | Last 7 days |
+| `30d` | Last 30 days (default) |
+| `90d` | Last 90 days |
+| `all` | All time |
+
+## Response Highlights
+
+- **corridors**: Transfer count and volume grouped by source→dest currency pair
+- **statuses**: Count of transfers in each terminal status
+- **p50_ms / p90_ms / p95_ms / p99_ms**: End-to-end latency percentiles (creation to completion)
+
+```bash
+curl "https://sandbox.settla.io/v1/analytics/transfers?period=30d" \
+  -H "Authorization: Bearer $API_KEY"
+```

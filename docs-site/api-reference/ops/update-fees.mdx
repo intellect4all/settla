@@ -1,0 +1,22 @@
+---
+title: "Update Tenant Fees"
+api: "POST /v1/ops/tenants/{id}/fees"
+---
+
+<Warning>
+This is an internal ops endpoint. Requires `X-Ops-Api-Key` header authentication.
+</Warning>
+
+Update a tenant's fee schedule. Fees are in basis points (1 bps = 0.01%).
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/ops/tenants/TENANT_ID/fees \
+  -H "X-Ops-Api-Key: $OPS_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "on_ramp_bps": 40,
+    "off_ramp_bps": 35,
+    "min_fee_usd": "0.50",
+    "max_fee_usd": "50.00"
+  }'
+```
