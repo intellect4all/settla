@@ -1,4 +1,21 @@
 ---
 title: "Receive Provider Webhook"
-api: "POST /webhooks/providers/{providerId}"
+openapi: "POST /webhooks/providers/{providerId}"
 ---
+
+This endpoint receives inbound webhooks from payment providers (on-ramp/off-ramp partners). It is NOT called by Settla tenants — it's the callback URL given to external payment providers.
+
+## Security
+
+- **HMAC-SHA256 signature verification** via `x-webhook-signature` header
+- **Timestamp validation**: rejects events older than 5 minutes (replay protection)
+- **Idempotency**: SHA-256 of the request body used for deduplication (72-hour window)
+- **Rate limiting**: Global, per-IP, and per-provider rate limits
+
+## Processing
+
+Inbound webhooks are processed asynchronously:
+1. Signature verified → 200 returned immediately
+2. Payload published to NATS `SETTLA_PROVIDER_WEBHOOKS` stream
+3. `InboundWebhookWorker` normalizes the provider-specific format
+4. Normalized event triggers the appropriate engine action

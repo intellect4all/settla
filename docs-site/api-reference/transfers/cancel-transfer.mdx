@@ -1,4 +1,12 @@
 ---
 title: "Cancel Transfer"
-api: "POST /v1/transfers/{transferId}/cancel"
+openapi: "POST /v1/transfers/{transferId}/cancel"
 ---
+
+Cancel a transfer that hasn't progressed past the initial states. Cancellation is only possible when the transfer is in `CREATED` or `FUNDED` status.
+
+Once a transfer enters `ON_RAMPING` or later states, it cannot be cancelled because external provider actions have begun. In those cases, wait for completion or failure — the system handles compensation automatically if needed.
+
+<Warning>
+Cancellation releases any treasury reservation immediately. The idempotency key remains consumed — you cannot reuse it for a new transfer.
+</Warning>

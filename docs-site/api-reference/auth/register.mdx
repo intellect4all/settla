@@ -1,4 +1,16 @@
 ---
 title: "Register"
-api: "POST /v1/auth/register"
+openapi: "POST /v1/auth/register"
 ---
+
+Register a new tenant account. This creates your organization in Settla and returns credentials for the tenant portal.
+
+After registration, you'll need to:
+1. Verify your email address
+2. Submit KYB (Know Your Business) documentation
+3. Wait for KYB approval
+4. Generate API keys
+
+<Note>
+Registration creates a portal user account. API keys for programmatic access are generated separately via the [Create API Key](/api-reference/tenant-portal/create-api-key) endpoint after KYB approval.
+</Note>

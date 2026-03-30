@@ -1,4 +1,21 @@
 ---
 title: "Get Transfer Events"
-api: "GET /v1/transfers/{transferId}/events"
+openapi: "GET /v1/transfers/{transferId}/events"
 ---
+
+Retrieve the complete event history for a transfer. Events represent state transitions and include timestamps, provider references, and metadata.
+
+Use events to build an audit trail or display a detailed transfer timeline to your users.
+
+## Example Timeline
+
+A successful GBP→NGN transfer produces events like:
+
+| Time | From | To | Details |
+|------|------|-----|---------|
+| T+0s | — | CREATED | Transfer submitted |
+| T+1s | CREATED | FUNDED | Treasury reserved GBP 1,000 |
+| T+2s | FUNDED | ON_RAMPING | On-ramp started via provider |
+| T+8s | ON_RAMPING | SETTLING | USDT sent on Tron |
+| T+12s | SETTLING | OFF_RAMPING | Off-ramp started |
+| T+18s | OFF_RAMPING | COMPLETED | NGN 520,000 delivered |

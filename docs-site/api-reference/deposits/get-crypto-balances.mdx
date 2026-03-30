@@ -1,4 +1,13 @@
 ---
 title: "Get Crypto Balances"
-api: "GET /v1/deposits/balance"
+openapi: "GET /v1/deposits/balance"
 ---
+
+Get your tenant's current crypto balances across all chains and tokens. Includes a USD valuation for each balance and a total portfolio value.
+
+This reflects crypto held via the `HOLD` settlement preference or pending conversion.
+
+```bash
+curl https://sandbox.settla.io/v1/deposits/balance \
+  -H "Authorization: Bearer $API_KEY"
+```

@@ -1,4 +1,25 @@
 ---
 title: "List Transfers"
-api: "GET /v1/transfers"
+openapi: "GET /v1/transfers"
 ---
+
+List transfers for your tenant with cursor-based pagination. Results are ordered by creation time (newest first).
+
+## Filtering
+
+- **status**: Filter by exact status match (e.g., `COMPLETED`, `FAILED`)
+- **search**: Substring match on transfer ID, external reference, or recipient name
+
+## Pagination
+
+This endpoint uses cursor-based pagination via `page_token`. The first request omits the token; subsequent requests pass the `next_page_token` from the previous response.
+
+```bash
+# First page
+curl "https://sandbox.settla.io/v1/transfers?page_size=50" \
+  -H "Authorization: Bearer $API_KEY"
+
+# Next page
+curl "https://sandbox.settla.io/v1/transfers?page_size=50&page_token=eyJ..." \
+  -H "Authorization: Bearer $API_KEY"
+```

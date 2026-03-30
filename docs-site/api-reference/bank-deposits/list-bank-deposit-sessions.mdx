@@ -1,4 +1,11 @@
 ---
 title: "List Bank Deposit Sessions"
-api: "GET /v1/bank-deposits"
+openapi: "GET /v1/bank-deposits"
 ---
+
+List all bank deposit sessions for your tenant with offset-based pagination.
+
+```bash
+curl "https://sandbox.settla.io/v1/bank-deposits?limit=50&offset=0" \
+  -H "Authorization: Bearer $API_KEY"
+```

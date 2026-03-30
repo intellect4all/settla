@@ -1,4 +1,16 @@
 ---
 title: "Get Position"
-api: "GET /v1/treasury/positions/{currency}/{location}"
+openapi: "GET /v1/treasury/positions/{currency}/{location}"
 ---
+
+Get a specific treasury position by currency and location.
+
+Common position locations:
+- `bank:clearing` — Fiat clearing account
+- `crypto:tron:usdt` — USDT on Tron network
+- `crypto:ethereum:usdc` — USDC on Ethereum
+
+```bash
+curl https://sandbox.settla.io/v1/treasury/positions/GBP/bank:clearing \
+  -H "Authorization: Bearer $API_KEY"
+```

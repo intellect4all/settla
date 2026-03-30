@@ -1,4 +1,10 @@
 ---
 title: "Get Liquidity Report"
-api: "GET /v1/treasury/liquidity"
+openapi: "GET /v1/treasury/liquidity"
 ---
+
+Get a comprehensive liquidity report for your tenant. Includes all positions, total available balances by currency, and alert positions that are below their minimum balance threshold.
+
+Use this to monitor treasury health and trigger top-ups before positions run dry.
+
+The `alert_positions` array contains positions where `available < min_balance`. Monitor these to avoid `INSUFFICIENT_FUNDS` errors on transfers.

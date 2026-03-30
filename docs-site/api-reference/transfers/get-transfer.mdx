@@ -1,4 +1,12 @@
 ---
 title: "Get Transfer"
-api: "GET /v1/transfers/{transferId}"
+openapi: "GET /v1/transfers/{transferId}"
 ---
+
+Retrieve the current state of a transfer by its ID. Use this endpoint to poll transfer status, or use [webhooks](/guides/webhooks) for real-time updates.
+
+The response includes the full transfer object with fees, routing details, blockchain transactions (once settlement begins), and all timestamps.
+
+<Note>
+For production integrations, prefer webhooks over polling. If you must poll, use exponential backoff starting at 2 seconds.
+</Note>

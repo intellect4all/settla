@@ -1,4 +1,8 @@
 ---
 title: "Get Quote"
-api: "GET /v1/quotes/{quoteId}"
+openapi: "GET /v1/quotes/{quoteId}"
 ---
+
+Retrieve a previously created quote by its ID. Use this to check if a quote is still valid before creating a transfer.
+
+The `expires_at` field indicates when the quote becomes invalid. After expiry, the quote can still be retrieved for reference but cannot be used to create a transfer.

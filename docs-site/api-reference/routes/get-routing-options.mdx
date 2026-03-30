@@ -1,4 +1,21 @@
 ---
 title: "Get Routing Options"
-api: "POST /v1/routes"
+openapi: "POST /v1/routes"
 ---
+
+Explore all available routes for a currency corridor. Unlike quotes (which return the single best route), this endpoint returns all viable options with detailed scoring.
+
+Each route includes a composite score and breakdown across four dimensions:
+- **Cost** (40% weight): Lower fees = higher score
+- **Speed** (30% weight): Faster settlement = higher score
+- **Liquidity** (20% weight): Higher available liquidity = higher score
+- **Reliability** (10% weight): Higher historical success rate = higher score
+
+Use this endpoint for route analysis or to let your users choose their preferred route before creating a transfer.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/routes \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"from_currency": "GBP", "to_currency": "NGN", "amount": "5000"}'
+```

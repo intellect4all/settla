@@ -1,4 +1,10 @@
 ---
 title: "Cancel Deposit Session"
-api: "POST /v1/deposits/{id}/cancel"
+openapi: "POST /v1/deposits/{id}/cancel"
 ---
+
+Cancel a deposit session that hasn't received payment yet. Only sessions in `PENDING_PAYMENT` status can be cancelled.
+
+<Note>
+If a payment arrives after cancellation, Settla will still detect and process it. The session transitions from `CANCELLED` → `DETECTED` to prevent lost funds.
+</Note>

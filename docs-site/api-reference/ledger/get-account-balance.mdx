@@ -1,4 +1,12 @@
 ---
 title: "Get Account Balance"
-api: "GET /v1/accounts/{code}/balance"
+openapi: "GET /v1/ledger/balance/{accountCode}"
 ---
+
+Get the current balance of a specific ledger account. Balances are sourced from TigerBeetle (write authority) and synced to Postgres for querying.
+
+```bash
+# Check your GBP clearing account balance
+curl "https://sandbox.settla.io/v1/ledger/balance/tenant:korapay:assets:bank:gbp:clearing" \
+  -H "Authorization: Bearer $API_KEY"
+```

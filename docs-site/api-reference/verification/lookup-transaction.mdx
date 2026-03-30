@@ -1,4 +1,22 @@
 ---
-title: "Look Up Transaction"
-api: "GET /v1/transactions/lookup"
+title: "Lookup Transaction"
+openapi: "GET /v1/transactions/lookup"
 ---
+
+Look up a transaction by reference, external ID, or blockchain transaction hash. Provide exactly one of the following query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Settla transaction UUID |
+| `reference` | Your external reference |
+| `tx_hash` | Blockchain transaction hash (optionally with `chain` filter) |
+
+```bash
+# Lookup by your reference
+curl "https://sandbox.settla.io/v1/transactions/lookup?reference=INV-2025-0042" \
+  -H "Authorization: Bearer $API_KEY"
+
+# Lookup by blockchain tx hash
+curl "https://sandbox.settla.io/v1/transactions/lookup?tx_hash=abc123...&chain=tron" \
+  -H "Authorization: Bearer $API_KEY"
+```

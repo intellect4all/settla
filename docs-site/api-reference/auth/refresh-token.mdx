@@ -1,4 +1,14 @@
 ---
 title: "Refresh Token"
-api: "POST /v1/auth/refresh"
+openapi: "POST /v1/auth/refresh"
 ---
+
+Exchange a valid refresh token for a new access token. Use this when your access token expires (after 15 minutes) without requiring the user to log in again.
+
+The refresh token itself is not rotated -- the same refresh token can be used multiple times until it expires (7 days).
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "eyJhbGciOi..."}'
+```

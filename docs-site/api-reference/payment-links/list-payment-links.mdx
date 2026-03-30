@@ -1,4 +1,11 @@
 ---
 title: "List Payment Links"
-api: "GET /v1/payment-links"
+openapi: "GET /v1/payment-links"
 ---
+
+List all payment links for your tenant with pagination.
+
+```bash
+curl "https://sandbox.settla.io/v1/payment-links?limit=20&offset=0" \
+  -H "Authorization: Bearer $API_KEY"
+```

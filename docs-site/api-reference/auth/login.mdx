@@ -1,4 +1,19 @@
 ---
 title: "Login"
-api: "POST /v1/auth/login"
+openapi: "POST /v1/auth/login"
 ---
+
+Authenticate with your portal credentials to receive JWT tokens. The access token is used for portal API calls; the refresh token is used to obtain new access tokens.
+
+- **Access token**: Valid for 15 minutes
+- **Refresh token**: Valid for 7 days
+
+<Warning>
+This endpoint is rate-limited to 10 requests per minute and 100 requests per hour per IP address.
+</Warning>
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "api@korapay.com", "password": "SecureP@ss123"}'
+```

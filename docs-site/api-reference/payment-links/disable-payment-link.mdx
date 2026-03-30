@@ -1,4 +1,8 @@
 ---
 title: "Disable Payment Link"
-api: "DELETE /v1/payment-links/{id}"
+openapi: "DELETE /v1/payment-links/{id}"
 ---
+
+Disable a payment link, preventing further redemptions. This is a soft-delete — the link still exists and can be retrieved, but cannot be redeemed.
+
+Returns `204 No Content` on success.

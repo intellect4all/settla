@@ -1,4 +1,11 @@
 ---
 title: "List Deposit Sessions"
-api: "GET /v1/deposits"
+openapi: "GET /v1/deposits"
 ---
+
+List all crypto deposit sessions for your tenant with offset-based pagination. Results are ordered by creation time (newest first).
+
+```bash
+curl "https://sandbox.settla.io/v1/deposits?limit=50&offset=0" \
+  -H "Authorization: Bearer $API_KEY"
+```

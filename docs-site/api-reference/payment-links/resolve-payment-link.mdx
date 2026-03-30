@@ -1,4 +1,12 @@
 ---
 title: "Resolve Payment Link"
-api: "GET /v1/payment-links/resolve/{code}"
+openapi: "GET /v1/payment-links/resolve/{code}"
 ---
+
+Resolve a payment link by its short code. This is a **public endpoint** — no authentication required.
+
+Use this to display payment details on a payment page before the customer initiates payment. Returns the link's amount, currency, chain, token, and description.
+
+```bash
+curl https://sandbox.settla.io/v1/payment-links/resolve/PAY-abc123
+```

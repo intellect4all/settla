@@ -1,4 +1,90 @@
 ---
 title: "Create Transfer"
-api: "POST /v1/transfers"
+openapi: "POST /v1/transfers"
 ---
+
+Create a new cross-border transfer. Settla will route it through the optimal stablecoin rail, handling on-ramp, blockchain settlement, and off-ramp automatically.
+
+## Key Behaviors
+
+- **Idempotency**: The `idempotency_key` ensures safe retries. If you send the same key twice with the same parameters, you get back the original transfer. If parameters differ, you get a `409 IDEMPOTENCY_CONFLICT` error. Keys are valid for 2 hours.
+- **Quote binding**: If you provide a `quote_id`, the transfer uses the quoted rate and route. Without it, Settla fetches a fresh quote at execution time. Quotes expire after 5 minutes.
+- **Recipient validation**: For GB recipients, provide either `sort_code` or `iban` (not both). For NG recipients, provide `account_number` and `bank_name`.
+- **Amount limits**: Minimum 0.01, maximum 10,000,000 in source currency. Per-transfer and daily limits apply based on your tenant configuration.
+
+<Warning>
+Always use string values for monetary amounts (e.g., `"1000.00"` not `1000`). This preserves decimal precision across all systems.
+</Warning>
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/transfers \
+  -H "Authorization: Bearer sk_test_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "ord-2025-001-gbp-ngn",
+    "external_ref": "INV-2025-0042",
+    "source_currency": "GBP",
+    "source_amount": "1000.00",
+    "dest_currency": "NGN",
+    "quote_id": "q-abc123-def456",
+    "sender": {
+      "name": "Korapay Ltd",
+      "email": "treasury@korapay.com",
+      "country": "GB"
+    },
+    "recipient": {
+      "name": "Adebayo Ogunlesi",
+      "account_number": "0123456789",
+      "bank_name": "GTBank",
+      "country": "NG"
+    }
+  }'
+```
+
+```javascript Node.js
+const transfer = await fetch("https://sandbox.settla.io/v1/transfers", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    idempotency_key: "ord-2025-001-gbp-ngn",
+    external_ref: "INV-2025-0042",
+    source_currency: "GBP",
+    source_amount: "1000.00",
+    dest_currency: "NGN",
+    recipient: {
+      name: "Adebayo Ogunlesi",
+      account_number: "0123456789",
+      bank_name: "GTBank",
+      country: "NG",
+    },
+  }),
+}).then(r => r.json());
+```
+
+```python Python
+import requests
+
+transfer = requests.post(
+    "https://sandbox.settla.io/v1/transfers",
+    headers={"Authorization": "Bearer sk_test_your_api_key"},
+    json={
+        "idempotency_key": "ord-2025-001-gbp-ngn",
+        "source_currency": "GBP",
+        "source_amount": "1000.00",
+        "dest_currency": "NGN",
+        "recipient": {
+            "name": "Adebayo Ogunlesi",
+            "account_number": "0123456789",
+            "bank_name": "GTBank",
+            "country": "NG",
+        },
+    },
+).json()
+```
+
+</CodeGroup>

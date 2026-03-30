@@ -1,4 +1,10 @@
 ---
 title: "Get Deposit Public Status"
-api: "GET /v1/deposits/{id}/public-status"
+openapi: "GET /v1/deposits/{id}/public-status"
 ---
+
+Get a limited view of a deposit session's status. This endpoint requires no authentication and returns only the fields needed for a payment page.
+
+Use this to build public-facing payment status pages where the payer can check if their deposit has been received and confirmed.
+
+**Returned fields**: `id`, `status`, `chain`, `token`, `deposit_address`, `expected_amount`, `received_amount`, `expires_at`

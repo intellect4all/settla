@@ -1,4 +1,61 @@
 ---
 title: "Create Deposit Session"
-api: "POST /v1/deposits"
+openapi: "POST /v1/deposits"
 ---
+
+Create a new crypto deposit session. Settla generates a unique deposit address on the specified blockchain and monitors it for incoming payments.
+
+## Settlement Preferences
+
+| Preference | Behavior |
+|-----------|----------|
+| `AUTO_CONVERT` | Automatically converts received crypto to fiat and credits your treasury |
+| `HOLD` | Holds crypto in your balance without conversion |
+| `THRESHOLD` | Accumulates deposits until a threshold, then converts in bulk |
+
+## Session Lifecycle
+
+1. Session created → `PENDING_PAYMENT` (deposit address assigned)
+2. On-chain payment detected → `DETECTED`
+3. Required confirmations reached → `CONFIRMED`
+4. Ledger credit posted → `CREDITED`
+5. If AUTO_CONVERT: conversion executed → `SETTLED`
+6. If HOLD: → `HELD` (terminal)
+
+Sessions expire after `ttl_seconds` (default varies by chain). Expired sessions can still detect late payments.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/deposits \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chain": "tron",
+    "token": "USDT",
+    "expected_amount": "1000.00",
+    "settlement_pref": "AUTO_CONVERT",
+    "idempotency_key": "deposit-inv-2025-001"
+  }'
+```
+
+```javascript Node.js
+const session = await fetch("https://sandbox.settla.io/v1/deposits", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    chain: "tron",
+    token: "USDT",
+    expected_amount: "1000.00",
+    settlement_pref: "AUTO_CONVERT",
+    idempotency_key: "deposit-inv-2025-001",
+  }),
+}).then(r => r.json());
+
+console.log(`Send ${session.expected_amount} ${session.token} to: ${session.deposit_address}`);
+```
+
+</CodeGroup>

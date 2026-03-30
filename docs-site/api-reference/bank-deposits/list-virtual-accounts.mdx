@@ -1,4 +1,14 @@
 ---
 title: "List Virtual Accounts"
-api: "GET /v1/bank-deposits/accounts"
+openapi: "GET /v1/bank-deposits/accounts"
 ---
+
+List virtual bank accounts assigned to your tenant. Filter by currency or account type.
+
+Permanent accounts persist across sessions. Temporary accounts are shown while their associated session is active.
+
+```bash
+# List all GBP virtual accounts
+curl "https://sandbox.settla.io/v1/bank-deposits/accounts?currency=GBP&limit=20" \
+  -H "Authorization: Bearer $API_KEY"
+```

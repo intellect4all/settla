@@ -1,4 +1,13 @@
 ---
 title: "List Positions"
-api: "GET /v1/treasury/positions"
+openapi: "GET /v1/treasury/positions"
 ---
+
+List all treasury positions for your tenant. Each position represents a currency balance at a specific location (e.g., `bank:clearing`, `crypto:tron:usdt`).
+
+Positions show three balance components:
+- **balance**: Total funds in the position
+- **locked**: Funds committed to in-flight transfers
+- **available**: Funds available for new transfers (`balance - locked`)
+
+Treasury positions are updated in real-time via in-memory atomic operations, flushed to the database every 100ms.

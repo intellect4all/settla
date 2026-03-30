@@ -1,4 +1,17 @@
 ---
 title: "List Account Transactions"
-api: "GET /v1/accounts/{code}/transactions"
+openapi: "GET /v1/ledger/transactions"
 ---
+
+List journal entry lines for an account with optional date range filtering. Each line shows a debit or credit posting with its amount, currency, and the parent journal entry reference.
+
+Every transfer creates balanced journal entries. For a GBP→NGN transfer, you'll see:
+- **Debit** `tenant:korapay:assets:bank:gbp:clearing` — GBP leaves the clearing account
+- **Credit** `assets:crypto:usdt:tron` — USDT enters the stablecoin pool
+- **Debit** `assets:crypto:usdt:tron` — USDT leaves for off-ramp
+- **Credit** `tenant:korapay:liabilities:settlement:ngn` — NGN owed to recipient
+
+```bash
+curl "https://sandbox.settla.io/v1/ledger/transactions?account_code=tenant:korapay:assets:bank:gbp:clearing&page_size=50" \
+  -H "Authorization: Bearer $API_KEY"
+```

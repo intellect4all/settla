@@ -1,4 +1,8 @@
 ---
 title: "Verify Transaction"
-api: "GET /v1/transactions/verify/{id}"
+openapi: "GET /v1/transactions/verify/{id}"
 ---
+
+Verify a transaction by its ID. Returns the full transfer or deposit object. Use this endpoint to confirm a transaction exists and check its current state.
+
+The response includes a `type` field (`transfer` or `deposit`) to discriminate between object types.

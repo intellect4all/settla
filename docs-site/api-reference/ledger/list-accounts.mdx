@@ -1,4 +1,11 @@
 ---
 title: "List Accounts"
-api: "GET /v1/accounts"
+openapi: "GET /v1/ledger/accounts"
 ---
+
+List ledger accounts for your tenant. Accounts follow a hierarchical code structure:
+
+- **Tenant accounts**: `tenant:{slug}:assets:bank:gbp:clearing`
+- **System accounts**: `assets:crypto:usdt:tron` (no tenant prefix)
+
+Account types: `ASSET`, `LIABILITY`, `REVENUE`, `EXPENSE`. Every transaction posts balanced entries across these accounts (double-entry bookkeeping enforced by TigerBeetle).

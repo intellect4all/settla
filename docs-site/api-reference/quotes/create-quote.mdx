@@ -1,4 +1,60 @@
 ---
 title: "Create Quote"
-api: "POST /v1/quotes"
+openapi: "POST /v1/quotes"
 ---
+
+Get a real-time FX quote for a currency corridor. Quotes include the exchange rate, fee breakdown, optimal route, and a 5-minute expiry window.
+
+## How Quoting Works
+
+1. Settla evaluates all available routes for your corridor
+2. The smart router scores each route on cost (40%), speed (30%), liquidity (20%), and reliability (10%)
+3. The best route is selected and a firm quote is returned
+4. Use the `quote_id` when creating a transfer to lock in the rate
+
+## Caching
+
+Quotes are cached for 30 seconds using bucketed amounts:
+- Under 1,000: rounded to nearest 10
+- Under 10,000: rounded to nearest 100
+- Under 100,000: rounded to nearest 1,000
+- 100,000+: rounded to nearest 10,000
+
+This means requesting 1,005 GBP and 1,008 GBP will return the same cached quote.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/quotes \
+  -H "Authorization: Bearer sk_test_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_currency": "GBP",
+    "source_amount": "5000",
+    "dest_currency": "NGN",
+    "dest_country": "NG"
+  }'
+```
+
+```javascript Node.js
+const quote = await fetch("https://sandbox.settla.io/v1/quotes", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    source_currency: "GBP",
+    source_amount: "5000",
+    dest_currency: "NGN",
+  }),
+}).then(r => r.json());
+
+console.log(`Rate: ${quote.fx_rate}, Expires: ${quote.expires_at}`);
+```
+
+</CodeGroup>
+
+<Note>
+Quotes expire after 5 minutes. If you create a transfer with an expired `quote_id`, you'll receive a `422 QUOTE_EXPIRED` error.
+</Note>

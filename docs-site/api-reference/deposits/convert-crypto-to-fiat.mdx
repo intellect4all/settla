@@ -1,4 +1,15 @@
 ---
 title: "Convert Crypto to Fiat"
-api: "POST /v1/deposits/convert"
+openapi: "POST /v1/deposits/convert"
 ---
+
+Initiate conversion of held crypto to fiat. Use this when you have crypto balances from `HOLD` preference deposits and want to convert them.
+
+The conversion creates an internal transfer that settles through the standard stablecoin rail.
+
+```bash
+curl -X POST https://sandbox.settla.io/v1/deposits/convert \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"chain": "tron", "token": "USDT", "amount": "500.00"}'
+```

@@ -1,4 +1,35 @@
 ---
 title: "Create Payment Link"
-api: "POST /v1/payment-links"
+openapi: "POST /v1/payment-links"
 ---
+
+Create a shareable payment link for collecting crypto payments. Each link gets a unique short code that can be shared via URL, QR code, or embedded in invoices.
+
+When a customer redeems a link, Settla creates a deposit session with the link's configured parameters (amount, chain, token, settlement preference).
+
+## Use Limits
+
+Set `use_limit` to control how many times a link can be redeemed:
+- `1` — Single-use invoice link
+- `10` — Limited batch collection
+- Omit — Unlimited redemptions
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/payment-links \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": "50.00",
+    "currency": "USD",
+    "chain": "tron",
+    "token": "USDT",
+    "description": "Invoice #1234 - Consulting Services",
+    "use_limit": 1,
+    "settlement_pref": "AUTO_CONVERT",
+    "ttl_seconds": 3600
+  }'
+```
+
+</CodeGroup>

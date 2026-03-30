@@ -1,4 +1,12 @@
 ---
 title: "Redeem Payment Link"
-api: "POST /v1/payment-links/redeem/{code}"
+openapi: "POST /v1/payment-links/redeem/{code}"
 ---
+
+Redeem a payment link to create a deposit session. This is a **public endpoint** — no authentication required.
+
+Returns both the created deposit session (with deposit address) and the payment link details. The customer should send crypto to the `deposit_address` in the session response.
+
+<Note>
+Redemption fails if the link is disabled, expired, or has reached its use limit. Check the error code: `PAYMENT_LINK_DISABLED`, `PAYMENT_LINK_EXPIRED`, or `PAYMENT_LINK_EXHAUSTED`.
+</Note>

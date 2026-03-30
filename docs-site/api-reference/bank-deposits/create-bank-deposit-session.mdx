@@ -1,4 +1,63 @@
 ---
 title: "Create Bank Deposit Session"
-api: "POST /v1/bank-deposits"
+openapi: "POST /v1/bank-deposits"
 ---
+
+Create a new bank deposit session. Settla assigns a virtual bank account where your customer can send a fiat payment.
+
+## Account Types
+
+| Type | Behavior |
+|------|----------|
+| `PERMANENT` | Reusable virtual account assigned to your tenant. Same account details for repeat deposits. |
+| `TEMPORARY` | Single-use account for one deposit session. Released back to the pool after completion or expiry. |
+
+## Mismatch Handling
+
+When the received amount doesn't match `expected_amount`:
+
+| Policy | Under-payment | Over-payment |
+|--------|--------------|-------------|
+| `ACCEPT` | Credits received amount (minus fees) | Credits received amount (minus fees) |
+| `REJECT` | Session fails, refund initiated | Session fails, excess refunded |
+
+Set `min_amount` and `max_amount` to define your tolerance range.
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://sandbox.settla.io/v1/bank-deposits \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currency": "GBP",
+    "expected_amount": "5000.00",
+    "account_type": "TEMPORARY",
+    "mismatch_policy": "ACCEPT",
+    "settlement_pref": "HOLD",
+    "idempotency_key": "bank-dep-2025-001"
+  }'
+```
+
+```javascript Node.js
+const session = await fetch("https://sandbox.settla.io/v1/bank-deposits", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk_test_your_api_key",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    currency: "GBP",
+    expected_amount: "5000.00",
+    account_type: "TEMPORARY",
+    mismatch_policy: "ACCEPT",
+    idempotency_key: "bank-dep-2025-001",
+  }),
+}).then(r => r.json());
+
+console.log(`Send GBP ${session.expected_amount} to:`);
+console.log(`  Account: ${session.account_number}`);
+console.log(`  Sort Code: ${session.sort_code}`);
+```
+
+</CodeGroup>
