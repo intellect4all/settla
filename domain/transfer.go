@@ -112,7 +112,7 @@ func (f FeeBreakdown) ValidateWithSchedule(schedule FeeSchedule) error {
 // BlockchainTx records a single blockchain transaction associated with a transfer.
 type BlockchainTx struct {
 	Chain       CryptoChain // e.g. ChainTron, ChainEthereum
-	Type        string // "on_ramp", "off_ramp", "settlement"
+	Type        string      // "on_ramp", "off_ramp", "settlement"
 	TxHash      string
 	ExplorerURL string
 	Status      string // "pending", "confirmed", "failed"
@@ -188,7 +188,7 @@ func (t *Transfer) TransitionTo(target TransferStatus) (*TransferEvent, error) {
 	t.UpdatedAt = time.Now().UTC()
 
 	event := &TransferEvent{
-		ID:         uuid.New(),
+		ID:         uuid.Must(uuid.NewV7()),
 		TransferID: t.ID,
 		TenantID:   t.TenantID,
 		FromStatus: from,
