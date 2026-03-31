@@ -25,6 +25,8 @@ func NewLogger(service, version string) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 
+	handler = NewTraceLogHandler(handler)
+
 	return slog.New(handler).With(
 		"service", service,
 		"version", version,
