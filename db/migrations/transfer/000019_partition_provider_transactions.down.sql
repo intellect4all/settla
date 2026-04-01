@@ -1,3 +1,0 @@
-ALTER TABLE provider_transactions RENAME TO provider_transactions_partitioned;
-ALTER TABLE provider_transactions_old RENAME TO provider_transactions;
-DROP TABLE IF EXISTS provider_transactions_partitioned CASCADE;
