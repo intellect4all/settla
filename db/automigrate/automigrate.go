@@ -1,13 +1,14 @@
 package automigrate
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"log/slog"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
+	_ "github.com/lib/pq"
+	"github.com/pressly/goose/v3"
 )
 
 // DB identifies which bounded-context database to migrate.
@@ -35,31 +36,40 @@ func (d DB) String() string {
 // Run applies all pending up-migrations for the given database.
 // migrationFS should contain the .sql files at its root (already sub-dir'd).
 // dbURL must be a raw Postgres connection string (not PgBouncer) because
-// golang-migrate uses pg_advisory_lock which requires session-level state.
+// goose uses pg_advisory_lock which requires session-level state.
 func Run(db DB, dbURL string, migrationFS fs.FS, logger *slog.Logger) error {
-	src, err := iofs.New(migrationFS, ".")
+	sqlDB, err := sql.Open("postgres", dbURL)
 	if err != nil {
-		return fmt.Errorf("automigrate: iofs source for %s: %w", db, err)
+		return fmt.Errorf("automigrate: open %s: %w", db, err)
+	}
+	defer sqlDB.Close()
+
+	if err := sqlDB.PingContext(context.Background()); err != nil {
+		return fmt.Errorf("automigrate: ping %s: %w", db, err)
 	}
 
-	m, err := migrate.NewWithSourceInstance("iofs", src, dbURL)
+	// Configure goose to read migrations from the embedded FS.
+	goose.SetBaseFS(migrationFS)
+	defer goose.SetBaseFS(nil)
+
+	// Suppress goose's default logger — we log ourselves.
+	goose.SetLogger(goose.NopLogger())
+
+	currentVersion, err := goose.GetDBVersion(sqlDB)
 	if err != nil {
-		return fmt.Errorf("automigrate: create migrator for %s: %w", db, err)
+		currentVersion = 0
 	}
-	defer m.Close()
+	logger.Info("automigrate: current state", "db", db.String(), "version", currentVersion)
 
-	ver, dirty, _ := m.Version()
-	logger.Info("automigrate: current state", "db", db.String(), "version", ver, "dirty", dirty)
-
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := goose.Up(sqlDB, "."); err != nil {
 		return fmt.Errorf("automigrate: %s up: %w", db, err)
 	}
 
-	newVer, _, _ := m.Version()
-	if newVer != ver {
-		logger.Info("automigrate: applied migrations", "db", db.String(), "from", ver, "to", newVer)
+	newVersion, _ := goose.GetDBVersion(sqlDB)
+	if newVersion != currentVersion {
+		logger.Info("automigrate: applied migrations", "db", db.String(), "from", currentVersion, "to", newVersion)
 	} else {
-		logger.Info("automigrate: already up to date", "db", db.String(), "version", newVer)
+		logger.Info("automigrate: already up to date", "db", db.String(), "version", newVersion)
 	}
 
 	return nil
