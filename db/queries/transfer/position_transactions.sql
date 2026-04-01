@@ -21,6 +21,19 @@ WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListPositionTransactionsByTenantFirst :many
+SELECT * FROM position_transactions
+WHERE tenant_id = $1
+ORDER BY created_at DESC
+LIMIT $2;
+
+-- name: ListPositionTransactionsByTenantCursor :many
+SELECT * FROM position_transactions
+WHERE tenant_id = $1
+  AND created_at < @cursor_created_at
+ORDER BY created_at DESC
+LIMIT @page_size;
+
 -- name: ListPositionTransactionsByTenantAndStatus :many
 SELECT * FROM position_transactions
 WHERE tenant_id = $1 AND status = $2

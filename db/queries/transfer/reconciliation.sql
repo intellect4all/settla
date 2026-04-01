@@ -177,7 +177,7 @@ SELECT
     COALESCE(mr.resolution, '') AS resolution
 FROM manual_reviews mr
 LEFT JOIN tenants t ON t.id = mr.tenant_id
-LEFT JOIN transfers tr ON tr.id = mr.transfer_id
+LEFT JOIN transfers tr ON tr.id = mr.transfer_id AND tr.tenant_id = mr.tenant_id
 WHERE (sqlc.narg('filter_tenant_id')::uuid IS NULL OR mr.tenant_id = sqlc.narg('filter_tenant_id'))
   AND (sqlc.narg('filter_status')::text IS NULL OR mr.status = sqlc.narg('filter_status'))
 ORDER BY mr.created_at DESC

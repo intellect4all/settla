@@ -39,6 +39,23 @@ WHERE tenant_id = @tenant_id
 ORDER BY created_at ASC
 LIMIT @page_limit OFFSET @page_offset;
 
+-- name: ListVirtualAccountsByTenantFirst :many
+SELECT * FROM virtual_account_pool
+WHERE tenant_id = @tenant_id
+  AND (@currency::text = '' OR currency = @currency)
+  AND (@account_type::text = '' OR account_type = @account_type::virtual_account_type_enum)
+ORDER BY created_at ASC
+LIMIT @page_size;
+
+-- name: ListVirtualAccountsByTenantCursor :many
+SELECT * FROM virtual_account_pool
+WHERE tenant_id = @tenant_id
+  AND (@currency::text = '' OR currency = @currency)
+  AND (@account_type::text = '' OR account_type = @account_type::virtual_account_type_enum)
+  AND created_at > @cursor_created_at
+ORDER BY created_at ASC
+LIMIT @page_size;
+
 -- name: CountVirtualAccountsByTenant :one
 SELECT count(*) FROM virtual_account_pool
 WHERE tenant_id = @tenant_id

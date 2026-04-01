@@ -35,17 +35,34 @@ WHERE deposit_address = $1
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: ListDepositSessionsByTenant :many
+-- name: ListDepositSessionsByTenantFirst :many
+-- First page (no cursor): returns the most recent sessions.
 SELECT * FROM crypto_deposit_sessions
 WHERE tenant_id = $1
 ORDER BY created_at DESC
-LIMIT $2 OFFSET $3;
+LIMIT $2;
 
--- name: ListDepositSessionsByTenantAndStatus :many
+-- name: ListDepositSessionsByTenantCursor :many
+-- Subsequent pages: cursor-based pagination using created_at as the cursor.
+-- The caller decodes page_token into cursor_created_at.
+SELECT * FROM crypto_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at < @cursor_created_at
+ORDER BY created_at DESC
+LIMIT @page_size;
+
+-- name: ListDepositSessionsByTenantAndStatusFirst :many
 SELECT * FROM crypto_deposit_sessions
 WHERE tenant_id = $1 AND status = $2
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $4;
+LIMIT $3;
+
+-- name: ListDepositSessionsByTenantAndStatusCursor :many
+SELECT * FROM crypto_deposit_sessions
+WHERE tenant_id = $1 AND status = $2
+  AND created_at < @cursor_created_at
+ORDER BY created_at DESC
+LIMIT @page_size;
 
 -- name: UpdateDepositSessionStatus :exec
 UPDATE crypto_deposit_sessions

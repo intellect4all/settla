@@ -24,6 +24,19 @@ WHERE tenant_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListPaymentLinksByTenantFirst :many
+SELECT * FROM payment_links
+WHERE tenant_id = $1
+ORDER BY created_at DESC
+LIMIT $2;
+
+-- name: ListPaymentLinksByTenantCursor :many
+SELECT * FROM payment_links
+WHERE tenant_id = $1
+  AND created_at < @cursor_created_at
+ORDER BY created_at DESC
+LIMIT @page_size;
+
 -- name: CountPaymentLinksByTenant :one
 SELECT count(*) FROM payment_links
 WHERE tenant_id = $1;

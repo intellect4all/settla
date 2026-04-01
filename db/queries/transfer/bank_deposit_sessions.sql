@@ -26,11 +26,20 @@ WHERE account_number = $1 AND status = 'PENDING_PAYMENT'
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: ListBankDepositSessionsByTenant :many
+-- name: ListBankDepositSessionsByTenantFirst :many
+-- First page (no cursor): returns the most recent sessions.
 SELECT * FROM bank_deposit_sessions
 WHERE tenant_id = $1
 ORDER BY created_at DESC
-LIMIT $2 OFFSET $3;
+LIMIT $2;
+
+-- name: ListBankDepositSessionsByTenantCursor :many
+-- Subsequent pages: cursor-based pagination using created_at.
+SELECT * FROM bank_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at < @cursor_created_at
+ORDER BY created_at DESC
+LIMIT @page_size;
 
 -- name: GetExpiredPendingBankSessions :many
 SELECT * FROM bank_deposit_sessions
