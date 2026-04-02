@@ -12,10 +12,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/observability"
 )
+
+var engineTracer = otel.Tracer("settla.core.engine")
 
 // Engine is the top-level settlement orchestrator. It coordinates the transfer
 // lifecycle as a pure state machine: every method validates state, computes the
@@ -28,16 +33,16 @@ import (
 // picks up intents from the outbox table and executes them, then calls back
 // into the engine's Handle*Result methods with the outcome.
 type Engine struct {
-	transferStore      TransferStore
-	tenantStore        TenantStore
-	router             Router // used ONLY for quote generation, NOT for provider execution
-	providerRegistry   domain.ProviderRegistry
-	logger             *slog.Logger
-	metrics            *observability.Metrics
-	dailyVolumeCache            sync.Map // map[string]dailyVolumeEntry — fallback when volumeCounter is nil
-	dailyVolumeCounter          DailyVolumeCounter // optional: atomic counter (Redis). Nil = use sync.Map fallback.
-	dailyVolumeWarnOnce         sync.Once
-	requireDailyVolumeCounter   bool
+	transferStore             TransferStore
+	tenantStore               TenantStore
+	router                    Router // used ONLY for quote generation, NOT for provider execution
+	providerRegistry          domain.ProviderRegistry
+	logger                    *slog.Logger
+	metrics                   *observability.Metrics
+	dailyVolumeCache          sync.Map           // map[string]dailyVolumeEntry — fallback when volumeCounter is nil
+	dailyVolumeCounter        DailyVolumeCounter // optional: atomic counter (Redis). Nil = use sync.Map fallback.
+	dailyVolumeWarnOnce       sync.Once
+	requireDailyVolumeCounter bool
 }
 
 type dailyVolumeEntry struct {
@@ -96,7 +101,17 @@ func NewEngine(
 // CreateTransfer validates a settlement request, checks tenant limits, enforces
 // idempotency, and persists the initial transfer record with an outbox event
 // atomically in a single database transaction.
-func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req CreateTransferRequest) (*domain.Transfer, error) {
+func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req CreateTransferRequest) (_ *domain.Transfer, retErr error) {
+	ctx, span := engineTracer.Start(ctx, "Engine.CreateTransfer")
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()))
+
 	// a. Load tenant, verify active
 	tenant, err := e.tenantStore.GetTenant(ctx, tenantID)
 	if err != nil {
@@ -243,7 +258,7 @@ func (e *Engine) CreateTransfer(ctx context.Context, tenantID uuid.UUID, req Cre
 	// g. Create transfer record
 	now := time.Now().UTC()
 	transfer := &domain.Transfer{
-		ID:                uuid.New(),
+		ID:                uuid.Must(uuid.NewV7()),
 		TenantID:          tenantID,
 		ExternalRef:       req.ExternalRef,
 		IdempotencyKey:    req.IdempotencyKey,
@@ -428,6 +443,10 @@ func (e *Engine) GetTransferEvents(ctx context.Context, tenantID uuid.UUID, tran
 // treasury reservation and a funded event. The treasury worker will pick up the
 // IntentTreasuryReserve intent and actually reserve funds.
 func (e *Engine) FundTransfer(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID) error {
+	ctx, span := engineTracer.Start(ctx, "Engine.FundTransfer")
+	defer span.End()
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()), attribute.String("transfer_id", transferID.String()))
+
 	transfer, err := e.loadTransferForStep(ctx, tenantID, transferID, domain.TransferStatusCreated)
 	if err != nil {
 		return fmt.Errorf("settla-core: fund transfer %s: %w", transferID, err)
@@ -543,6 +562,10 @@ func (e *Engine) InitiateOnRamp(ctx context.Context, tenantID uuid.UUID, transfe
 // and blockchain send.
 // On failure: transitions ON_RAMPING → REFUNDING with intent for treasury release.
 func (e *Engine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	ctx, span := engineTracer.Start(ctx, "Engine.HandleOnRampResult")
+	defer span.End()
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()), attribute.String("transfer_id", transferID.String()))
+
 	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return fmt.Errorf("settla-core: handle on-ramp result %s: %w", transferID, err)
@@ -690,6 +713,10 @@ func (e *Engine) HandleOnRampResult(ctx context.Context, tenantID uuid.UUID, tra
 // On failure: transitions SETTLING → FAILED with intents for treasury release
 // and ledger reversal.
 func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	ctx, span := engineTracer.Start(ctx, "Engine.HandleSettlementResult")
+	defer span.End()
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()), attribute.String("transfer_id", transferID.String()))
+
 	transfer, err := e.loadTransfer(ctx, tenantID, transferID)
 	if err != nil {
 		return fmt.Errorf("settla-core: handle settlement result %s: %w", transferID, err)
@@ -856,6 +883,9 @@ func (e *Engine) HandleSettlementResult(ctx context.Context, tenantID uuid.UUID,
 // On success: calls CompleteTransfer to finalize.
 // On failure: transitions OFF_RAMPING → FAILED with compensation intents.
 func (e *Engine) HandleOffRampResult(ctx context.Context, tenantID uuid.UUID, transferID uuid.UUID, result domain.IntentResult) error {
+	ctx, span := engineTracer.Start(ctx, "Engine.HandleOffRampResult")
+	defer span.End()
+	span.SetAttributes(attribute.String("tenant_id", tenantID.String()), attribute.String("transfer_id", transferID.String()))
 	// Idempotency: if transfer already advanced past OFF_RAMPING, this is a NATS replay — skip.
 	precheck, pErr := e.loadTransfer(ctx, tenantID, transferID)
 	if pErr != nil {
@@ -1394,7 +1424,7 @@ func validateLedgerLines(lines []domain.LedgerLineEntry) error {
 	entryLines := make([]domain.EntryLine, len(lines))
 	for i, l := range lines {
 		entryLines[i] = domain.EntryLine{
-			ID: uuid.New(),
+			ID: uuid.Must(uuid.NewV7()),
 			Posting: domain.Posting{
 				AccountCode: domain.AccountCode(l.AccountCode),
 				EntryType:   domain.EntryType(l.EntryType),
