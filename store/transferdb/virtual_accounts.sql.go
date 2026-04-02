@@ -312,6 +312,9 @@ SET available = true, session_id = NULL, updated_at = now()
 WHERE account_number = $1
 `
 
+// SECURITY NOTE: Intentionally omits tenant_id — virtual accounts are recycled by
+// the worker after a session completes, using the account number from the session.
+// The tenant context is validated by the caller (BankDepositWorker) before recycling.
 func (q *Queries) RecycleVirtualAccount(ctx context.Context, accountNumber string) error {
 	_, err := q.db.Exec(ctx, recycleVirtualAccount, accountNumber)
 	return err

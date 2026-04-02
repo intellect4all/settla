@@ -36,6 +36,7 @@ type Querier interface {
 	// Count virtual accounts marked unavailable whose session reached terminal state.
 	CountOrphanedVirtualAccounts(ctx context.Context) (int32, error)
 	CountPaymentLinksByTenant(ctx context.Context, tenantID uuid.UUID) (int64, error)
+	CountPendingDepositSessions(ctx context.Context, tenantID uuid.UUID) (int32, error)
 	// Count provider transactions stuck in pending status older than a threshold.
 	CountPendingProviderTxOlderThan(ctx context.Context, createdAt time.Time) (int32, error)
 	// Counts non-terminal transfers for a tenant (used for per-tenant resource limits).
@@ -114,6 +115,10 @@ type Querier interface {
 	// Aggregate bank deposit metrics for a tenant and period.
 	GetBankDepositAnalytics(ctx context.Context, arg GetBankDepositAnalyticsParams) (GetBankDepositAnalyticsRow, error)
 	GetBankDepositSession(ctx context.Context, arg GetBankDepositSessionParams) (BankDepositSession, error)
+	// SECURITY NOTE: This query intentionally omits tenant_id because it is used by
+	// the inbound bank webhook flow, where the bank callback identifies the session
+	// by account number only. The caller (BankDepositWorker) validates the tenant
+	// context after loading the session. Never expose this query to tenant-facing APIs.
 	GetBankDepositSessionByAccountNumber(ctx context.Context, accountNumber string) (BankDepositSession, error)
 	GetBankDepositSessionByIdempotencyKey(ctx context.Context, arg GetBankDepositSessionByIdempotencyKeyParams) (BankDepositSession, error)
 	GetBankDepositTransactionByRef(ctx context.Context, bankReference string) (BankDepositTransaction, error)
@@ -158,6 +163,10 @@ type Querier interface {
 	GetNetSettlementOps(ctx context.Context, id uuid.UUID) (NetSettlement, error)
 	GetOutboxEntriesByAggregate(ctx context.Context, arg GetOutboxEntriesByAggregateParams) ([]Outbox, error)
 	GetPaymentLinkByID(ctx context.Context, arg GetPaymentLinkByIDParams) (PaymentLink, error)
+	// SECURITY NOTE: This query intentionally omits tenant_id because it serves the
+	// public payment link resolution flow (/v1/payment-links/resolve/:code).
+	// The caller MUST only return public-safe fields (short_code, description, amount,
+	// currency, status, expires_at) — never tenant internal data.
 	GetPaymentLinkByShortCode(ctx context.Context, shortCode string) (PaymentLink, error)
 	GetPortalUserByEmail(ctx context.Context, email string) (GetPortalUserByEmailRow, error)
 	GetPortalUserByID(ctx context.Context, id uuid.UUID) (GetPortalUserByIDRow, error)
@@ -187,6 +196,10 @@ type Querier interface {
 	GetTokenByContract(ctx context.Context, arg GetTokenByContractParams) (Token, error)
 	GetTransfer(ctx context.Context, arg GetTransferParams) (Transfer, error)
 	GetTransferByExternalRef(ctx context.Context, arg GetTransferByExternalRefParams) (Transfer, error)
+	// SECURITY NOTE: This query intentionally omits tenant_id for use by internal
+	// worker pipelines where the tenant_id comes from the trusted event payload.
+	// Never expose this query path to tenant-facing API endpoints. All API endpoints
+	// must use GetTransfer (which includes tenant_id) instead.
 	GetTransferByID(ctx context.Context, id uuid.UUID) (Transfer, error)
 	GetTransferByIdempotencyKey(ctx context.Context, arg GetTransferByIdempotencyKeyParams) (Transfer, error)
 	// Transfer completion latency percentiles (p50, p90, p95, p99) for completed transfers.
@@ -233,13 +246,21 @@ type Querier interface {
 	ListAllPendingSettlements(ctx context.Context) ([]ListAllPendingSettlementsRow, error)
 	ListAuditEntriesByEntity(ctx context.Context, arg ListAuditEntriesByEntityParams) ([]AuditLog, error)
 	ListAuditEntriesByTenant(ctx context.Context, arg ListAuditEntriesByTenantParams) ([]AuditLog, error)
-	ListBankDepositSessionsByTenant(ctx context.Context, arg ListBankDepositSessionsByTenantParams) ([]BankDepositSession, error)
+	// Subsequent pages: cursor-based pagination using created_at.
+	ListBankDepositSessionsByTenantCursor(ctx context.Context, arg ListBankDepositSessionsByTenantCursorParams) ([]BankDepositSession, error)
+	// First page (no cursor): returns the most recent sessions.
+	ListBankDepositSessionsByTenantFirst(ctx context.Context, arg ListBankDepositSessionsByTenantFirstParams) ([]BankDepositSession, error)
 	ListBankDepositTransactionsBySession(ctx context.Context, sessionID uuid.UUID) ([]BankDepositTransaction, error)
 	ListBankingPartners(ctx context.Context) ([]BankingPartner, error)
 	ListBlockCheckpoints(ctx context.Context) ([]BlockCheckpoint, error)
 	ListCompletedTransfersByPeriod(ctx context.Context, arg ListCompletedTransfersByPeriodParams) ([]ListCompletedTransfersByPeriodRow, error)
-	ListDepositSessionsByTenant(ctx context.Context, arg ListDepositSessionsByTenantParams) ([]CryptoDepositSession, error)
-	ListDepositSessionsByTenantAndStatus(ctx context.Context, arg ListDepositSessionsByTenantAndStatusParams) ([]CryptoDepositSession, error)
+	ListDepositSessionsByTenantAndStatusCursor(ctx context.Context, arg ListDepositSessionsByTenantAndStatusCursorParams) ([]CryptoDepositSession, error)
+	ListDepositSessionsByTenantAndStatusFirst(ctx context.Context, arg ListDepositSessionsByTenantAndStatusFirstParams) ([]CryptoDepositSession, error)
+	// Subsequent pages: cursor-based pagination using created_at as the cursor.
+	// The caller decodes page_token into cursor_created_at.
+	ListDepositSessionsByTenantCursor(ctx context.Context, arg ListDepositSessionsByTenantCursorParams) ([]CryptoDepositSession, error)
+	// First page (no cursor): returns the most recent sessions.
+	ListDepositSessionsByTenantFirst(ctx context.Context, arg ListDepositSessionsByTenantFirstParams) ([]CryptoDepositSession, error)
 	ListDepositTransactionsBySession(ctx context.Context, sessionID uuid.UUID) ([]CryptoDepositTransaction, error)
 	// List export jobs for a tenant.
 	ListExportJobs(ctx context.Context, arg ListExportJobsParams) ([]AnalyticsExportJob, error)
@@ -304,6 +325,9 @@ type Querier interface {
 	MarkPublished(ctx context.Context, arg MarkPublishedParams) error
 	// Mark a net settlement as paid with a payment reference.
 	MarkSettlementPaid(ctx context.Context, arg MarkSettlementPaidParams) error
+	// SECURITY NOTE: Intentionally omits tenant_id — virtual accounts are recycled by
+	// the worker after a session completes, using the account number from the session.
+	// The tenant context is validated by the caller (BankDepositWorker) before recycling.
 	RecycleVirtualAccount(ctx context.Context, accountNumber string) error
 	// Resolve a manual review by updating its status and recording the resolution.
 	ResolveManualReview(ctx context.Context, arg ResolveManualReviewParams) error

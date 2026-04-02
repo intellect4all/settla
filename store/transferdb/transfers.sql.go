@@ -516,6 +516,10 @@ SELECT id, tenant_id, external_ref, idempotency_key, status, version, source_cur
 WHERE id = $1
 `
 
+// SECURITY NOTE: This query intentionally omits tenant_id for use by internal
+// worker pipelines where the tenant_id comes from the trusted event payload.
+// Never expose this query path to tenant-facing API endpoints. All API endpoints
+// must use GetTransfer (which includes tenant_id) instead.
 func (q *Queries) GetTransferByID(ctx context.Context, id uuid.UUID) (Transfer, error) {
 	row := q.db.QueryRow(ctx, getTransferByID, id)
 	var i Transfer
