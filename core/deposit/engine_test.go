@@ -15,7 +15,6 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-// ── Mock Store ───────────────────────────────────────────────────────────────
 
 type mockDepositStore struct {
 	mu       sync.RWMutex
@@ -119,6 +118,21 @@ func (m *mockDepositStore) ListSessions(_ context.Context, tenantID uuid.UUID, l
 	result = result[offset:]
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (m *mockDepositStore) ListSessionsCursor(_ context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.DepositSession, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []domain.DepositSession
+	for _, s := range m.sessions {
+		if s.TenantID == tenantID && s.CreatedAt.Before(cursor) {
+			result = append(result, *s)
+		}
+	}
+	if pageSize > 0 && len(result) > pageSize {
+		result = result[:pageSize]
 	}
 	return result, nil
 }
@@ -276,7 +290,6 @@ func (m *mockDepositStore) outboxEntries() []domain.OutboxEntry {
 	return cp
 }
 
-// ── Mock Tenant Store ────────────────────────────────────────────────────────
 
 type mockTenantStore struct {
 	tenants map[uuid.UUID]*domain.Tenant
@@ -294,7 +307,6 @@ func (m *mockTenantStore) GetTenant(_ context.Context, tenantID uuid.UUID) (*dom
 	return t, nil
 }
 
-// ── Test Helpers ─────────────────────────────────────────────────────────────
 
 var testLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -350,7 +362,6 @@ func createTestSession(t *testing.T, engine *Engine) *domain.DepositSession {
 	return session
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 func TestCreateSession_HappyPath(t *testing.T) {
 	engine, store, _ := setupEngine()
