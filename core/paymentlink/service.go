@@ -27,6 +27,7 @@ type PaymentLinkStore interface {
 	GetByID(ctx context.Context, tenantID, linkID uuid.UUID) (*domain.PaymentLink, error)
 	GetByShortCode(ctx context.Context, shortCode string) (*domain.PaymentLink, error)
 	List(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.PaymentLink, int64, error)
+	ListCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.PaymentLink, error)
 	IncrementUseCount(ctx context.Context, linkID uuid.UUID) error
 	UpdateStatus(ctx context.Context, tenantID, linkID uuid.UUID, status domain.PaymentLinkStatus) error
 }
@@ -254,6 +255,15 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID, limit, offset in
 		return nil, fmt.Errorf("settla-paymentlink: list: %w", err)
 	}
 	return &ListResult{Links: links, Total: total}, nil
+}
+
+// ListCursor retrieves payment links for a tenant using cursor-based pagination.
+func (s *Service) ListCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) (*ListResult, error) {
+	links, err := s.store.ListCursor(ctx, tenantID, pageSize, cursor)
+	if err != nil {
+		return nil, fmt.Errorf("settla-paymentlink: list cursor: %w", err)
+	}
+	return &ListResult{Links: links, Total: int64(len(links))}, nil
 }
 
 // Disable sets a payment link to DISABLED status.
