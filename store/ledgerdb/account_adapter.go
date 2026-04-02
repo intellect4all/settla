@@ -12,6 +12,7 @@ import (
 )
 
 // AccountAdapter provides account listing from the Ledger DB.
+// Pass a dbpool.RoutedPool as the DBTX to New() for automatic read replica routing.
 type AccountAdapter struct {
 	pool *pgxpool.Pool
 	q    *Queries
