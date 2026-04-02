@@ -111,6 +111,32 @@ func (s *PositionTransactionStoreAdapter) ListByTenant(ctx context.Context, tena
 	return txns, rows.Err()
 }
 
+// ListByTenantCursor returns cursor-paginated position transactions for a tenant.
+func (s *PositionTransactionStoreAdapter) ListByTenantCursor(ctx context.Context, tenantID uuid.UUID, pageSize int32, cursor time.Time) ([]domain.PositionTransaction, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, tenant_id, type, currency, location, amount, status,
+		       method, destination, reference, failure_reason, version,
+		       created_at, updated_at
+		FROM position_transactions
+		WHERE tenant_id = $1 AND created_at < $2
+		ORDER BY created_at DESC
+		LIMIT $3`, tenantID, cursor, pageSize)
+	if err != nil {
+		return nil, fmt.Errorf("settla-position-tx-store: list by tenant cursor: %w", err)
+	}
+	defer rows.Close()
+
+	var txns []domain.PositionTransaction
+	for rows.Next() {
+		tx, err := scanPositionTransactionFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		txns = append(txns, *tx)
+	}
+	return txns, rows.Err()
+}
+
 // scanRow is a generic row scanner interface.
 type scanRow interface {
 	Scan(dest ...any) error
