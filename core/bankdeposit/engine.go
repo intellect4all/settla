@@ -315,6 +315,22 @@ func (e *Engine) ListVirtualAccounts(ctx context.Context, params VirtualAccountL
 	return accounts, total, nil
 }
 
+// ListVirtualAccountsCursor returns virtual accounts using cursor-based pagination.
+func (e *Engine) ListVirtualAccountsCursor(ctx context.Context, params VirtualAccountCursorParams) ([]domain.VirtualAccountPool, error) {
+	if params.PageSize <= 0 {
+		params.PageSize = 20
+	}
+	if params.PageSize > 100 {
+		params.PageSize = 100
+	}
+
+	accounts, err := e.store.ListVirtualAccountsCursor(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("settla-bank-deposit: list virtual accounts cursor for tenant %s: %w", params.TenantID, err)
+	}
+	return accounts, nil
+}
+
 // HandleBankCreditReceived processes an incoming bank credit notification.
 // Transitions PENDING_PAYMENT -> PAYMENT_RECEIVED (or handles late payments from EXPIRED/CANCELLED).
 // Then validates amount against min/max + mismatch policy, and if accepted,
@@ -1029,6 +1045,15 @@ func (e *Engine) ListSessions(ctx context.Context, tenantID uuid.UUID, limit, of
 	sessions, err := e.store.ListSessions(ctx, tenantID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("settla-bank-deposit: list sessions for tenant %s: %w", tenantID, err)
+	}
+	return sessions, nil
+}
+
+// ListSessionsCursor retrieves bank deposit sessions using cursor-based pagination.
+func (e *Engine) ListSessionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.BankDepositSession, error) {
+	sessions, err := e.store.ListSessionsCursor(ctx, tenantID, pageSize, cursor)
+	if err != nil {
+		return nil, fmt.Errorf("settla-bank-deposit: list sessions cursor for tenant %s: %w", tenantID, err)
 	}
 	return sessions, nil
 }

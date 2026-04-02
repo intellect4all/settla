@@ -3,6 +3,7 @@ package bankdeposit
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -32,6 +33,9 @@ type BankDepositStore interface {
 
 	// ListSessions retrieves bank deposit sessions for a tenant with pagination.
 	ListSessions(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.BankDepositSession, error)
+
+	// ListSessionsCursor retrieves bank deposit sessions using cursor-based pagination (created_at < cursor, DESC).
+	ListSessionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.BankDepositSession, error)
 
 	// TransitionWithOutbox atomically updates session status and inserts outbox entries
 	// in a single database transaction. Uses optimistic locking via version check.
@@ -69,6 +73,9 @@ type BankDepositStore interface {
 	// ListVirtualAccountsPaginated returns a paginated, filterable list of virtual accounts.
 	ListVirtualAccountsPaginated(ctx context.Context, params VirtualAccountListParams) ([]domain.VirtualAccountPool, int64, error)
 
+	// ListVirtualAccountsCursor returns virtual accounts using cursor-based pagination (created_at > cursor, ASC).
+	ListVirtualAccountsCursor(ctx context.Context, params VirtualAccountCursorParams) ([]domain.VirtualAccountPool, error)
+
 	// CountAvailableVirtualAccountsByCurrency returns available account counts grouped by currency.
 	CountAvailableVirtualAccountsByCurrency(ctx context.Context, tenantID uuid.UUID) (map[string]int64, error)
 
@@ -88,6 +95,15 @@ type VirtualAccountListParams struct {
 	AccountType string // empty string = no filter
 	Limit       int32
 	Offset      int32
+}
+
+// VirtualAccountCursorParams holds the filters for cursor-based virtual account listing.
+type VirtualAccountCursorParams struct {
+	TenantID    uuid.UUID
+	Currency    string    // empty string = no filter
+	AccountType string    // empty string = no filter
+	PageSize    int32
+	Cursor      time.Time // created_at > cursor
 }
 
 // VirtualAccountIndex is a lookup type that maps a virtual account number to its
