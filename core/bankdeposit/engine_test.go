@@ -15,7 +15,6 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-// ── Mock Store ───────────────────────────────────────────────────────────────
 
 type mockBankDepositStore struct {
 	mu       sync.RWMutex
@@ -126,6 +125,21 @@ func (m *mockBankDepositStore) ListSessions(_ context.Context, tenantID uuid.UUI
 	result = result[offset:]
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (m *mockBankDepositStore) ListSessionsCursor(_ context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.BankDepositSession, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []domain.BankDepositSession
+	for _, s := range m.sessions {
+		if s.TenantID == tenantID && s.CreatedAt.Before(cursor) {
+			result = append(result, *s)
+		}
+	}
+	if pageSize > 0 && len(result) > pageSize {
+		result = result[:pageSize]
 	}
 	return result, nil
 }
@@ -287,6 +301,31 @@ func (m *mockBankDepositStore) ListVirtualAccountsPaginated(_ context.Context, p
 	return filtered[start:end], total, nil
 }
 
+func (m *mockBankDepositStore) ListVirtualAccountsCursor(_ context.Context, params VirtualAccountCursorParams) ([]domain.VirtualAccountPool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var filtered []domain.VirtualAccountPool
+	for _, a := range m.pool {
+		if a.TenantID != params.TenantID {
+			continue
+		}
+		if params.Currency != "" && string(a.Currency) != params.Currency {
+			continue
+		}
+		if params.AccountType != "" && string(a.AccountType) != params.AccountType {
+			continue
+		}
+		if !a.CreatedAt.After(params.Cursor) {
+			continue
+		}
+		filtered = append(filtered, *a)
+	}
+	if int32(len(filtered)) > params.PageSize {
+		filtered = filtered[:params.PageSize]
+	}
+	return filtered, nil
+}
+
 func (m *mockBankDepositStore) CountAvailableVirtualAccountsByCurrency(_ context.Context, tenantID uuid.UUID) (map[string]int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -311,7 +350,6 @@ func (m *mockBankDepositStore) outboxEntries() []domain.OutboxEntry {
 	return cp
 }
 
-// ── Mock Tenant Store ────────────────────────────────────────────────────────
 
 type mockTenantStore struct {
 	tenants map[uuid.UUID]*domain.Tenant
@@ -329,7 +367,6 @@ func (m *mockTenantStore) GetTenant(_ context.Context, tenantID uuid.UUID) (*dom
 	return t, nil
 }
 
-// ── Test Helpers ─────────────────────────────────────────────────────────────
 
 var testLogger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -398,7 +435,6 @@ func testBankCredit(amount decimal.Decimal, ref string) domain.IncomingBankCredi
 	}
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 func TestCreateSession_HappyPath(t *testing.T) {
 	engine, store, _ := setupEngine()
