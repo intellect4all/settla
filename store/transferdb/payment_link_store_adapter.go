@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	pgx "github.com/jackc/pgx/v5"
@@ -207,6 +208,61 @@ func (s *PaymentLinkStoreAdapter) List(ctx context.Context, tenantID uuid.UUID, 
 	return links, total, nil
 }
 
+// ListCursor retrieves payment links for a tenant using cursor-based pagination.
+// Returns links with created_at < cursor, ordered by created_at DESC.
+func (s *PaymentLinkStoreAdapter) ListCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.PaymentLink, error) {
+	const query = `SELECT id, tenant_id, short_code, description, session_config, use_limit, use_count, expires_at, redirect_url, status, created_at, updated_at
+FROM payment_links WHERE tenant_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3`
+
+	scanRows := func(db DBTX) ([]domain.PaymentLink, error) {
+		rows, err := db.Query(ctx, query, tenantID, cursor, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var links []domain.PaymentLink
+		for rows.Next() {
+			var row PaymentLink
+			if err := rows.Scan(
+				&row.ID, &row.TenantID, &row.ShortCode, &row.Description,
+				&row.SessionConfig, &row.UseLimit, &row.UseCount, &row.ExpiresAt,
+				&row.RedirectUrl, &row.Status, &row.CreatedAt, &row.UpdatedAt,
+			); err != nil {
+				return nil, err
+			}
+			link, err := paymentLinkFromRow(row)
+			if err != nil {
+				return nil, err
+			}
+			links = append(links, *link)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return links, nil
+	}
+
+	if s.appPool != nil {
+		var links []domain.PaymentLink
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			var txErr error
+			links, txErr = scanRows(tx)
+			return txErr
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-payment-link-store: list cursor: %w", err)
+		}
+		return links, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListCursor", "tenant_id", tenantID)
+	links, err := scanRows(s.q.db)
+	if err != nil {
+		return nil, fmt.Errorf("settla-payment-link-store: list cursor: %w", err)
+	}
+	return links, nil
+}
+
 // IncrementUseCount increments the use_count of a payment link.
 func (s *PaymentLinkStoreAdapter) IncrementUseCount(ctx context.Context, linkID uuid.UUID) error {
 	return s.q.IncrementPaymentLinkUseCount(ctx, linkID)
@@ -230,7 +286,6 @@ func (s *PaymentLinkStoreAdapter) UpdateStatus(ctx context.Context, tenantID, li
 	return s.q.UpdatePaymentLinkStatus(ctx, params)
 }
 
-// ── Row conversion helper ────────────────────────────────────────────────────
 
 func paymentLinkFromRow(row PaymentLink) (*domain.PaymentLink, error) {
 	link := &domain.PaymentLink{

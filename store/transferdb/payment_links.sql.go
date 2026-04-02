@@ -108,6 +108,10 @@ SELECT id, tenant_id, short_code, description, session_config, use_limit, use_co
 WHERE short_code = $1
 `
 
+// SECURITY NOTE: This query intentionally omits tenant_id because it serves the
+// public payment link resolution flow (/v1/payment-links/resolve/:code).
+// The caller MUST only return public-safe fields (short_code, description, amount,
+// currency, status, expires_at) — never tenant internal data.
 func (q *Queries) GetPaymentLinkByShortCode(ctx context.Context, shortCode string) (PaymentLink, error) {
 	row := q.db.QueryRow(ctx, getPaymentLinkByShortCode, shortCode)
 	var i PaymentLink
