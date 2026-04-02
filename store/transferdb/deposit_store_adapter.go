@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	pgx "github.com/jackc/pgx/v5"
@@ -215,10 +216,9 @@ func (s *DepositStoreAdapter) ListSessions(ctx context.Context, tenantID uuid.UU
 	if s.appPool != nil {
 		var sessions []domain.DepositSession
 		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
-			rows, err := s.q.WithTx(tx).ListDepositSessionsByTenant(ctx, ListDepositSessionsByTenantParams{
+			rows, err := s.q.WithTx(tx).ListDepositSessionsByTenantFirst(ctx, ListDepositSessionsByTenantFirstParams{
 				TenantID: tenantID,
 				Limit:    int32(limit),
-				Offset:   int32(offset),
 			})
 			if err != nil {
 				return err
@@ -236,13 +236,51 @@ func (s *DepositStoreAdapter) ListSessions(ctx context.Context, tenantID uuid.UU
 	}
 
 	slog.Warn("settla-store: RLS bypassed", "method", "ListSessions", "tenant_id", tenantID)
-	rows, err := s.q.ListDepositSessionsByTenant(ctx, ListDepositSessionsByTenantParams{
+	rows, err := s.q.ListDepositSessionsByTenantFirst(ctx, ListDepositSessionsByTenantFirstParams{
 		TenantID: tenantID,
 		Limit:    int32(limit),
-		Offset:   int32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settla-deposit-store: listing sessions: %w", err)
+	}
+	sessions := make([]domain.DepositSession, len(rows))
+	for i, row := range rows {
+		sessions[i] = *depositSessionFromRow(row)
+	}
+	return sessions, nil
+}
+
+// ListSessionsCursor retrieves deposit sessions for a tenant using cursor-based pagination.
+func (s *DepositStoreAdapter) ListSessionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.DepositSession, error) {
+	params := ListDepositSessionsByTenantCursorParams{
+		TenantID:        tenantID,
+		CursorCreatedAt: cursor,
+		PageSize:        int32(pageSize),
+	}
+
+	if s.appPool != nil {
+		var sessions []domain.DepositSession
+		err := rls.WithTenantReadTx(ctx, s.appPool, tenantID, func(tx pgx.Tx) error {
+			rows, err := s.q.WithTx(tx).ListDepositSessionsByTenantCursor(ctx, params)
+			if err != nil {
+				return err
+			}
+			sessions = make([]domain.DepositSession, len(rows))
+			for i, row := range rows {
+				sessions[i] = *depositSessionFromRow(row)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("settla-deposit-store: listing sessions (cursor): %w", err)
+		}
+		return sessions, nil
+	}
+
+	slog.Warn("settla-store: RLS bypassed", "method", "ListSessionsCursor", "tenant_id", tenantID)
+	rows, err := s.q.ListDepositSessionsByTenantCursor(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("settla-deposit-store: listing sessions (cursor): %w", err)
 	}
 	sessions := make([]domain.DepositSession, len(rows))
 	for i, row := range rows {
@@ -580,7 +618,6 @@ func depositSessionPublicFromRow(row GetDepositSessionByIDOnlyRow) *domain.Depos
 	}
 }
 
-// ── Row conversion helpers ───────────────────────────────────────────────────
 
 func depositSessionFromRow(row CryptoDepositSession) *domain.DepositSession {
 	s := &domain.DepositSession{

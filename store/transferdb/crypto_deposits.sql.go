@@ -48,6 +48,18 @@ func (q *Queries) CountDepositSessionsByTenantAndStatus(ctx context.Context, arg
 	return count, err
 }
 
+const countPendingDepositSessions = `-- name: CountPendingDepositSessions :one
+SELECT COUNT(*)::int FROM crypto_deposit_sessions
+WHERE tenant_id = $1 AND status NOT IN ('SETTLED', 'EXPIRED', 'FAILED', 'CANCELLED')
+`
+
+func (q *Queries) CountPendingDepositSessions(ctx context.Context, tenantID uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countPendingDepositSessions, tenantID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createDepositSession = `-- name: CreateDepositSession :one
 INSERT INTO crypto_deposit_sessions (
     tenant_id, idempotency_key, status, chain, token, deposit_address,
@@ -606,21 +618,28 @@ func (q *Queries) GetUnconfirmedDepositTransactions(ctx context.Context, limit i
 	return items, nil
 }
 
-const listDepositSessionsByTenant = `-- name: ListDepositSessionsByTenant :many
+const listDepositSessionsByTenantAndStatusCursor = `-- name: ListDepositSessionsByTenantAndStatusCursor :many
 SELECT id, tenant_id, idempotency_key, status, version, chain, token, deposit_address, expected_amount, received_amount, currency, collection_fee_bps, fee_amount, net_amount, settlement_pref, settlement_transfer_id, derivation_index, expires_at, created_at, updated_at, detected_at, confirmed_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM crypto_deposit_sessions
-WHERE tenant_id = $1
+WHERE tenant_id = $1 AND status = $2
+  AND created_at < $3
 ORDER BY created_at DESC
-LIMIT $2 OFFSET $3
+LIMIT $4
 `
 
-type ListDepositSessionsByTenantParams struct {
-	TenantID uuid.UUID `json:"tenant_id"`
-	Limit    int32     `json:"limit"`
-	Offset   int32     `json:"offset"`
+type ListDepositSessionsByTenantAndStatusCursorParams struct {
+	TenantID        uuid.UUID                `json:"tenant_id"`
+	Status          DepositSessionStatusEnum `json:"status"`
+	CursorCreatedAt time.Time                `json:"cursor_created_at"`
+	PageSize        int32                    `json:"page_size"`
 }
 
-func (q *Queries) ListDepositSessionsByTenant(ctx context.Context, arg ListDepositSessionsByTenantParams) ([]CryptoDepositSession, error) {
-	rows, err := q.db.Query(ctx, listDepositSessionsByTenant, arg.TenantID, arg.Limit, arg.Offset)
+func (q *Queries) ListDepositSessionsByTenantAndStatusCursor(ctx context.Context, arg ListDepositSessionsByTenantAndStatusCursorParams) ([]CryptoDepositSession, error) {
+	rows, err := q.db.Query(ctx, listDepositSessionsByTenantAndStatusCursor,
+		arg.TenantID,
+		arg.Status,
+		arg.CursorCreatedAt,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -669,27 +688,150 @@ func (q *Queries) ListDepositSessionsByTenant(ctx context.Context, arg ListDepos
 	return items, nil
 }
 
-const listDepositSessionsByTenantAndStatus = `-- name: ListDepositSessionsByTenantAndStatus :many
+const listDepositSessionsByTenantAndStatusFirst = `-- name: ListDepositSessionsByTenantAndStatusFirst :many
 SELECT id, tenant_id, idempotency_key, status, version, chain, token, deposit_address, expected_amount, received_amount, currency, collection_fee_bps, fee_amount, net_amount, settlement_pref, settlement_transfer_id, derivation_index, expires_at, created_at, updated_at, detected_at, confirmed_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM crypto_deposit_sessions
 WHERE tenant_id = $1 AND status = $2
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $4
+LIMIT $3
 `
 
-type ListDepositSessionsByTenantAndStatusParams struct {
+type ListDepositSessionsByTenantAndStatusFirstParams struct {
 	TenantID uuid.UUID                `json:"tenant_id"`
 	Status   DepositSessionStatusEnum `json:"status"`
 	Limit    int32                    `json:"limit"`
-	Offset   int32                    `json:"offset"`
 }
 
-func (q *Queries) ListDepositSessionsByTenantAndStatus(ctx context.Context, arg ListDepositSessionsByTenantAndStatusParams) ([]CryptoDepositSession, error) {
-	rows, err := q.db.Query(ctx, listDepositSessionsByTenantAndStatus,
-		arg.TenantID,
-		arg.Status,
-		arg.Limit,
-		arg.Offset,
-	)
+func (q *Queries) ListDepositSessionsByTenantAndStatusFirst(ctx context.Context, arg ListDepositSessionsByTenantAndStatusFirstParams) ([]CryptoDepositSession, error) {
+	rows, err := q.db.Query(ctx, listDepositSessionsByTenantAndStatusFirst, arg.TenantID, arg.Status, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CryptoDepositSession{}
+	for rows.Next() {
+		var i CryptoDepositSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.Chain,
+			&i.Token,
+			&i.DepositAddress,
+			&i.ExpectedAmount,
+			&i.ReceivedAmount,
+			&i.Currency,
+			&i.CollectionFeeBps,
+			&i.FeeAmount,
+			&i.NetAmount,
+			&i.SettlementPref,
+			&i.SettlementTransferID,
+			&i.DerivationIndex,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DetectedAt,
+			&i.ConfirmedAt,
+			&i.CreditedAt,
+			&i.SettledAt,
+			&i.ExpiredAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.Metadata,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDepositSessionsByTenantCursor = `-- name: ListDepositSessionsByTenantCursor :many
+SELECT id, tenant_id, idempotency_key, status, version, chain, token, deposit_address, expected_amount, received_amount, currency, collection_fee_bps, fee_amount, net_amount, settlement_pref, settlement_transfer_id, derivation_index, expires_at, created_at, updated_at, detected_at, confirmed_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM crypto_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at < $2
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListDepositSessionsByTenantCursorParams struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	CursorCreatedAt time.Time `json:"cursor_created_at"`
+	PageSize        int32     `json:"page_size"`
+}
+
+// Subsequent pages: cursor-based pagination using created_at as the cursor.
+// The caller decodes page_token into cursor_created_at.
+func (q *Queries) ListDepositSessionsByTenantCursor(ctx context.Context, arg ListDepositSessionsByTenantCursorParams) ([]CryptoDepositSession, error) {
+	rows, err := q.db.Query(ctx, listDepositSessionsByTenantCursor, arg.TenantID, arg.CursorCreatedAt, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CryptoDepositSession{}
+	for rows.Next() {
+		var i CryptoDepositSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.Chain,
+			&i.Token,
+			&i.DepositAddress,
+			&i.ExpectedAmount,
+			&i.ReceivedAmount,
+			&i.Currency,
+			&i.CollectionFeeBps,
+			&i.FeeAmount,
+			&i.NetAmount,
+			&i.SettlementPref,
+			&i.SettlementTransferID,
+			&i.DerivationIndex,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DetectedAt,
+			&i.ConfirmedAt,
+			&i.CreditedAt,
+			&i.SettledAt,
+			&i.ExpiredAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.Metadata,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDepositSessionsByTenantFirst = `-- name: ListDepositSessionsByTenantFirst :many
+SELECT id, tenant_id, idempotency_key, status, version, chain, token, deposit_address, expected_amount, received_amount, currency, collection_fee_bps, fee_amount, net_amount, settlement_pref, settlement_transfer_id, derivation_index, expires_at, created_at, updated_at, detected_at, confirmed_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM crypto_deposit_sessions
+WHERE tenant_id = $1
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type ListDepositSessionsByTenantFirstParams struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	Limit    int32     `json:"limit"`
+}
+
+// First page (no cursor): returns the most recent sessions.
+func (q *Queries) ListDepositSessionsByTenantFirst(ctx context.Context, arg ListDepositSessionsByTenantFirstParams) ([]CryptoDepositSession, error) {
+	rows, err := q.db.Query(ctx, listDepositSessionsByTenantFirst, arg.TenantID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
