@@ -236,6 +236,10 @@ ORDER BY created_at DESC
 LIMIT 1
 `
 
+// SECURITY NOTE: This query intentionally omits tenant_id because it is used by
+// the inbound bank webhook flow, where the bank callback identifies the session
+// by account number only. The caller (BankDepositWorker) validates the tenant
+// context after loading the session. Never expose this query to tenant-facing APIs.
 func (q *Queries) GetBankDepositSessionByAccountNumber(ctx context.Context, accountNumber string) (BankDepositSession, error) {
 	row := q.db.QueryRow(ctx, getBankDepositSessionByAccountNumber, accountNumber)
 	var i BankDepositSession
@@ -399,21 +403,93 @@ func (q *Queries) GetExpiredPendingBankSessions(ctx context.Context, limit int32
 	return items, nil
 }
 
-const listBankDepositSessionsByTenant = `-- name: ListBankDepositSessionsByTenant :many
+const listBankDepositSessionsByTenantCursor = `-- name: ListBankDepositSessionsByTenantCursor :many
+SELECT id, tenant_id, idempotency_key, status, version, banking_partner_id, account_number, account_name, sort_code, iban, account_type, currency, expected_amount, min_amount, max_amount, received_amount, fee_amount, net_amount, mismatch_policy, collection_fee_bps, settlement_pref, settlement_transfer_id, payer_name, payer_reference, bank_reference, expires_at, created_at, updated_at, payment_received_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM bank_deposit_sessions
+WHERE tenant_id = $1
+  AND created_at < $2
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListBankDepositSessionsByTenantCursorParams struct {
+	TenantID        uuid.UUID `json:"tenant_id"`
+	CursorCreatedAt time.Time `json:"cursor_created_at"`
+	PageSize        int32     `json:"page_size"`
+}
+
+// Subsequent pages: cursor-based pagination using created_at.
+func (q *Queries) ListBankDepositSessionsByTenantCursor(ctx context.Context, arg ListBankDepositSessionsByTenantCursorParams) ([]BankDepositSession, error) {
+	rows, err := q.db.Query(ctx, listBankDepositSessionsByTenantCursor, arg.TenantID, arg.CursorCreatedAt, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BankDepositSession{}
+	for rows.Next() {
+		var i BankDepositSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Version,
+			&i.BankingPartnerID,
+			&i.AccountNumber,
+			&i.AccountName,
+			&i.SortCode,
+			&i.Iban,
+			&i.AccountType,
+			&i.Currency,
+			&i.ExpectedAmount,
+			&i.MinAmount,
+			&i.MaxAmount,
+			&i.ReceivedAmount,
+			&i.FeeAmount,
+			&i.NetAmount,
+			&i.MismatchPolicy,
+			&i.CollectionFeeBps,
+			&i.SettlementPref,
+			&i.SettlementTransferID,
+			&i.PayerName,
+			&i.PayerReference,
+			&i.BankReference,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PaymentReceivedAt,
+			&i.CreditedAt,
+			&i.SettledAt,
+			&i.ExpiredAt,
+			&i.FailedAt,
+			&i.FailureReason,
+			&i.FailureCode,
+			&i.Metadata,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBankDepositSessionsByTenantFirst = `-- name: ListBankDepositSessionsByTenantFirst :many
 SELECT id, tenant_id, idempotency_key, status, version, banking_partner_id, account_number, account_name, sort_code, iban, account_type, currency, expected_amount, min_amount, max_amount, received_amount, fee_amount, net_amount, mismatch_policy, collection_fee_bps, settlement_pref, settlement_transfer_id, payer_name, payer_reference, bank_reference, expires_at, created_at, updated_at, payment_received_at, credited_at, settled_at, expired_at, failed_at, failure_reason, failure_code, metadata FROM bank_deposit_sessions
 WHERE tenant_id = $1
 ORDER BY created_at DESC
-LIMIT $2 OFFSET $3
+LIMIT $2
 `
 
-type ListBankDepositSessionsByTenantParams struct {
+type ListBankDepositSessionsByTenantFirstParams struct {
 	TenantID uuid.UUID `json:"tenant_id"`
 	Limit    int32     `json:"limit"`
-	Offset   int32     `json:"offset"`
 }
 
-func (q *Queries) ListBankDepositSessionsByTenant(ctx context.Context, arg ListBankDepositSessionsByTenantParams) ([]BankDepositSession, error) {
-	rows, err := q.db.Query(ctx, listBankDepositSessionsByTenant, arg.TenantID, arg.Limit, arg.Offset)
+// First page (no cursor): returns the most recent sessions.
+func (q *Queries) ListBankDepositSessionsByTenantFirst(ctx context.Context, arg ListBankDepositSessionsByTenantFirstParams) ([]BankDepositSession, error) {
+	rows, err := q.db.Query(ctx, listBankDepositSessionsByTenantFirst, arg.TenantID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
