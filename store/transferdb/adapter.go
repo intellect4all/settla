@@ -79,6 +79,7 @@ func WithAppPool(pool *pgxpool.Pool) TransferStoreOption {
 	}
 }
 
+
 // NewTransferStoreAdapter creates a new TransferStoreAdapter.
 // The pool parameter is optional — pass nil if transactional outbox methods are not needed.
 func NewTransferStoreAdapter(q *Queries, pool ...TxBeginner) *TransferStoreAdapter {
