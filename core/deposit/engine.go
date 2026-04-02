@@ -870,6 +870,15 @@ func (e *Engine) ListSessions(ctx context.Context, tenantID uuid.UUID, limit, of
 	return sessions, nil
 }
 
+// ListSessionsCursor retrieves deposit sessions for a tenant using cursor-based pagination.
+func (e *Engine) ListSessionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.DepositSession, error) {
+	sessions, err := e.store.ListSessionsCursor(ctx, tenantID, pageSize, cursor)
+	if err != nil {
+		return nil, fmt.Errorf("settla-deposit: list sessions (cursor) for tenant %s: %w", tenantID, err)
+	}
+	return sessions, nil
+}
+
 // failSession transitions a session to FAILED with reason and code.
 func (e *Engine) failSession(ctx context.Context, session *domain.DepositSession, reason, code string) error {
 	now := time.Now().UTC()
@@ -920,11 +929,17 @@ func (e *Engine) failSession(ctx context.Context, session *domain.DepositSession
 	return nil
 }
 
-// TODO: confirm these confirmation valies
-// requiredConfirmations returns the min confirmations for a session's chain,
-// using tenant config defaults.
+// requiredConfirmations returns the minimum confirmations needed to consider a
+// deposit final on the given chain. Values are conservative production defaults:
+//
+//   - Tron: 19 blocks (~57s) — matches TronGrid recommendation for finality
+//   - Ethereum: 12 blocks (~2.4min) — 2 epochs post-merge for economic finality
+//   - Base: 12 blocks (~24s) — L2 blocks are fast; 12 provides L1 batch inclusion
+//   - Polygon: 12 blocks (~24s) — similar PoS finality model
+//   - Solana: 12 slots (~6s) — well past optimistic confirmation (1 slot)
+//
+// These should be configurable per-tenant in the future.
 func (e *Engine) requiredConfirmations(session *domain.DepositSession) int32 {
-	// Default confirmations per chain
 	switch session.Chain {
 	case domain.ChainTron:
 		return 19

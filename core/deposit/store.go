@@ -3,6 +3,7 @@ package deposit
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -32,6 +33,10 @@ type DepositStore interface {
 
 	// ListSessions retrieves deposit sessions for a tenant with pagination.
 	ListSessions(ctx context.Context, tenantID uuid.UUID, limit, offset int) ([]domain.DepositSession, error)
+
+	// ListSessionsCursor retrieves deposit sessions for a tenant using cursor-based pagination.
+	// The cursor is the created_at timestamp of the last item from the previous page.
+	ListSessionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.DepositSession, error)
 
 	// TransitionWithOutbox atomically updates session status and inserts outbox entries
 	// in a single database transaction. Uses optimistic locking via version check.
