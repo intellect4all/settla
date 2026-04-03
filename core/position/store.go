@@ -2,6 +2,7 @@ package position
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,4 +23,7 @@ type Store interface {
 
 	// ListByTenant returns paginated position transactions for a tenant.
 	ListByTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]domain.PositionTransaction, error)
+
+	// ListByTenantCursor returns cursor-paginated position transactions for a tenant.
+	ListByTenantCursor(ctx context.Context, tenantID uuid.UUID, pageSize int32, cursor time.Time) ([]domain.PositionTransaction, error)
 }

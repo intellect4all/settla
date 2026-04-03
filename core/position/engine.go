@@ -267,3 +267,8 @@ func (e *Engine) GetTransaction(ctx context.Context, tenantID, txID uuid.UUID) (
 func (e *Engine) ListTransactions(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]domain.PositionTransaction, error) {
 	return e.store.ListByTenant(ctx, tenantID, limit, offset)
 }
+
+// ListTransactionsCursor returns cursor-paginated position transactions for a tenant.
+func (e *Engine) ListTransactionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int32, cursor time.Time) ([]domain.PositionTransaction, error) {
+	return e.store.ListByTenantCursor(ctx, tenantID, pageSize, cursor)
+}
