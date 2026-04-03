@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 
 	"github.com/intellect4all/settla/domain"
 	"github.com/intellect4all/settla/resilience"
@@ -52,10 +54,17 @@ func (p *Publisher) Publish(ctx context.Context, event domain.Event) error {
 		return fmt.Errorf("settla-messaging: marshalling event %s: %w", event.ID, err)
 	}
 
-	// Publish with dedup via Nats-Msg-Id header (event.ID)
-	_, err = p.js.Publish(ctx, subject, payload,
-		jetstream.WithMsgID(event.ID.String()),
-	)
+	// Build message with trace context headers for distributed tracing.
+	headers := nats.Header{}
+	headers.Set("Nats-Msg-Id", event.ID.String())
+	otel.GetTextMapPropagator().Inject(ctx, NATSHeaderCarrier(headers))
+
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    payload,
+		Header:  headers,
+	}
+	_, err = p.js.PublishMsg(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("settla-messaging: publishing event %s to %s: %w", event.ID, subject, err)
 	}

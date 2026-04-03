@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -35,14 +37,29 @@ const (
 	AckWait = 30 * time.Second
 )
 
-// BackoffSchedule is the native NATS backoff between redelivery attempts.
-// 1s, 5s, 30s, 2m, 10m — then dead-lettered after MaxDeliver exhausted.
-var BackoffSchedule = []time.Duration{
+// backoffBases are the base durations for NATS consumer redelivery backoff.
+// Actual BackoffSchedule is derived with ±20% jitter to prevent thundering herd.
+var backoffBases = []time.Duration{
 	1 * time.Second,
 	5 * time.Second,
 	30 * time.Second,
 	2 * time.Minute,
 	10 * time.Minute,
+}
+
+// BackoffSchedule is the native NATS backoff between redelivery attempts.
+// Jittered ±20% at process startup to desynchronise consumers across pods.
+var BackoffSchedule = jitteredBackoffSchedule(backoffBases)
+
+// jitteredBackoffSchedule applies ±20% random jitter to each base duration.
+func jitteredBackoffSchedule(bases []time.Duration) []time.Duration {
+	out := make([]time.Duration, len(bases))
+	for i, base := range bases {
+		// Multiply by 0.8–1.2
+		factor := 0.8 + rand.Float64()*0.4
+		out[i] = time.Duration(float64(base) * factor)
+	}
+	return out
 }
 
 // PartitionSubject builds the NATS subject for a given partition and event type.
@@ -92,7 +109,9 @@ type Client struct {
 	JS            jetstream.JetStream
 	Logger        *slog.Logger
 	NumPartitions int
-	// Replicas controls the number of stream replicas. 1 for dev, 3 for production.
+	// Replicas is used only for initial JetStream stream creation via EnsureStreams().
+	// Once streams exist, NATS manages replicas server-side. Do not use this value
+	// as a runtime assertion — Kubernetes may scale NATS independently.
 	Replicas int
 	// DLQCounter is an optional counter incremented each time a message is
 	// routed to the dead letter queue. Labels: source_stream, event_type.
@@ -108,7 +127,8 @@ type Client struct {
 // ClientOption configures the NATS client.
 type ClientOption func(*Client)
 
-// WithReplicas sets the number of stream replicas (1 for dev, 3 for production).
+// WithReplicas sets the initial replica count for JetStream stream creation.
+// Only used when creating streams for the first time; existing streams are not modified.
 func WithReplicas(n int) ClientOption {
 	return func(c *Client) {
 		c.Replicas = n
@@ -180,10 +200,21 @@ func (c *Client) EnsureStreams(ctx context.Context) error {
 	if err := CreateStreams(ctx, c.JS, c.Replicas); err != nil {
 		return err
 	}
+	// Log actual replica count from stream info (may differ from config if cluster scaled).
+	for _, sd := range AllStreams() {
+		stream, err := c.JS.Stream(ctx, sd.Name)
+		if err == nil {
+			info := stream.CachedInfo()
+			c.Logger.Info("settla-messaging: stream info",
+				"stream", sd.Name,
+				"actual_replicas", info.Config.Replicas,
+				"configured_replicas", c.Replicas,
+			)
+		}
+	}
 	c.Logger.Info("settla-messaging: all streams ensured",
 		"stream_count", len(AllStreams()),
 		"partitions", c.NumPartitions,
-		"replicas", c.Replicas,
 	)
 	return nil
 }
@@ -196,11 +227,20 @@ func (c *Client) EnsureStream(ctx context.Context) error {
 
 // PublishToStream publishes a message to a specific subject with dedup ID.
 // The msgID is used as the Nats-Msg-Id header for exactly-once semantics
-// within the stream's duplicate window.
+// within the stream's duplicate window. Trace context from ctx is propagated
+// via NATS headers so consumers can continue the distributed trace.
 func (c *Client) PublishToStream(ctx context.Context, subject string, msgID string, data []byte) error {
-	_, err := c.JS.Publish(ctx, subject, data,
-		jetstream.WithMsgID(msgID),
-	)
+	msg := &nats.Msg{
+		Subject: subject,
+		Data:    data,
+		Header:  nats.Header{},
+	}
+	msg.Header.Set("Nats-Msg-Id", msgID)
+
+	// Inject OpenTelemetry trace context into NATS message headers.
+	otel.GetTextMapPropagator().Inject(ctx, NATSHeaderCarrier(msg.Header))
+
+	_, err := c.JS.PublishMsg(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("settla-messaging: publishing to %s (msgID=%s): %w", subject, msgID, err)
 	}
