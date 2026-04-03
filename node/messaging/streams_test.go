@@ -94,9 +94,12 @@ func TestBackoffSchedule(t *testing.T) {
 	if len(BackoffSchedule) != len(expected) {
 		t.Fatalf("BackoffSchedule length = %d, want %d", len(BackoffSchedule), len(expected))
 	}
-	for i, d := range expected {
-		if BackoffSchedule[i] != d {
-			t.Errorf("BackoffSchedule[%d] = %v, want %v", i, BackoffSchedule[i], d)
+	// BackoffSchedule is jittered ±20%, so verify each value is within [0.8*base, 1.2*base].
+	for i, base := range expected {
+		lo := time.Duration(float64(base) * 0.8)
+		hi := time.Duration(float64(base) * 1.2)
+		if BackoffSchedule[i] < lo || BackoffSchedule[i] > hi {
+			t.Errorf("BackoffSchedule[%d] = %v, want within [%v, %v] (base %v)", i, BackoffSchedule[i], lo, hi, base)
 		}
 	}
 }
@@ -381,7 +384,7 @@ func TestSubjectForEventType_UnknownEventFallback(t *testing.T) {
 func TestNakDelay(t *testing.T) {
 	tests := []struct {
 		delivery uint64
-		want     time.Duration
+		wantBase time.Duration
 	}{
 		{0, 1 * time.Second},
 		{1, 1 * time.Second},
@@ -394,8 +397,12 @@ func TestNakDelay(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := nakDelay(tt.delivery)
-		if got != tt.want {
-			t.Errorf("nakDelay(%d) = %v, want %v", tt.delivery, got, tt.want)
+		// BackoffSchedule is jittered ±20% at startup, then nakDelay applies another ±20%.
+		// Total range: base * 0.8 * 0.8 = 0.64 to base * 1.2 * 1.2 = 1.44.
+		lo := time.Duration(float64(tt.wantBase) * 0.64)
+		hi := time.Duration(float64(tt.wantBase) * 1.44)
+		if got < lo || got > hi {
+			t.Errorf("nakDelay(%d) = %v, want within [%v, %v] (base %v)", tt.delivery, got, lo, hi, tt.wantBase)
 		}
 	}
 }
