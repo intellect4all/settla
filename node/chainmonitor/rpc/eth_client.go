@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -34,24 +35,46 @@ type EVMClient struct {
 	failover   *FailoverManager
 	httpClient *http.Client
 	logger     *slog.Logger
+
+	// Block number cache — avoids redundant eth_blockNumber RPC calls.
+	blockCacheMu  sync.RWMutex
+	cachedBlockNum int64
+	cachedBlockAt  time.Time
+	blockCacheTTL  time.Duration
 }
 
-// NewEVMClient creates an EVM RPC client with failover.
+// blockCacheDefaultTTL is the default cache duration for eth_blockNumber results.
+// Most chains have block times of 2-12 seconds, so 3 seconds is safe.
+const blockCacheDefaultTTL = 3 * time.Second
+
+// NewEVMClient creates an EVM RPC client with failover and connection pooling.
 func NewEVMClient(providers []*Provider, logger *slog.Logger) *EVMClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &EVMClient{
-		failover:   NewFailoverManager(providers, logger),
-		httpClient: &http.Client{Timeout: httpTimeout},
-		logger:     logger,
+		failover:      NewFailoverManager(providers, logger),
+		httpClient:    &http.Client{Timeout: httpTimeout, Transport: NewPooledTransport()},
+		logger:        logger,
+		blockCacheTTL: blockCacheDefaultTTL,
 	}
 }
 
 // GetLatestBlockNumber returns the latest block number via eth_blockNumber.
+// Results are cached for blockCacheTTL to reduce redundant RPC calls.
 func (c *EVMClient) GetLatestBlockNumber(ctx context.Context) (int64, error) {
+	// Check cache first.
+	c.blockCacheMu.RLock()
+	if c.cachedBlockNum > 0 && time.Since(c.cachedBlockAt) < c.blockCacheTTL {
+		n := c.cachedBlockNum
+		c.blockCacheMu.RUnlock()
+		return n, nil
+	}
+	c.blockCacheMu.RUnlock()
+
 	var blockNum int64
-	err := c.failover.Execute(ctx, func(ctx context.Context, rpcURL, apiKey string) error {
+	// Use FanExecute for block number — latency-sensitive, benefits from fastest provider.
+	err := c.failover.FanExecute(ctx, func(ctx context.Context, rpcURL, apiKey string) error {
 		var result string
 		if err := c.jsonRPC(ctx, rpcURL, apiKey, "eth_blockNumber", []any{}, &result); err != nil {
 			return err
@@ -63,6 +86,12 @@ func (c *EVMClient) GetLatestBlockNumber(ctx context.Context) (int64, error) {
 		blockNum = n
 		return nil
 	})
+	if err == nil {
+		c.blockCacheMu.Lock()
+		c.cachedBlockNum = blockNum
+		c.cachedBlockAt = time.Now()
+		c.blockCacheMu.Unlock()
+	}
 	return blockNum, err
 }
 
@@ -259,7 +288,6 @@ func ParseEVMTransfer(t ERC20Transfer, chain string) domain.IncomingTransaction 
 	}
 }
 
-// ── Hex helpers ──────────────────────────────────────────────────────────────
 
 // ParseHexInt64 parses a 0x-prefixed hex string into an int64.
 func ParseHexInt64(s string) (int64, error) {
@@ -321,7 +349,6 @@ func ParseHexAmount(data string, decimals int32) decimal.Decimal {
 	return decimal.NewFromBigInt(val, -decimals)
 }
 
-// ── JSON-RPC helpers ─────────────────────────────────────────────────────────
 
 type jsonRPCRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -408,7 +435,138 @@ func (c *EVMClient) jsonRPC(ctx context.Context, rpcURL, apiKey string, method s
 	return nil
 }
 
-// ── Response types ──────────────────────────────────────────────────────────
+
+// jsonRPCBatch sends multiple JSON-RPC requests in a single HTTP call and
+// returns the responses indexed by their request ID. This reduces the number
+// of round-trips for poll cycles that need multiple RPC methods.
+func (c *EVMClient) jsonRPCBatch(ctx context.Context, rpcURL, apiKey string, requests []jsonRPCRequest) ([]jsonRPCResponse, error) {
+	start := time.Now()
+
+	b, err := json.Marshal(requests)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling batch request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("creating batch HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("batch HTTP request to %s: %w", rpcURL, err)
+	}
+	defer resp.Body.Close()
+
+	c.logger.Debug("settla-evm-monitor: RPC batch call",
+		"count", len(requests),
+		"url", rpcURL,
+		"status", resp.StatusCode,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return nil, fmt.Errorf("reading batch response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, rpcURL, string(body))
+	}
+
+	var responses []jsonRPCResponse
+	if err := json.Unmarshal(body, &responses); err != nil {
+		return nil, fmt.Errorf("decoding batch response from %s: %w", rpcURL, err)
+	}
+	return responses, nil
+}
+
+// GetBlockNumberAndLogs combines eth_blockNumber and eth_getLogs into a single
+// batch RPC call, reducing the per-poll round-trip count from 2 to 1.
+func (c *EVMClient) GetBlockNumberAndLogs(
+	ctx context.Context,
+	contractAddress string,
+	toAddresses []string,
+	fromBlock, toBlock int64,
+	tokenDecimals int32,
+) (int64, []ERC20Transfer, error) {
+	paddedAddrs := make([]string, len(toAddresses))
+	for i, addr := range toAddresses {
+		paddedAddrs[i] = PadAddress(addr)
+	}
+
+	filter := map[string]any{
+		"address":   contractAddress,
+		"fromBlock": EncodeHexInt64(fromBlock),
+		"toBlock":   EncodeHexInt64(toBlock),
+		"topics": []any{
+			erc20TransferTopic,
+			nil,
+			paddedAddrs,
+		},
+	}
+
+	var blockNum int64
+	var transfers []ERC20Transfer
+
+	err := c.failover.Execute(ctx, func(ctx context.Context, rpcURL, apiKey string) error {
+		requests := []jsonRPCRequest{
+			{JSONRPC: "2.0", Method: "eth_blockNumber", Params: []any{}, ID: 1},
+			{JSONRPC: "2.0", Method: "eth_getLogs", Params: []any{filter}, ID: 2},
+		}
+
+		responses, err := c.jsonRPCBatch(ctx, rpcURL, apiKey, requests)
+		if err != nil {
+			return err
+		}
+
+		// Parse responses by ID.
+		for _, r := range responses {
+			if r.Error != nil {
+				return r.Error
+			}
+			switch r.ID {
+			case 1: // eth_blockNumber
+				var hexNum string
+				if err := json.Unmarshal(r.Result, &hexNum); err != nil {
+					return fmt.Errorf("decoding block number: %w", err)
+				}
+				blockNum, err = ParseHexInt64(hexNum)
+				if err != nil {
+					return fmt.Errorf("parsing block number: %w", err)
+				}
+			case 2: // eth_getLogs
+				var logs []ethLog
+				if err := json.Unmarshal(r.Result, &logs); err != nil {
+					return fmt.Errorf("decoding logs: %w", err)
+				}
+				transfers = make([]ERC20Transfer, 0, len(logs))
+				for _, log := range logs {
+					t, err := ParseERC20TransferLog(log, tokenDecimals)
+					if err != nil {
+						continue
+					}
+					transfers = append(transfers, t)
+				}
+			}
+		}
+		return nil
+	})
+
+	if err == nil && blockNum > 0 {
+		c.blockCacheMu.Lock()
+		c.cachedBlockNum = blockNum
+		c.cachedBlockAt = time.Now()
+		c.blockCacheMu.Unlock()
+	}
+
+	return blockNum, transfers, err
+}
+
 
 // ethBlockResult is the raw result from eth_getBlockByNumber.
 type ethBlockResult struct {
@@ -431,7 +589,6 @@ type ethLog struct {
 	Removed          bool     `json:"removed"`
 }
 
-// ── Unexported hex helper ───────────────────────────────────────────────────
 
 // hexToBytes decodes a 0x-prefixed hex string to bytes.
 func hexToBytes(s string) ([]byte, error) {
