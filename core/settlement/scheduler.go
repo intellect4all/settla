@@ -148,6 +148,18 @@ func (s *Scheduler) tick(ctx context.Context) error {
 		return fmt.Errorf("settla-settlement: calculating settlements: %w", err)
 	}
 
+	// Apply cross-tenant netting to reduce settlement volume.
+	nettingResult, err := s.NetSettlementsForPeriod(ctx, periodStart, periodEnd)
+	if err != nil {
+		s.logger.Error("settla-settlement: cross-tenant netting failed (non-fatal)", "error", err)
+		// Continue — individual settlements are already persisted.
+	} else if nettingResult != nil && len(nettingResult.NettedInstructions) > 0 {
+		s.logger.Info("settla-settlement: netting applied",
+			"savings_percent", fmt.Sprintf("%.1f%%", nettingResult.SavingsPercent),
+			"netted_instructions", len(nettingResult.NettedInstructions),
+		)
+	}
+
 	// Check for overdue settlements
 	actions, err := s.checkOverdue(ctx, now)
 	if err != nil {
