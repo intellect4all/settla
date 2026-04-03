@@ -126,6 +126,7 @@ type Relay struct {
 	pollInterval  time.Duration
 	batchSize     int32
 	numPartitions int
+	leader        *LeaderElector // optional: when set, only the leader polls
 }
 
 // RelayOption configures the Relay.
@@ -170,6 +171,14 @@ func WithRelayLag(g prometheus.Gauge) RelayOption {
 	}
 }
 
+// WithLeaderElection enables leader election for relay redundancy.
+// When set, only the instance that holds the NATS KV leader lease will poll.
+func WithLeaderElection(le *LeaderElector) RelayOption {
+	return func(r *Relay) {
+		r.leader = le
+	}
+}
+
 // NewRelay creates an outbox relay.
 func NewRelay(store OutboxStore, publisher Publisher, logger *slog.Logger, opts ...RelayOption) *Relay {
 	r := &Relay{
@@ -204,11 +213,24 @@ const maxBackoff = 5 * time.Second
 // Run starts the relay loop. It blocks until ctx is cancelled.
 // On poll failure, the interval backs off exponentially up to maxBackoff.
 // On success, the interval resets to pollInterval.
+//
+// When leader election is configured, the relay only polls when it holds the
+// leader lease. Non-leader instances idle and wait for the lease to expire.
 func (r *Relay) Run(ctx context.Context) error {
+	// Start leader election in background if configured.
+	if r.leader != nil {
+		go func() {
+			if err := r.leader.Run(ctx); err != nil && ctx.Err() == nil {
+				r.logger.Error("settla-outbox: leader election failed", "error", err)
+			}
+		}()
+	}
+
 	r.logger.Info("settla-outbox: relay started",
 		"poll_interval", r.pollInterval,
 		"batch_size", r.batchSize,
 		"partitions", r.numPartitions,
+		"leader_election", r.leader != nil,
 	)
 
 	consecutiveFailures := 0
@@ -221,6 +243,12 @@ func (r *Relay) Run(ctx context.Context) error {
 			r.logger.Info("settla-outbox: relay stopped")
 			return ctx.Err()
 		case <-timer.C:
+			// Skip polling if leader election is active and we're not the leader.
+			if r.leader != nil && !r.leader.IsLeader() {
+				timer.Reset(r.pollInterval)
+				continue
+			}
+
 			if err := r.poll(ctx); err != nil {
 				consecutiveFailures++
 				shift := min(consecutiveFailures, 6)
