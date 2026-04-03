@@ -49,6 +49,9 @@ func (c *TransferStateCheck) Name() string {
 	return "transfer_state_consistency"
 }
 
+// Optional returns false — this is a required check.
+func (c *TransferStateCheck) Optional() bool { return false }
+
 // Run checks for transfers stuck beyond their expected duration in non-terminal states.
 func (c *TransferStateCheck) Run(ctx context.Context) (*CheckResult, error) {
 	var totalStuck int

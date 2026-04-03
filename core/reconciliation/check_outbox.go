@@ -43,6 +43,9 @@ func (c *OutboxCheck) Name() string {
 	return "outbox_health"
 }
 
+// Optional returns false.
+func (c *OutboxCheck) Optional() bool { return false }
+
 // Run checks for stale unpublished outbox entries and default partition leaks.
 func (c *OutboxCheck) Run(ctx context.Context) (*CheckResult, error) {
 	cutoff := time.Now().UTC().Add(-c.maxAge)

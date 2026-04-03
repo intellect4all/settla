@@ -39,6 +39,9 @@ func (c *ProviderTxCheck) Name() string {
 	return "provider_tx_reconciliation"
 }
 
+// Optional returns false.
+func (c *ProviderTxCheck) Optional() bool { return false }
+
 // Run counts pending provider transactions older than the configured threshold.
 // Returns "warn" if any are found (since providers may be slow but not necessarily broken).
 func (c *ProviderTxCheck) Run(ctx context.Context) (*CheckResult, error) {
