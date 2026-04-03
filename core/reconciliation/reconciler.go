@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,6 +72,21 @@ type FeatureFlagChecker interface {
 	IsEnabled(name string) bool
 }
 
+// contextKey is an unexported type for context keys in this package.
+type contextKey string
+
+// sinceKey is the context key for the incremental reconciliation timestamp.
+const sinceKey contextKey = "reconciliation_since"
+
+// SinceFromContext extracts the "since" timestamp from the context. If not set,
+// returns the zero value (checks should fall back to full scan behavior).
+func SinceFromContext(ctx context.Context) time.Time {
+	if v, ok := ctx.Value(sinceKey).(time.Time); ok {
+		return v
+	}
+	return time.Time{}
+}
+
 // Reconciler orchestrates reconciliation checks and stores reports.
 type Reconciler struct {
 	checks      []Check
@@ -78,6 +94,9 @@ type Reconciler struct {
 	logger      *slog.Logger
 	metrics     *ReconcilerMetrics
 	flagChecker FeatureFlagChecker
+
+	// lastRunAt tracks the last successful run time per check for incremental reconciliation.
+	lastRunAt sync.Map // map[string]time.Time
 }
 
 // NewReconciler creates a Reconciler with the given checks, store, and logger.
@@ -104,8 +123,9 @@ func (r *Reconciler) WithFeatureFlags(checker FeatureFlagChecker) *Reconciler {
 	return r
 }
 
-// Run executes all registered checks, builds a report, stores it, and returns it.
-// OverallPass is true only if every check has status "pass".
+// Run executes all registered checks in parallel (max 4 concurrent), builds a
+// report, stores it, and returns it. OverallPass is true only if every check
+// has status "pass".
 func (r *Reconciler) Run(ctx context.Context) (*Report, error) {
 	start := time.Now()
 
@@ -119,8 +139,9 @@ func (r *Reconciler) Run(ctx context.Context) (*Report, error) {
 		OverallPass: true,
 	}
 
+	// Filter checks based on feature flags.
+	var activeChecks []Check
 	for _, check := range r.checks {
-		// Gate enhanced checks behind the feature flag.
 		if r.flagChecker != nil && strings.HasPrefix(check.Name(), "enhanced_") {
 			if !r.flagChecker.IsEnabled("enhanced_reconciliation") {
 				r.logger.Debug("settla-reconciliation: skipping gated check",
@@ -129,39 +150,82 @@ func (r *Reconciler) Run(ctx context.Context) (*Report, error) {
 				continue
 			}
 		}
+		activeChecks = append(activeChecks, check)
+	}
 
-		r.logger.Info("settla-reconciliation: running check",
-			slog.String("check", check.Name()),
-		)
+	// Run checks in parallel with a concurrency limit of 4.
+	type indexedResult struct {
+		idx    int
+		result CheckResult
+	}
+	resultsCh := make(chan indexedResult, len(activeChecks))
+	sem := make(chan struct{}, 4) // max 4 concurrent checks
+	var wg sync.WaitGroup
 
-		result, err := check.Run(ctx)
-		if err != nil {
-			r.logger.Error("settla-reconciliation: check error",
+	for i, check := range activeChecks {
+		wg.Add(1)
+		go func(i int, check Check) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire
+			defer func() { <-sem }() // release
+
+			r.logger.Info("settla-reconciliation: running check",
 				slog.String("check", check.Name()),
-				slog.String("error", err.Error()),
 			)
-			result = &CheckResult{
-				Name:      check.Name(),
-				Status:    "fail",
-				Details:   fmt.Sprintf("check error: %v", err),
-				CheckedAt: time.Now().UTC(),
-			}
-		}
 
+			// Inject "since" timestamp for incremental reconciliation.
+			checkCtx := ctx
+			if lastRun, ok := r.lastRunAt.Load(check.Name()); ok {
+				checkCtx = context.WithValue(ctx, sinceKey, lastRun.(time.Time))
+			}
+
+			result, err := check.Run(checkCtx)
+
+			if err != nil {
+				r.logger.Error("settla-reconciliation: check error",
+					slog.String("check", check.Name()),
+					slog.String("error", err.Error()),
+				)
+				result = &CheckResult{
+					Name:      check.Name(),
+					Status:    "fail",
+					Details:   fmt.Sprintf("check error: %v", err),
+					CheckedAt: time.Now().UTC(),
+				}
+			}
+
+			r.logger.Info("settla-reconciliation: check completed",
+				slog.String("check", result.Name),
+				slog.String("status", result.Status),
+				slog.Int("mismatches", result.Mismatches),
+			)
+
+			// Update lastRunAt on successful check for next incremental run.
+			if result.Status == "pass" {
+				r.lastRunAt.Store(check.Name(), time.Now().UTC())
+			}
+
+			resultsCh <- indexedResult{idx: i, result: *result}
+		}(i, check)
+	}
+
+	wg.Wait()
+	close(resultsCh)
+
+	// Collect results and preserve original check order.
+	ordered := make([]CheckResult, len(activeChecks))
+	for ir := range resultsCh {
+		ordered[ir.idx] = ir.result
+	}
+
+	for _, result := range ordered {
 		if result.Status != "pass" {
 			report.OverallPass = false
 			if r.metrics != nil && result.Mismatches > 0 {
 				r.metrics.DiscrepanciesFound.WithLabelValues(result.Name).Add(float64(result.Mismatches))
 			}
 		}
-
-		report.Results = append(report.Results, *result)
-
-		r.logger.Info("settla-reconciliation: check completed",
-			slog.String("check", result.Name),
-			slog.String("status", result.Status),
-			slog.Int("mismatches", result.Mismatches),
-		)
+		report.Results = append(report.Results, result)
 	}
 
 	if err := r.store.CreateReconciliationReport(ctx, report); err != nil {
