@@ -181,7 +181,7 @@ func (c *Calculator) CalculateNetSettlement(
 	// Snapshot the tenant's fee schedule at calculation time for audit trail reconstruction.
 	feeSnapshot := tenant.FeeSchedule
 	settlement := &NetSettlement{
-		ID:                  uuid.New(),
+		ID:                  uuid.Must(uuid.NewV7()),
 		TenantID:            tenantID,
 		TenantName:          tenant.Name,
 		PeriodStart:         periodStart,
