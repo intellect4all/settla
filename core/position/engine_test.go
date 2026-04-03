@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -11,7 +12,6 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-// ── Mock Store ──────────────────────────────────────────────────────────────
 
 type mockStore struct {
 	transactions map[uuid.UUID]*domain.PositionTransaction
@@ -60,7 +60,14 @@ func (s *mockStore) ListByTenant(_ context.Context, _ uuid.UUID, _, _ int32) ([]
 	return txns, nil
 }
 
-// ── Mock Treasury Reader ────────────────────────────────────────────────────
+func (s *mockStore) ListByTenantCursor(_ context.Context, _ uuid.UUID, _ int32, _ time.Time) ([]domain.PositionTransaction, error) {
+	var txns []domain.PositionTransaction
+	for _, tx := range s.transactions {
+		txns = append(txns, *tx)
+	}
+	return txns, nil
+}
+
 
 type mockTreasuryReader struct {
 	positions map[string]*domain.Position
@@ -77,7 +84,6 @@ func (m *mockTreasuryReader) GetPosition(_ context.Context, tenantID uuid.UUID, 
 
 var errMock = domain.ErrInsufficientFunds("MOCK", "mock")
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 func newTestEngine(store *mockStore, treasury *mockTreasuryReader) *Engine {
 	logger := slog.Default()
@@ -107,7 +113,6 @@ func testTreasury(tenantID uuid.UUID) *mockTreasuryReader {
 	}
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 func TestRequestTopUp(t *testing.T) {
 	tenantID := uuid.New()
