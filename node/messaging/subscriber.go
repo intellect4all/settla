@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 
 	"github.com/intellect4all/settla/domain"
 )
@@ -43,16 +45,17 @@ func defaultSubscriberConfig() subscriberConfig {
 // It creates a durable consumer filtered to the partition's subject pattern,
 // with manual ack and exponential backoff on redelivery.
 type Subscriber struct {
-	client      *Client
-	js          jetstream.JetStream
-	partition   int
-	poolSize    int
-	workerPool  chan struct{}
-	tenantLocks sync.Map // map[string]*sync.Mutex — per-tenant ordering
-	logger      *slog.Logger
-	cancel      context.CancelFunc
-	draining    atomic.Bool
-	inflight    sync.WaitGroup
+	client          *Client
+	js              jetstream.JetStream
+	partition       int
+	poolSize        int
+	workerPool      chan struct{}
+	tenantLocks     sync.Map // map[string]*sync.Mutex — per-tenant ordering
+	logger          *slog.Logger
+	cancel          context.CancelFunc
+	draining        atomic.Bool
+	inflight        sync.WaitGroup
+	lastProcessedAt atomic.Int64 // unix millis — for worker liveness checks
 }
 
 // NewSubscriber creates a subscriber for a specific transfer partition.
@@ -201,6 +204,7 @@ func (s *Subscriber) handleMessage(ctx context.Context, msg jetstream.Msg, handl
 	defer s.inflight.Done()
 
 	processMessage(ctx, msg, handler, streamName, s.client, s.logger, nil)
+	s.lastProcessedAt.Store(time.Now().UnixMilli())
 }
 
 // dispatchPooled dispatches message processing to a pooled goroutine with per-tenant ordering.
@@ -237,12 +241,18 @@ func (s *Subscriber) dispatchPooled(ctx context.Context, msg jetstream.Msg, hand
 		defer mu.Unlock()
 
 		processMessage(ctx, msg, handler, streamName, s.client, s.logger, &event)
+		s.lastProcessedAt.Store(time.Now().UnixMilli())
 	}()
 }
 
 // processMessage is the shared message processing logic for both serial and pooled paths.
 // When preParsed is non-nil the unmarshal step is skipped (the caller already parsed the event).
 func processMessage(ctx context.Context, msg jetstream.Msg, handler EventHandler, streamName string, client *Client, logger *slog.Logger, preParsed *domain.Event) {
+	// Extract trace context from message headers for distributed tracing.
+	if hdrs := msg.Headers(); len(hdrs) > 0 {
+		ctx = otel.GetTextMapPropagator().Extract(ctx, NATSHeaderCarrier(hdrs))
+	}
+
 	var event domain.Event
 	if preParsed != nil {
 		event = *preParsed
@@ -386,14 +396,34 @@ func unmarshalEvent(data []byte) (domain.Event, error) {
 
 // nakDelay returns the delay for a NAK based on the delivery attempt.
 // This supplements NATS native BackOff for explicit retry control.
+// A ±20% random jitter is added to prevent thundering herd when
+// many messages retry simultaneously after a provider recovery.
 func nakDelay(deliveryCount uint64) time.Duration {
+	var base time.Duration
 	if int(deliveryCount) > len(BackoffSchedule) {
-		return BackoffSchedule[len(BackoffSchedule)-1]
+		base = BackoffSchedule[len(BackoffSchedule)-1]
+	} else if deliveryCount < 1 {
+		base = BackoffSchedule[0]
+	} else {
+		base = BackoffSchedule[deliveryCount-1]
 	}
-	if deliveryCount < 1 {
-		return BackoffSchedule[0]
+	// Apply ±20% jitter: base * (0.8 to 1.2)
+	jitter := 0.8 + rand.Float64()*0.4
+	return time.Duration(float64(base) * jitter)
+}
+
+// LastProcessedAt returns the time the last message was processed, or zero if none.
+func (s *Subscriber) LastProcessedAt() time.Time {
+	ms := s.lastProcessedAt.Load()
+	if ms == 0 {
+		return time.Time{}
 	}
-	return BackoffSchedule[deliveryCount-1]
+	return time.UnixMilli(ms)
+}
+
+// Partition returns the subscriber's partition ID.
+func (s *Subscriber) Partition() int {
+	return s.partition
 }
 
 // Stop drains in-flight handlers then cancels the subscription.
@@ -425,16 +455,17 @@ func (s *Subscriber) Stop() {
 // Unlike Subscriber (which is partition-aware for transfers), StreamSubscriber
 // works with any of the 7 Settla streams.
 type StreamSubscriber struct {
-	client       *Client
-	js           jetstream.JetStream
-	streamName   string
-	consumerName string
-	poolSize     int
-	workerPool   chan struct{}
-	logger       *slog.Logger
-	cancel       context.CancelFunc
-	draining     atomic.Bool
-	inflight     sync.WaitGroup
+	client          *Client
+	js              jetstream.JetStream
+	streamName      string
+	consumerName    string
+	poolSize        int
+	workerPool      chan struct{}
+	logger          *slog.Logger
+	cancel          context.CancelFunc
+	draining        atomic.Bool
+	inflight        sync.WaitGroup
+	lastProcessedAt atomic.Int64 // unix millis — for worker liveness checks
 }
 
 // NewStreamSubscriber creates a subscriber for a named stream with a durable consumer.
@@ -536,6 +567,7 @@ func (ss *StreamSubscriber) handleMessage(ctx context.Context, msg jetstream.Msg
 	defer ss.inflight.Done()
 
 	processMessage(ctx, msg, handler, ss.streamName, ss.client, ss.logger, nil)
+	ss.lastProcessedAt.Store(time.Now().UnixMilli())
 }
 
 // dispatchPooled dispatches message processing to a pooled goroutine (no per-tenant ordering).
@@ -559,7 +591,22 @@ func (ss *StreamSubscriber) dispatchPooled(ctx context.Context, msg jetstream.Ms
 		defer func() { <-ss.workerPool }()
 
 		processMessage(ctx, msg, handler, ss.streamName, ss.client, ss.logger, nil)
+		ss.lastProcessedAt.Store(time.Now().UnixMilli())
 	}()
+}
+
+// LastProcessedAt returns the time the last message was processed, or zero if none.
+func (ss *StreamSubscriber) LastProcessedAt() time.Time {
+	ms := ss.lastProcessedAt.Load()
+	if ms == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
+}
+
+// StreamName returns the subscriber's stream name.
+func (ss *StreamSubscriber) StreamName() string {
+	return ss.streamName
 }
 
 // Stop drains in-flight handlers then cancels the stream subscription.
