@@ -106,6 +106,65 @@ func (fm *FailoverManager) Execute(ctx context.Context, op func(ctx context.Cont
 	return fmt.Errorf("settla-rpc: no available providers")
 }
 
+// FanExecute sends the operation to all available providers concurrently and
+// returns as soon as the first one succeeds. Remaining in-flight calls are
+// cancelled via context. This is useful for latency-sensitive calls like
+// eth_blockNumber where the fastest response wins.
+func (fm *FailoverManager) FanExecute(ctx context.Context, op func(ctx context.Context, rpcURL, apiKey string) error) error {
+	fm.mu.RLock()
+	providers := fm.providers
+	fm.mu.RUnlock()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		err      error
+		provider *Provider
+	}
+
+	var available []*Provider
+	for _, p := range providers {
+		if p.IsAvailable() {
+			available = append(available, p)
+		}
+	}
+	if len(available) == 0 {
+		return fmt.Errorf("settla-rpc: no available providers")
+	}
+
+	// Fast path: single provider, no need to fan.
+	if len(available) == 1 {
+		return fm.Execute(ctx, op)
+	}
+
+	ch := make(chan result, len(available))
+	for _, p := range available {
+		p := p
+		go func() {
+			err := op(ctx, p.RPCURL, p.APIKey)
+			ch <- result{err: err, provider: p}
+		}()
+	}
+
+	var lastErr error
+	for range available {
+		r := <-ch
+		if r.err == nil {
+			r.provider.RecordSuccess()
+			cancel() // cancel remaining in-flight calls
+			return nil
+		}
+		r.provider.RecordFailure()
+		lastErr = r.err
+		fm.logger.Warn("settla-rpc: fanned provider failed",
+			"provider", r.provider.Name,
+			"error", r.err,
+		)
+	}
+	return fmt.Errorf("settla-rpc: all fanned providers failed: %w", lastErr)
+}
+
 // AvailableCount returns the number of providers with closed or half-open circuits.
 func (fm *FailoverManager) AvailableCount() int {
 	fm.mu.RLock()

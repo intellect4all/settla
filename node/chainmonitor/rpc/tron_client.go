@@ -37,7 +37,7 @@ func NewTronClient(providers []*Provider, logger *slog.Logger) *TronClient {
 	}
 	return &TronClient{
 		failover:   NewFailoverManager(providers, logger),
-		httpClient: &http.Client{Timeout: httpTimeout},
+		httpClient: &http.Client{Timeout: httpTimeout, Transport: NewPooledTransport()},
 		logger:     logger,
 	}
 }
@@ -112,7 +112,6 @@ func ParseTRC20Transfer(t TRC20Transfer, chain string) domain.IncomingTransactio
 	}
 }
 
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 func (c *TronClient) get(ctx context.Context, baseURL, apiKey, path string, resp any) error {
 	return c.do(ctx, http.MethodGet, baseURL+path, apiKey, nil, resp)
@@ -175,7 +174,6 @@ func (c *TronClient) do(ctx context.Context, method, url, apiKey string, reqBody
 	return nil
 }
 
-// ── Response types ──────────────────────────────────────────────────────────
 
 // NowBlockResp is the response from /wallet/getnowblock.
 type NowBlockResp struct {
