@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 )
 
@@ -76,7 +77,10 @@ func (vm *VacuumManager) RunDueVacuums(ctx context.Context) error {
 // vacuumAnalyze runs VACUUM ANALYZE on a single table.
 // NEVER runs VACUUM FULL — it blocks all operations and rewrites the entire table.
 func (vm *VacuumManager) vacuumAnalyze(ctx context.Context, table string) error {
-	sql := VacuumAnalyzeSQL(table)
+	sql, err := VacuumAnalyzeSQL(table)
+	if err != nil {
+		return err
+	}
 
 	start := time.Now()
 	if _, err := vm.db.Exec(ctx, sql); err != nil {
@@ -92,8 +96,15 @@ func (vm *VacuumManager) vacuumAnalyze(ctx context.Context, table string) error 
 	return nil
 }
 
+// validIdentifier matches safe PostgreSQL identifiers (schema.table or table).
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.]*$`)
+
 // VacuumAnalyzeSQL returns the SQL command for vacuuming a table with statistics update.
 // Always uses VACUUM ANALYZE (lightweight), never VACUUM FULL (blocking).
-func VacuumAnalyzeSQL(table string) string {
-	return fmt.Sprintf("VACUUM ANALYZE %s", table)
+// Returns an error if the table name contains unsafe characters.
+func VacuumAnalyzeSQL(table string) (string, error) {
+	if !validIdentifier.MatchString(table) {
+		return "", fmt.Errorf("unsafe table identifier: %q", table)
+	}
+	return fmt.Sprintf("VACUUM ANALYZE %s", table), nil
 }

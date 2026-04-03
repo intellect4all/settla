@@ -238,20 +238,34 @@ func TestDefaultPartitionCheckIdentifiesStaleRows(t *testing.T) {
 // --- Vacuum command tests ---
 
 func TestVacuumAnalyzeSQL(t *testing.T) {
-	sql := VacuumAnalyzeSQL("transfers")
+	sql, err := VacuumAnalyzeSQL("transfers")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected := "VACUUM ANALYZE transfers"
 	if sql != expected {
 		t.Errorf("expected %q, got %q", expected, sql)
 	}
 }
 
+func TestVacuumAnalyzeSQL_RejectsUnsafe(t *testing.T) {
+	_, err := VacuumAnalyzeSQL("transfers; DROP TABLE users")
+	if err == nil {
+		t.Error("expected error for unsafe table name")
+	}
+	_, err = VacuumAnalyzeSQL("$(rm -rf /)")
+	if err == nil {
+		t.Error("expected error for injection attempt")
+	}
+}
+
 func TestVacuumNeverUsesFull(t *testing.T) {
-	sql := VacuumAnalyzeSQL("transfers")
+	sql, _ := VacuumAnalyzeSQL("transfers")
 	if strings.Contains(strings.ToUpper(sql), "FULL") {
 		t.Error("VACUUM must NEVER use FULL — it blocks all operations")
 	}
 
-	sql = VacuumAnalyzeSQL("outbox")
+	sql, _ = VacuumAnalyzeSQL("outbox")
 	if !strings.Contains(sql, "ANALYZE") {
 		t.Error("VACUUM should always include ANALYZE for statistics update")
 	}
