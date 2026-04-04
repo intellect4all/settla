@@ -28,10 +28,17 @@ type rpcClient struct {
 
 func newRPCClient(baseURL, apiKey string, logger *slog.Logger) *rpcClient {
 	return &rpcClient{
-		httpClient: &http.Client{Timeout: defaultHTTPTimeout},
-		baseURL:    baseURL,
-		apiKey:     apiKey,
-		logger:     logger,
+		httpClient: &http.Client{
+			Timeout: defaultHTTPTimeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        50,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		logger:  logger,
 	}
 }
 
