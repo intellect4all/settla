@@ -247,7 +247,7 @@ func (p *OffRampProvider) Execute(ctx context.Context, req domain.OffRampRequest
 		return nil, fmt.Errorf("settla-offramp: getting deposit address for chain %s: %w", chain, err)
 	}
 
-	txID := uuid.New().String()
+	txID := uuid.Must(uuid.NewV7()).String()
 	now := time.Now().UTC()
 
 	rec := &offRampRecord{
@@ -408,7 +408,7 @@ func (p *OffRampProvider) verifyCryptoReceipt(ctx context.Context, sourceTxHash 
 	}
 
 	// Fallback: simulate receipt (no source hash, or chain client unavailable).
-	simHash := "sim-offramp-" + uuid.New().String()
+	simHash := "sim-offramp-" + uuid.Must(uuid.NewV7()).String()
 	return simHash, blockchain.ExplorerURL(chain, simHash)
 }
 
@@ -498,7 +498,7 @@ func (p *OffRampProvider) buildPayoutRef(req domain.OffRampRequest) string {
 	if req.Recipient.AccountNumber != "" {
 		return req.Recipient.Name + "/" + req.Recipient.AccountNumber
 	}
-	return "offramp-" + uuid.New().String()
+	return "offramp-" + uuid.Must(uuid.NewV7()).String()
 }
 
 func (p *OffRampProvider) toProviderTx(rec *offRampRecord) *domain.ProviderTx {

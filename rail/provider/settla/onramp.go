@@ -310,7 +310,7 @@ func (p *OnRampProvider) Execute(ctx context.Context, req domain.OnRampRequest) 
 		return nil, fmt.Errorf("settla-onramp: starting fiat collection: %w", err)
 	}
 
-	txID := uuid.New().String()
+	txID := uuid.Must(uuid.NewV7()).String()
 	now := time.Now().UTC()
 	tx := &onRampTx{
 		id:           txID,

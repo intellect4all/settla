@@ -129,7 +129,7 @@ func (s *FiatSimulator) snapshot(tx *FiatTransaction) *FiatTransaction {
 func (s *FiatSimulator) newTx(txType FiatTxType, amount decimal.Decimal, currency, ref string) *FiatTransaction {
 	now := time.Now().UTC()
 	tx := &FiatTransaction{
-		ID:        uuid.New().String(),
+		ID:        uuid.Must(uuid.NewV7()).String(),
 		Type:      txType,
 		Amount:    amount,
 		Currency:  currency,
