@@ -8,7 +8,7 @@ import (
 )
 
 func TestFXOracle_KnownRates(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	tests := []struct {
 		from    string
@@ -46,7 +46,7 @@ func TestFXOracle_KnownRates(t *testing.T) {
 }
 
 func TestFXOracle_CrossRate(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	// GBP/NGN should equal approximately GBP/USD × USD/NGN
 	// GBP/USD ≈ 1.2645, USD/NGN ≈ 1755.20 → GBP/NGN ≈ 2219.24
@@ -66,7 +66,7 @@ func TestFXOracle_CrossRate(t *testing.T) {
 }
 
 func TestFXOracle_InverseRate(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	// We can't test exact inverse because jitter is applied per call,
 	// but we can verify that GetRate(A,B) * GetRate(B,A) ≈ 1 (within 2×jitter²).
@@ -91,7 +91,7 @@ func TestFXOracle_InverseRate(t *testing.T) {
 }
 
 func TestFXOracle_UnknownCurrency(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	_, err := o.GetRate("XXX", "USD")
 	if err == nil {
@@ -105,7 +105,7 @@ func TestFXOracle_UnknownCurrency(t *testing.T) {
 }
 
 func TestFXOracle_JitterRange(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	// Run many samples to verify jitter stays within ±0.15%
 	base := 1.2645 // GBP/USD
@@ -125,7 +125,7 @@ func TestFXOracle_JitterRange(t *testing.T) {
 }
 
 func TestFXOracle_ConcurrentAccess(t *testing.T) {
-	o := NewFXOracle()
+	o := NewFXOracle(nil)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 200)
