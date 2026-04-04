@@ -21,7 +21,7 @@ func newSettlaOnRamp(deps factory.Deps, _ factory.ProviderConfig) (domain.OnRamp
 		return nil, fmt.Errorf("settla-onramp: blockchain registry is required in testnet mode")
 	}
 
-	fxOracle := NewFXOracle()
+	fxOracle := NewFXOracle(deps.Logger)
 	fiatSim := NewFiatSimulator(DefaultSimulatorConfig())
 	cfg := DefaultOnRampConfig()
 	cfg.Logger = deps.Logger
@@ -34,7 +34,7 @@ func newSettlaOffRamp(deps factory.Deps, _ factory.ProviderConfig) (domain.OffRa
 		return nil, fmt.Errorf("settla-offramp: blockchain registry is required in testnet mode")
 	}
 
-	fxOracle := NewFXOracle()
+	fxOracle := NewFXOracle(deps.Logger)
 	fiatSim := NewFiatSimulator(DefaultSimulatorConfig())
 
 	return NewOffRampProvider(fxOracle, fiatSim, deps.BlockchainReg, nil, deps.Logger), nil

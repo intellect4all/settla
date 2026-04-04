@@ -597,7 +597,7 @@ func (a *CoreRouterAdapter) GetQuote(ctx context.Context, tenantID uuid.UUID, re
 	}
 
 	quote := &domain.Quote{
-		ID:             uuid.New(),
+		ID:             uuid.Must(uuid.NewV7()),
 		TenantID:       tenantID,
 		SourceCurrency: req.SourceCurrency,
 		SourceAmount:   req.SourceAmount,
