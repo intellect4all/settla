@@ -12,11 +12,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
 
 const defaultBaseURL = "http://mockprovider:9095"
+
+// pooledTransport is a shared HTTP transport with connection pooling for
+// provider API calls. Reusing connections avoids per-request TCP+TLS overhead.
+var pooledTransport = &http.Transport{
+	MaxIdleConns:        256,
+	MaxIdleConnsPerHost: 32,
+	IdleConnTimeout:     60 * time.Second,
+	MaxConnsPerHost:     128,
+	ForceAttemptHTTP2:   true,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+}
 
 // Client is a shared HTTP client for communicating with the mock provider service.
 type Client struct {
@@ -32,7 +47,8 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Transport: pooledTransport,
+			Timeout:   30 * time.Second,
 		},
 	}
 }
