@@ -1279,14 +1279,32 @@ export declare type ListPositionTransactionsRequest = Message<"settla.v1.ListPos
   tenantId: string;
 
   /**
+   * deprecated: use page_size
+   *
    * @generated from field: int32 limit = 2;
    */
   limit: number;
 
   /**
+   * deprecated: use page_token
+   *
    * @generated from field: int32 offset = 3;
    */
   offset: number;
+
+  /**
+   * max 100, default 20
+   *
+   * @generated from field: int32 page_size = 4;
+   */
+  pageSize: number;
+
+  /**
+   * cursor for next page (ISO 8601 timestamp)
+   *
+   * @generated from field: string page_token = 5;
+   */
+  pageToken: string;
 };
 
 /**
@@ -1308,6 +1326,13 @@ export declare type ListPositionTransactionsResponse = Message<"settla.v1.ListPo
    * @generated from field: int32 total_count = 2;
    */
   totalCount: number;
+
+  /**
+   * cursor for next page, empty if last page
+   *
+   * @generated from field: string next_page_token = 3;
+   */
+  nextPageToken: string;
 };
 
 /**
