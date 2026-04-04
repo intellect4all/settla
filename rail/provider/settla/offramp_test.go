@@ -27,7 +27,7 @@ func newTestOffRampProvider(t *testing.T) *settla.OffRampProvider {
 		},
 	}
 	fiatSim := settla.NewFiatSimulator(cfg)
-	fxOracle := settla.NewFXOracle()
+	fxOracle := settla.NewFXOracle(nil)
 	// nil registry and walletMgr — falls back to simulation mode.
 	return settla.NewOffRampProvider(fxOracle, fiatSim, nil, nil, nil)
 }

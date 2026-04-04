@@ -28,7 +28,7 @@ import (
 // --- FX Oracle benchmarks ---
 
 func BenchmarkFXOracle_GetRate(b *testing.B) {
-	oracle := NewFXOracle()
+	oracle := NewFXOracle(nil)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -38,7 +38,7 @@ func BenchmarkFXOracle_GetRate(b *testing.B) {
 }
 
 func BenchmarkFXOracle_CrossRate(b *testing.B) {
-	oracle := NewFXOracle()
+	oracle := NewFXOracle(nil)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -208,7 +208,7 @@ func BenchmarkRegistryGetClient(b *testing.B) {
 // actual TPS to validate against the 50M tx/day target.
 
 func TestThroughput_FXOracle_PeakTPS(t *testing.T) {
-	oracle := NewFXOracle()
+	oracle := NewFXOracle(nil)
 	ctx := context.Background()
 	_ = ctx
 
@@ -441,7 +441,7 @@ func benchFastDelays() map[string][2]time.Duration {
 }
 
 func newBenchOnRampProvider() (*OnRampProvider, *fakeChainRegistry) {
-	fxOracle := NewFXOracle()
+	fxOracle := NewFXOracle(nil)
 	fiatSim := NewFiatSimulator(SimulatorConfig{
 		FailureRate:    0,
 		CurrencyDelays: benchFastDelays(),
@@ -453,7 +453,7 @@ func newBenchOnRampProvider() (*OnRampProvider, *fakeChainRegistry) {
 }
 
 func newBenchOffRampProvider() *OffRampProvider {
-	fxOracle := NewFXOracle()
+	fxOracle := NewFXOracle(nil)
 	fiatSim := NewFiatSimulator(SimulatorConfig{
 		FailureRate:    0,
 		CurrencyDelays: benchFastDelays(),

@@ -99,7 +99,7 @@ func (m *fakeWalletManager) GetSystemWallet(chain wallet.Chain) (*wallet.Wallet,
 
 // newTestOnRampProvider builds a provider wired to fast, deterministic fakes.
 func newTestOnRampProvider(failureRate float64) (*OnRampProvider, *fakeChainRegistry) {
-	fxOracle := NewFXOracle()
+	fxOracle := NewFXOracle(nil)
 	delays := map[string][2]time.Duration{
 		"TST": {10 * time.Millisecond, 20 * time.Millisecond},
 		"GBP": {10 * time.Millisecond, 20 * time.Millisecond},
