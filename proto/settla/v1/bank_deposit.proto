@@ -126,13 +126,14 @@ message GetBankDepositSessionResponse {
 
 message ListBankDepositSessionsRequest {
   string tenant_id = 1;
-  int32  limit = 2;                     // max 100, default 20
-  int32  offset = 3;
+  int32  page_size = 2;                  // max 100, default 20
+  string page_token = 3;                 // opaque cursor; empty for first page
 }
 
 message ListBankDepositSessionsResponse {
   repeated BankDepositSession sessions = 1;
-  int32 total = 2;
+  string next_page_token = 2;            // empty if no more results
+  int32  total_count = 3;
 }
 
 message CancelBankDepositSessionRequest {
@@ -147,14 +148,17 @@ message CancelBankDepositSessionResponse {
 message ListVirtualAccountsRequest {
   string tenant_id = 1;
   string currency = 2;                  // optional filter
-  string account_type = 3;             // optional filter: PERMANENT, TEMPORARY
-  int32  limit = 4;                     // max 100, default 20
-  int32  offset = 5;
+  string account_type = 3;              // optional filter: PERMANENT, TEMPORARY
+  int32  limit = 4;                     // deprecated: use page_size
+  int32  offset = 5;                    // deprecated: use page_token
+  int32  page_size = 6;                 // max 100, default 20
+  string page_token = 7;               // cursor for next page (ISO 8601 timestamp)
 }
 
 message ListVirtualAccountsResponse {
   repeated VirtualAccount accounts = 1;
   int32 total = 2;
+  string next_page_token = 3;           // cursor for next page, empty if last page
 }
 
 message GetBankingPartnerRequest {

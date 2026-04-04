@@ -91,13 +91,16 @@ message GetPaymentLinkResponse {
 
 message ListPaymentLinksRequest {
   string tenant_id = 1;
-  int32 limit = 2;                     // max 100, default 20
-  int32 offset = 3;
+  int32 limit = 2;                     // deprecated: use page_size
+  int32 offset = 3;                    // deprecated: use page_token
+  int32 page_size = 4;                 // max 100, default 20
+  string page_token = 5;               // cursor for next page (ISO 8601 timestamp)
 }
 
 message ListPaymentLinksResponse {
   repeated PaymentLink links = 1;
   int64 total = 2;
+  string next_page_token = 3;          // cursor for next page, empty if last page
 }
 
 message ResolvePaymentLinkRequest {

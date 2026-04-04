@@ -109,13 +109,14 @@ message GetDepositSessionResponse {
 
 message ListDepositSessionsRequest {
   string tenant_id = 1;
-  int32  limit = 2;              // max 100, default 20
-  int32  offset = 3;
+  int32  page_size = 2;           // max 100, default 20
+  string page_token = 3;          // opaque cursor; empty for first page
 }
 
 message ListDepositSessionsResponse {
   repeated DepositSession sessions = 1;
-  int32 total = 2;
+  string next_page_token = 2;     // empty if no more results
+  int32  total_count = 3;
 }
 
 message CancelDepositSessionRequest {
