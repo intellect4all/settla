@@ -71,6 +71,7 @@ type BlockchainWorker struct {
 	subscriber          *messaging.StreamSubscriber
 	logger              *slog.Logger
 	blockchainCBs       map[string]*resilience.CircuitBreaker
+	blockchainBulkheads map[string]*resilience.Bulkhead
 	escalationTimeout   time.Duration // how long before a pending tx is escalated to manual review
 	pendingMu           sync.Mutex
 	pendingTxMap        map[uuid.UUID]pendingEntry
@@ -93,6 +94,7 @@ func NewBlockchainWorker(
 	opts ...messaging.SubscriberOption,
 ) *BlockchainWorker {
 	blockchainCBs := make(map[string]*resilience.CircuitBreaker)
+	blockchainBHs := make(map[string]*resilience.Bulkhead)
 	for chain := range blockchainClients {
 		blockchainCBs[chain] = resilience.NewCircuitBreaker(
 			"blockchain-"+chain,
@@ -100,6 +102,7 @@ func NewBlockchainWorker(
 			resilience.WithResetTimeout(60*time.Second),
 			resilience.WithHalfOpenMax(2),
 		)
+		blockchainBHs[chain] = resilience.NewBulkhead("blockchain-"+chain, 30)
 	}
 
 	consumerName := messaging.StreamConsumerName("settla-blockchain-worker", partition)
@@ -117,7 +120,8 @@ func NewBlockchainWorker(
 			opts...,
 		),
 		logger:            logger.With("module", "blockchain-worker", "partition", partition),
-		blockchainCBs:     blockchainCBs,
+		blockchainCBs:       blockchainCBs,
+		blockchainBulkheads: blockchainBHs,
 		escalationTimeout: pendingTxEscalationTimeout,
 		pendingTxMap:      make(map[uuid.UUID]pendingEntry),
 		reviewStore:       reviewStore,
@@ -166,18 +170,30 @@ func (w *BlockchainWorker) handleEvent(ctx context.Context, event domain.Event) 
 	}
 }
 
-// executeBlockchain wraps the blockchain client call with a circuit breaker.
+// executeBlockchain wraps the blockchain client call with bulkhead + circuit breaker.
 func (w *BlockchainWorker) executeBlockchain(ctx context.Context, chain string, client domain.BlockchainClient, req domain.TxRequest) (*domain.ChainTx, error) {
-	cb, ok := w.blockchainCBs[chain]
-	if !ok {
-		return client.SendTransaction(ctx, req)
-	}
 	var result *domain.ChainTx
-	err := cb.Execute(ctx, func(ctx context.Context) error {
-		var execErr error
-		result, execErr = client.SendTransaction(ctx, req)
-		return execErr
-	})
+
+	cbCall := func(ctx context.Context) error {
+		cb, ok := w.blockchainCBs[chain]
+		if !ok {
+			var execErr error
+			result, execErr = client.SendTransaction(ctx, req)
+			return execErr
+		}
+		return cb.Execute(ctx, func(ctx context.Context) error {
+			var execErr error
+			result, execErr = client.SendTransaction(ctx, req)
+			return execErr
+		})
+	}
+
+	var err error
+	if bh, ok := w.blockchainBulkheads[chain]; ok {
+		err = bh.Execute(ctx, cbCall)
+	} else {
+		err = cbCall(ctx)
+	}
 	return result, err
 }
 
