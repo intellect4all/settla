@@ -81,7 +81,7 @@ func (s *InMemoryProviderTransferStore) ClaimProviderTransaction(_ context.Conte
 		delete(s.txs, k)
 	}
 
-	id := uuid.New()
+	id := uuid.Must(uuid.NewV7())
 	s.txs[k] = &domain.ProviderTx{ID: id.String(), Status: "claiming"}
 	return &id, nil
 }

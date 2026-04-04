@@ -47,17 +47,18 @@ type ProviderTransferStore interface {
 		onRampProvider, offRampProvider, chain string, stableCoin domain.Currency) error
 }
 
-// ProviderCBConfig holds per-provider circuit breaker settings.
+// ProviderCBConfig holds per-provider circuit breaker and bulkhead settings.
 // Loaded from factory.ProviderConfig at construction time.
 type ProviderCBConfig struct {
-	CBFailures int // failure threshold (default: 15)
-	CBResetMs  int // reset timeout in ms (default: 10000)
-	CBHalfOpen int // max half-open concurrent (default: 2)
+	CBFailures  int // failure threshold (default: 15)
+	CBResetMs   int // reset timeout in ms (default: 10000)
+	CBHalfOpen  int // max half-open concurrent (default: 2)
+	BulkheadMax int // max concurrent calls per provider; 0 = no bulkhead (default: 50)
 }
 
 // DefaultProviderCBConfig returns the default circuit breaker settings.
 func DefaultProviderCBConfig() ProviderCBConfig {
-	return ProviderCBConfig{CBFailures: 15, CBResetMs: 10000, CBHalfOpen: 2}
+	return ProviderCBConfig{CBFailures: 15, CBResetMs: 10000, CBHalfOpen: 2, BulkheadMax: 50}
 }
 
 // ProviderWorker consumes provider intent messages from NATS and executes
@@ -73,6 +74,8 @@ type ProviderWorker struct {
 	logger           *slog.Logger
 	onRampCBs        map[string]*resilience.CircuitBreaker
 	offRampCBs       map[string]*resilience.CircuitBreaker
+	onRampBulkheads  map[string]*resilience.Bulkhead
+	offRampBulkheads map[string]*resilience.Bulkhead
 	partition        int
 }
 
@@ -90,6 +93,7 @@ func NewProviderWorker(
 	opts ...messaging.SubscriberOption,
 ) *ProviderWorker {
 	onRampCBs := make(map[string]*resilience.CircuitBreaker)
+	onRampBHs := make(map[string]*resilience.Bulkhead)
 	for id := range onRampProviders {
 		cfg := lookupCBConfig(providerCBConfigs, id)
 		onRampCBs[id] = resilience.NewCircuitBreaker(
@@ -98,8 +102,12 @@ func NewProviderWorker(
 			resilience.WithResetTimeout(time.Duration(cfg.CBResetMs)*time.Millisecond),
 			resilience.WithHalfOpenMax(cfg.CBHalfOpen),
 		)
+		if cfg.BulkheadMax > 0 {
+			onRampBHs[id] = resilience.NewBulkhead("provider-onramp-"+id, cfg.BulkheadMax)
+		}
 	}
 	offRampCBs := make(map[string]*resilience.CircuitBreaker)
+	offRampBHs := make(map[string]*resilience.Bulkhead)
 	for id := range offRampProviders {
 		cfg := lookupCBConfig(providerCBConfigs, id)
 		offRampCBs[id] = resilience.NewCircuitBreaker(
@@ -108,6 +116,9 @@ func NewProviderWorker(
 			resilience.WithResetTimeout(time.Duration(cfg.CBResetMs)*time.Millisecond),
 			resilience.WithHalfOpenMax(cfg.CBHalfOpen),
 		)
+		if cfg.BulkheadMax > 0 {
+			offRampBHs[id] = resilience.NewBulkhead("provider-offramp-"+id, cfg.BulkheadMax)
+		}
 	}
 
 	consumerName := messaging.StreamConsumerName("settla-provider-worker", partition)
@@ -124,10 +135,12 @@ func NewProviderWorker(
 			consumerName,
 			opts...,
 		),
-		logger:     logger.With("module", "provider-worker", "partition", partition),
-		onRampCBs:  onRampCBs,
-		offRampCBs: offRampCBs,
-		partition:  partition,
+		logger:           logger.With("module", "provider-worker", "partition", partition),
+		onRampCBs:        onRampCBs,
+		offRampCBs:       offRampCBs,
+		onRampBulkheads:  onRampBHs,
+		offRampBulkheads: offRampBHs,
+		partition:        partition,
 	}
 }
 
@@ -181,18 +194,31 @@ func shouldRetryProviderError(err error) bool {
 	return true
 }
 
-// executeOnRampWithCB wraps the on-ramp provider call with a circuit breaker.
+// executeOnRampWithCB wraps the on-ramp provider call with bulkhead + circuit breaker.
+// The bulkhead limits concurrency per provider; the circuit breaker detects failures.
 func (w *ProviderWorker) executeOnRampWithCB(ctx context.Context, providerID string, provider domain.OnRampProvider, req domain.OnRampRequest) (*domain.ProviderTx, error) {
-	cb, ok := w.onRampCBs[providerID]
-	if !ok {
-		return provider.Execute(ctx, req)
-	}
 	var result *domain.ProviderTx
-	err := cb.Execute(ctx, func(ctx context.Context) error {
-		var execErr error
-		result, execErr = provider.Execute(ctx, req)
-		return execErr
-	})
+
+	cbCall := func(ctx context.Context) error {
+		cb, ok := w.onRampCBs[providerID]
+		if !ok {
+			var execErr error
+			result, execErr = provider.Execute(ctx, req)
+			return execErr
+		}
+		return cb.Execute(ctx, func(ctx context.Context) error {
+			var execErr error
+			result, execErr = provider.Execute(ctx, req)
+			return execErr
+		})
+	}
+
+	var err error
+	if bh, ok := w.onRampBulkheads[providerID]; ok {
+		err = bh.Execute(ctx, cbCall)
+	} else {
+		err = cbCall(ctx)
+	}
 	return result, err
 }
 
@@ -204,6 +230,7 @@ func (w *ProviderWorker) executeOnRamp(ctx context.Context, providerID string, p
 		MaxAttempts:  3,
 		InitialDelay: 200 * time.Millisecond,
 		Multiplier:   2.0,
+		JitterFactor: 0.2,
 	}, shouldRetryProviderError, func(ctx context.Context) error {
 		var retryErr error
 		result, retryErr = w.executeOnRampWithCB(ctx, providerID, provider, req)
@@ -212,18 +239,30 @@ func (w *ProviderWorker) executeOnRamp(ctx context.Context, providerID string, p
 	return result, err
 }
 
-// executeOffRampWithCB wraps the off-ramp provider call with a circuit breaker.
+// executeOffRampWithCB wraps the off-ramp provider call with bulkhead + circuit breaker.
 func (w *ProviderWorker) executeOffRampWithCB(ctx context.Context, providerID string, provider domain.OffRampProvider, req domain.OffRampRequest) (*domain.ProviderTx, error) {
-	cb, ok := w.offRampCBs[providerID]
-	if !ok {
-		return provider.Execute(ctx, req)
-	}
 	var result *domain.ProviderTx
-	err := cb.Execute(ctx, func(ctx context.Context) error {
-		var execErr error
-		result, execErr = provider.Execute(ctx, req)
-		return execErr
-	})
+
+	cbCall := func(ctx context.Context) error {
+		cb, ok := w.offRampCBs[providerID]
+		if !ok {
+			var execErr error
+			result, execErr = provider.Execute(ctx, req)
+			return execErr
+		}
+		return cb.Execute(ctx, func(ctx context.Context) error {
+			var execErr error
+			result, execErr = provider.Execute(ctx, req)
+			return execErr
+		})
+	}
+
+	var err error
+	if bh, ok := w.offRampBulkheads[providerID]; ok {
+		err = bh.Execute(ctx, cbCall)
+	} else {
+		err = cbCall(ctx)
+	}
 	return result, err
 }
 
@@ -235,6 +274,7 @@ func (w *ProviderWorker) executeOffRamp(ctx context.Context, providerID string, 
 		MaxAttempts:  3,
 		InitialDelay: 200 * time.Millisecond,
 		Multiplier:   2.0,
+		JitterFactor: 0.2,
 	}, shouldRetryProviderError, func(ctx context.Context) error {
 		var retryErr error
 		result, retryErr = w.executeOffRampWithCB(ctx, providerID, provider, req)
