@@ -66,6 +66,11 @@ func (w *TransferWorker) Stop() {
 	w.subscriber.Stop()
 }
 
+// LastProcessedAt returns the time the last message was processed (for liveness checks).
+func (w *TransferWorker) LastProcessedAt() time.Time {
+	return w.subscriber.LastProcessedAt()
+}
+
 // handleEvent routes a domain event to the appropriate engine method.
 func (w *TransferWorker) handleEvent(ctx context.Context, event domain.Event) error {
 	start := time.Now()
