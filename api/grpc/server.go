@@ -174,9 +174,7 @@ func WithOpsAPIKey(key string) ServerOption {
 	return func(s *Server) { s.opsAPIKey = key }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // SettlementService
-// ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) CreateQuote(ctx context.Context, req *pb.CreateQuoteRequest) (*pb.CreateQuoteResponse, error) {
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
@@ -268,13 +266,18 @@ func (s *Server) CreateTransfer(ctx context.Context, req *pb.CreateTransferReque
 		}
 	}
 
+	sender, err := senderFromProto(req.GetSender())
+	if err != nil {
+		return nil, err
+	}
+
 	coreReq := core.CreateTransferRequest{
 		ExternalRef:    req.GetExternalRef(),
 		IdempotencyKey: req.GetIdempotencyKey(),
 		SourceCurrency: domain.Currency(req.GetSourceCurrency()),
 		SourceAmount:   sourceAmount,
 		DestCurrency:   domain.Currency(req.GetDestCurrency()),
-		Sender:         senderFromProto(req.GetSender()),
+		Sender:         sender,
 		Recipient:      recipientFromProto(req.GetRecipient()),
 	}
 
@@ -512,9 +515,7 @@ func (s *Server) GetRoutingOptions(ctx context.Context, req *pb.GetRoutingOption
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // TreasuryService
-// ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) GetPositions(ctx context.Context, req *pb.GetPositionsRequest) (*pb.GetPositionsResponse, error) {
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
@@ -591,9 +592,7 @@ func (s *Server) GetLiquidityReport(ctx context.Context, req *pb.GetLiquidityRep
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // LedgerService
-// ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) GetAccounts(ctx context.Context, req *pb.GetAccountsRequest) (*pb.GetAccountsResponse, error) {
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
@@ -725,9 +724,7 @@ func (s *Server) GetTransactions(ctx context.Context, req *pb.GetTransactionsReq
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // AuthService
-// ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) ValidateAPIKey(ctx context.Context, req *pb.ValidateAPIKeyRequest) (*pb.ValidateAPIKeyResponse, error) {
 	if err := validateNonEmpty("key_hash", req.GetKeyHash()); err != nil {
@@ -755,9 +752,7 @@ func (s *Server) ValidateAPIKey(ctx context.Context, req *pb.ValidateAPIKeyReque
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Mapping helpers: domain → proto
-// ──────────────────────────────────────────────────────────────────────────────
 
 func quoteToProto(q *domain.Quote) *pb.Quote {
 	if q == nil {
@@ -936,21 +931,22 @@ func entryTypeToProto(t domain.EntryType) pb.EntryType {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Mapping helpers: proto → domain
-// ──────────────────────────────────────────────────────────────────────────────
 
-func senderFromProto(s *pb.Sender) domain.Sender {
+func senderFromProto(s *pb.Sender) (domain.Sender, error) {
 	if s == nil {
-		return domain.Sender{}
+		return domain.Sender{}, nil
 	}
-	id, _ := uuid.Parse(s.GetId())
+	id, err := uuid.Parse(s.GetId())
+	if err != nil && s.GetId() != "" {
+		return domain.Sender{}, status.Errorf(codes.InvalidArgument, "invalid sender.id: %v", err)
+	}
 	return domain.Sender{
 		ID:      id,
 		Name:    s.GetName(),
 		Email:   s.GetEmail(),
 		Country: s.GetCountry(),
-	}
+	}, nil
 }
 
 func recipientFromProto(r *pb.Recipient) domain.Recipient {
@@ -967,9 +963,7 @@ func recipientFromProto(r *pb.Recipient) domain.Recipient {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Validation helpers
-// ──────────────────────────────────────────────────────────────────────────────
 
 func parseUUID(s, field string) (uuid.UUID, error) {
 	if s == "" {
@@ -1015,9 +1009,7 @@ func (s *Server) verifyAccountOwnership(ctx context.Context, tenantID uuid.UUID,
 	return nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Error mapping: domain errors → gRPC status codes
-// ──────────────────────────────────────────────────────────────────────────────
 
 // domainErrorMessage formats a gRPC error message that embeds the domain error
 // code as a bracket-prefixed tag: "[CODE] human-readable message". The gateway
