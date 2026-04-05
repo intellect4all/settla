@@ -67,7 +67,7 @@ export async function routeRoutes(
           fromCurrency: request.body.from_currency,
           toCurrency: request.body.to_currency,
           amount: request.body.amount,
-        }, request.id);
+        }, request.id, request);
 
         // quotedAt is a protobuf Timestamp {seconds, nanos} — convert to ISO string
         let quotedAt: string | undefined;
