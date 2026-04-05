@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -128,18 +129,30 @@ func (s *Server) ListBankDepositSessions(ctx context.Context, req *pb.ListBankDe
 		return nil, err
 	}
 
-	limit := int(req.GetLimit())
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	offset := int(req.GetOffset())
-	if offset < 0 {
-		offset = 0
+	pageSize := int(req.GetPageSize())
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	sessions, err := s.bankDepositEngine.ListSessions(ctx, tenantID, limit, offset)
-	if err != nil {
-		return nil, mapBankDepositError(err)
+	var sessions []domain.BankDepositSession
+	pageToken := req.GetPageToken()
+	if pageToken == "" {
+		// First page: use offset-based query.
+		var err error
+		sessions, err = s.bankDepositEngine.ListSessions(ctx, tenantID, pageSize, 0)
+		if err != nil {
+			return nil, mapBankDepositError(err)
+		}
+	} else {
+		// Subsequent pages: cursor-based pagination using created_at.
+		cursor, err := time.Parse(time.RFC3339Nano, pageToken)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+		}
+		sessions, err = s.bankDepositEngine.ListSessionsCursor(ctx, tenantID, pageSize, cursor)
+		if err != nil {
+			return nil, mapBankDepositError(err)
+		}
 	}
 
 	pbSessions := make([]*pb.BankDepositSession, len(sessions))
@@ -147,9 +160,16 @@ func (s *Server) ListBankDepositSessions(ctx context.Context, req *pb.ListBankDe
 		pbSessions[i] = bankDepositSessionToProto(&sessions[i])
 	}
 
+	var nextPageToken string
+	if len(sessions) == pageSize {
+		last := sessions[len(sessions)-1]
+		nextPageToken = last.CreatedAt.Format("2006-01-02T15:04:05.999999Z")
+	}
+
 	return &pb.ListBankDepositSessionsResponse{
-		Sessions: pbSessions,
-		Total:    int32(len(sessions)),
+		Sessions:      pbSessions,
+		NextPageToken: nextPageToken,
+		TotalCount:    int32(len(sessions)),
 	}, nil
 }
 
@@ -184,6 +204,7 @@ func (s *Server) CancelBankDepositSession(ctx context.Context, req *pb.CancelBan
 }
 
 // ListVirtualAccounts lists virtual accounts for a tenant.
+// Supports cursor-based pagination (page_size/page_token) with fallback to legacy limit/offset.
 func (s *Server) ListVirtualAccounts(ctx context.Context, req *pb.ListVirtualAccountsRequest) (*pb.ListVirtualAccountsResponse, error) {
 	if s.bankDepositEngine == nil {
 		return nil, status.Error(codes.Unimplemented, "bank deposit service not configured")
@@ -194,17 +215,76 @@ func (s *Server) ListVirtualAccounts(ctx context.Context, req *pb.ListVirtualAcc
 		return nil, err
 	}
 
-	accounts, total, err := s.bankDepositEngine.ListVirtualAccounts(ctx, bankdepositcore.VirtualAccountListParams{
+	// Support cursor-based pagination (page_size/page_token) with fallback to legacy limit/offset.
+	pageSize := req.GetPageSize()
+	if pageSize <= 0 {
+		pageSize = req.GetLimit()
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	pageToken := req.GetPageToken()
+	if pageToken == "" {
+		// Legacy fallback: use offset-based pagination.
+		accounts, total, err := s.bankDepositEngine.ListVirtualAccounts(ctx, bankdepositcore.VirtualAccountListParams{
+			TenantID:    tenantID,
+			Currency:    req.GetCurrency(),
+			AccountType: req.GetAccountType(),
+			Limit:       pageSize,
+			Offset:      req.GetOffset(),
+		})
+		if err != nil {
+			return nil, mapBankDepositError(err)
+		}
+
+		pbAccounts := virtualAccountsToProto(accounts)
+
+		var nextToken string
+		if int32(len(accounts)) == pageSize && len(accounts) > 0 {
+			nextToken = accounts[len(accounts)-1].CreatedAt.Format(time.RFC3339Nano)
+		}
+
+		return &pb.ListVirtualAccountsResponse{
+			Accounts:      pbAccounts,
+			Total:         int32(total),
+			NextPageToken: nextToken,
+		}, nil
+	}
+
+	// Cursor-based path: parse timestamp from page_token.
+	cursor, err := time.Parse(time.RFC3339Nano, pageToken)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+	}
+
+	accounts, err := s.bankDepositEngine.ListVirtualAccountsCursor(ctx, bankdepositcore.VirtualAccountCursorParams{
 		TenantID:    tenantID,
 		Currency:    req.GetCurrency(),
 		AccountType: req.GetAccountType(),
-		Limit:       req.GetLimit(),
-		Offset:      req.GetOffset(),
+		PageSize:    pageSize,
+		Cursor:      cursor,
 	})
 	if err != nil {
 		return nil, mapBankDepositError(err)
 	}
 
+	pbAccounts := virtualAccountsToProto(accounts)
+
+	var nextToken string
+	if int32(len(accounts)) == pageSize && len(accounts) > 0 {
+		nextToken = accounts[len(accounts)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+
+	return &pb.ListVirtualAccountsResponse{
+		Accounts:      pbAccounts,
+		Total:         int32(len(accounts)),
+		NextPageToken: nextToken,
+	}, nil
+}
+
+// virtualAccountsToProto converts a slice of domain virtual accounts to proto.
+func virtualAccountsToProto(accounts []domain.VirtualAccountPool) []*pb.VirtualAccount {
 	pbAccounts := make([]*pb.VirtualAccount, len(accounts))
 	for i := range accounts {
 		a := &accounts[i]
@@ -221,11 +301,7 @@ func (s *Server) ListVirtualAccounts(ctx context.Context, req *pb.ListVirtualAcc
 			Available:        a.Available,
 		}
 	}
-
-	return &pb.ListVirtualAccountsResponse{
-		Accounts: pbAccounts,
-		Total:    int32(total),
-	}, nil
+	return pbAccounts
 }
 
 // GetBankingPartner retrieves a banking partner by ID.
@@ -253,7 +329,6 @@ func (s *Server) GetBankingPartner(ctx context.Context, req *pb.GetBankingPartne
 	}, nil
 }
 
-// ── Proto conversion helpers ─────────────────────────────────────────────────
 
 func bankDepositSessionToProto(s *domain.BankDepositSession) *pb.BankDepositSession {
 	ps := &pb.BankDepositSession{
