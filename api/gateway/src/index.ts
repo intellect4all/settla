@@ -14,6 +14,7 @@
  *   - Health/metrics endpoints
  */
 import Fastify from "fastify";
+import fastifyCompress from "@fastify/compress";
 import fastifyCors from "@fastify/cors";
 import fastifySwagger from "@fastify/swagger";
 import scalarFastifyApiReference from "@scalar/fastify-api-reference";
@@ -85,7 +86,6 @@ export async function buildApp(deps?: {
     });
   });
 
-  // ── Load shedding & graceful drain ─────────────────────────────────────
   await server.register(loadShedding, {
     maxConcurrent: Number(process.env.SETTLA_LOAD_SHED_MAX_CONCURRENT) || 1000,
     targetLatencyMs: Number(process.env.SETTLA_LOAD_SHED_TARGET_LATENCY_MS) || 50,
@@ -94,12 +94,16 @@ export async function buildApp(deps?: {
   });
   await server.register(gracefulDrain);
 
-  // ── CORS ────────────────────────────────────────────────────────────────
+  await server.register(fastifyCompress, {
+    global: true,
+    threshold: 1024, // only compress responses larger than 1 KB
+    encodings: ["br", "gzip"],
+  });
+
   await server.register(fastifyCors, {
     origin: config.corsOrigin,
   });
 
-  // ── Security headers ──────────────────────────────────────────────────
   server.addHook("onSend", async (_request, reply) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
@@ -115,7 +119,6 @@ export async function buildApp(deps?: {
     }
   });
 
-  // ── OpenAPI docs ────────────────────────────────────────────────────────
   await server.register(fastifySwagger, {
     openapi: {
       info: {
@@ -182,12 +185,10 @@ export async function buildApp(deps?: {
     },
   });
 
-  // ── Raw OpenAPI spec endpoint ──────────────────────────────────────────
   server.get("/openapi.json", { schema: { hide: true } }, async (_req, reply) => {
     return reply.send(server.swagger());
   });
 
-  // ── Infrastructure ──────────────────────────────────────────────────────
   let redis: Redis | null = null;
   if (deps?.redis !== undefined) {
     redis = deps.redis;
@@ -253,7 +254,6 @@ export async function buildApp(deps?: {
     });
   }
 
-  // ── Auth (tenant resolution only — Tyk validates key existence) ────────
   const authCache = new TenantAuthCache(
     redis,
     config.tenantCacheTtlMs,
@@ -307,10 +307,8 @@ export async function buildApp(deps?: {
   }
   await server.register(authPlugin, { cache: authCache, resolveTenant, redis, jwtSecret });
 
-  // ── Metrics ─────────────────────────────────────────────────────────────
   await server.register(metricsPlugin);
 
-  // ── Per-tenant rate limiting ─────────────────────────────────────────────
   // Distributed rate limiter: L1 local Map + L2 Redis INCR/EXPIRE.
   // Applied after auth so tenantId is always available.
   await server.register(rateLimitPlugin, {
@@ -318,7 +316,6 @@ export async function buildApp(deps?: {
     redis,
   });
 
-  // ── Routes ──────────────────────────────────────────────────────────────
   await server.register(healthRoutes, { grpcPool, redis });
   await server.register(quoteRoutes, { grpc: grpcClient });
   await server.register(transferRoutes, { grpc: grpcClient, redis });
@@ -342,7 +339,6 @@ export async function buildApp(deps?: {
   return server;
 }
 
-// ── Start server ──────────────────────────────────────────────────────────
 
 async function start() {
   const server = await buildApp();
