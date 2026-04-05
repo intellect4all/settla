@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -103,18 +104,30 @@ func (s *Server) ListDepositSessions(ctx context.Context, req *pb.ListDepositSes
 		return nil, err
 	}
 
-	limit := int(req.GetLimit())
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	offset := int(req.GetOffset())
-	if offset < 0 {
-		offset = 0
+	pageSize := int(req.GetPageSize())
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	sessions, err := s.depositEngine.ListSessions(ctx, tenantID, limit, offset)
-	if err != nil {
-		return nil, mapDepositError(err)
+	pageToken := req.GetPageToken()
+	var sessions []domain.DepositSession
+	if pageToken == "" {
+		// First page: no cursor.
+		var err error
+		sessions, err = s.depositEngine.ListSessions(ctx, tenantID, pageSize, 0)
+		if err != nil {
+			return nil, mapDepositError(err)
+		}
+	} else {
+		// Subsequent pages: decode cursor from page_token.
+		cursor, err := time.Parse(time.RFC3339Nano, pageToken)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+		}
+		sessions, err = s.depositEngine.ListSessionsCursor(ctx, tenantID, pageSize, cursor)
+		if err != nil {
+			return nil, mapDepositError(err)
+		}
 	}
 
 	pbSessions := make([]*pb.DepositSession, len(sessions))
@@ -122,9 +135,17 @@ func (s *Server) ListDepositSessions(ctx context.Context, req *pb.ListDepositSes
 		pbSessions[i] = depositSessionToProto(&sessions[i])
 	}
 
+	// Build next_page_token from the last session's created_at if we have a full page.
+	var nextPageToken string
+	if len(sessions) == pageSize {
+		last := sessions[len(sessions)-1]
+		nextPageToken = last.CreatedAt.Format(time.RFC3339Nano)
+	}
+
 	return &pb.ListDepositSessionsResponse{
-		Sessions: pbSessions,
-		Total:    int32(len(sessions)),
+		Sessions:      pbSessions,
+		NextPageToken: nextPageToken,
+		TotalCount:    int32(len(sessions)),
 	}, nil
 }
 
@@ -218,7 +239,6 @@ func (s *Server) GetDepositSessionPublicStatus(ctx context.Context, req *pb.GetD
 	}, nil
 }
 
-// ── Proto conversion helpers ─────────────────────────────────────────────────
 
 func depositSessionToProto(s *domain.DepositSession) *pb.DepositSession {
 	ps := &pb.DepositSession{
