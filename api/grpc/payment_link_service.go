@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -106,6 +107,7 @@ func (s *Server) GetPaymentLink(ctx context.Context, req *pb.GetPaymentLinkReque
 }
 
 // ListPaymentLinks lists payment links for a tenant.
+// Supports cursor-based pagination (page_size/page_token) with fallback to legacy limit/offset.
 func (s *Server) ListPaymentLinks(ctx context.Context, req *pb.ListPaymentLinksRequest) (*pb.ListPaymentLinksResponse, error) {
 	if s.paymentLinkService == nil {
 		return nil, status.Error(codes.Unimplemented, "payment link service not configured")
@@ -116,16 +118,52 @@ func (s *Server) ListPaymentLinks(ctx context.Context, req *pb.ListPaymentLinksR
 		return nil, err
 	}
 
-	limit := int(req.GetLimit())
-	if limit <= 0 || limit > 100 {
-		limit = 20
+	// Support cursor-based pagination (page_size/page_token) with fallback to legacy limit/offset.
+	pageSize := req.GetPageSize()
+	if pageSize <= 0 {
+		pageSize = req.GetLimit()
 	}
-	offset := int(req.GetOffset())
-	if offset < 0 {
-		offset = 0
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	result, err := s.paymentLinkService.List(ctx, tenantID, limit, offset)
+	pageToken := req.GetPageToken()
+	if pageToken == "" {
+		// Legacy fallback: use offset-based pagination.
+		offset := int(req.GetOffset())
+		if offset < 0 {
+			offset = 0
+		}
+
+		result, err := s.paymentLinkService.List(ctx, tenantID, int(pageSize), offset)
+		if err != nil {
+			return nil, mapPaymentLinkError(err)
+		}
+
+		pbLinks := make([]*pb.PaymentLink, len(result.Links))
+		for i := range result.Links {
+			pbLinks[i] = paymentLinkToProto(&result.Links[i], fmt.Sprintf("%s/%s", s.paymentLinkBaseURL, result.Links[i].ShortCode))
+		}
+
+		var nextToken string
+		if int32(len(result.Links)) == pageSize && len(result.Links) > 0 {
+			nextToken = result.Links[len(result.Links)-1].CreatedAt.Format(time.RFC3339Nano)
+		}
+
+		return &pb.ListPaymentLinksResponse{
+			Links:         pbLinks,
+			Total:         result.Total,
+			NextPageToken: nextToken,
+		}, nil
+	}
+
+	// Cursor-based path: parse timestamp from page_token.
+	cursor, err := time.Parse(time.RFC3339Nano, pageToken)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+	}
+
+	result, err := s.paymentLinkService.ListCursor(ctx, tenantID, int(pageSize), cursor)
 	if err != nil {
 		return nil, mapPaymentLinkError(err)
 	}
@@ -135,9 +173,15 @@ func (s *Server) ListPaymentLinks(ctx context.Context, req *pb.ListPaymentLinksR
 		pbLinks[i] = paymentLinkToProto(&result.Links[i], fmt.Sprintf("%s/%s", s.paymentLinkBaseURL, result.Links[i].ShortCode))
 	}
 
+	var nextToken string
+	if int32(len(result.Links)) == pageSize && len(result.Links) > 0 {
+		nextToken = result.Links[len(result.Links)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+
 	return &pb.ListPaymentLinksResponse{
-		Links: pbLinks,
-		Total: result.Total,
+		Links:         pbLinks,
+		Total:         result.Total,
+		NextPageToken: nextToken,
 	}, nil
 }
 
@@ -204,7 +248,6 @@ func (s *Server) DisablePaymentLink(ctx context.Context, req *pb.DisablePaymentL
 	return &pb.DisablePaymentLinkResponse{}, nil
 }
 
-// ── Proto conversion helper ──────────────────────────────────────────────────
 
 func paymentLinkToProto(link *domain.PaymentLink, url string) *pb.PaymentLink {
 	pl := &pb.PaymentLink{
@@ -240,7 +283,6 @@ func paymentLinkToProto(link *domain.PaymentLink, url string) *pb.PaymentLink {
 	return pl
 }
 
-// ── Error mapping ────────────────────────────────────────────────────────────
 
 func mapPaymentLinkError(err error) error {
 	if err == nil {
