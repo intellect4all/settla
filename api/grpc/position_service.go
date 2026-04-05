@@ -20,6 +20,7 @@ type PositionEngine interface {
 	RequestWithdrawal(ctx context.Context, tenantID uuid.UUID, req domain.WithdrawalRequest) (*domain.PositionTransaction, error)
 	GetTransaction(ctx context.Context, tenantID, txID uuid.UUID) (*domain.PositionTransaction, error)
 	ListTransactions(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]domain.PositionTransaction, error)
+	ListTransactionsCursor(ctx context.Context, tenantID uuid.UUID, pageSize int32, cursor time.Time) ([]domain.PositionTransaction, error)
 }
 
 // PositionEventStore provides position event history for tenant queries.
@@ -37,9 +38,7 @@ func WithPositionEventStore(s PositionEventStore) ServerOption {
 	return func(srv *Server) { srv.positionEventStore = s }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Position Transaction RPCs
-// ──────────────────────────────────────────────────────────────────────────────
 
 func (s *Server) RequestTopUp(ctx context.Context, req *pb.RequestTopUpRequest) (*pb.RequestTopUpResponse, error) {
 	tenantID, err := parseUUID(req.GetTenantId(), "tenant_id")
@@ -160,16 +159,51 @@ func (s *Server) ListPositionTransactions(ctx context.Context, req *pb.ListPosit
 		return nil, status.Error(codes.Unimplemented, "position management not configured")
 	}
 
-	limit := req.GetLimit()
-	if limit <= 0 || limit > 100 {
-		limit = 20
+	// Support cursor-based pagination (page_size/page_token) with fallback to legacy limit/offset.
+	pageSize := req.GetPageSize()
+	if pageSize <= 0 {
+		pageSize = req.GetLimit()
 	}
-	offset := req.GetOffset()
-	if offset < 0 {
-		offset = 0
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
 	}
 
-	txns, err := s.positionEngine.ListTransactions(ctx, tenantID, limit, offset)
+	pageToken := req.GetPageToken()
+	if pageToken == "" {
+		// Legacy fallback: use offset-based pagination.
+		offset := req.GetOffset()
+		if offset < 0 {
+			offset = 0
+		}
+		txns, err := s.positionEngine.ListTransactions(ctx, tenantID, pageSize, offset)
+		if err != nil {
+			return nil, mapDomainError(err)
+		}
+
+		pbTxns := make([]*pb.PositionTransaction, len(txns))
+		for i := range txns {
+			pbTxns[i] = positionTransactionToProto(&txns[i])
+		}
+
+		var nextToken string
+		if int32(len(txns)) == pageSize && len(txns) > 0 {
+			nextToken = txns[len(txns)-1].CreatedAt.Format(time.RFC3339Nano)
+		}
+
+		return &pb.ListPositionTransactionsResponse{
+			Transactions:  pbTxns,
+			TotalCount:    int32(len(txns)),
+			NextPageToken: nextToken,
+		}, nil
+	}
+
+	// Cursor-based path: parse timestamp from page_token.
+	cursor, err := time.Parse(time.RFC3339Nano, pageToken)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+	}
+
+	txns, err := s.positionEngine.ListTransactionsCursor(ctx, tenantID, pageSize, cursor)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -179,9 +213,15 @@ func (s *Server) ListPositionTransactions(ctx context.Context, req *pb.ListPosit
 		pbTxns[i] = positionTransactionToProto(&txns[i])
 	}
 
+	var nextToken string
+	if int32(len(txns)) == pageSize && len(txns) > 0 {
+		nextToken = txns[len(txns)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+
 	return &pb.ListPositionTransactionsResponse{
-		Transactions: pbTxns,
-		TotalCount:   int32(len(txns)),
+		Transactions:  pbTxns,
+		TotalCount:    int32(len(txns)),
+		NextPageToken: nextToken,
 	}, nil
 }
 
@@ -242,9 +282,7 @@ func (s *Server) GetPositionEventHistory(ctx context.Context, req *pb.GetPositio
 	}, nil
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Proto conversion helpers
-// ──────────────────────────────────────────────────────────────────────────────
 
 func positionTransactionToProto(tx *domain.PositionTransaction) *pb.PositionTransaction {
 	if tx == nil {
