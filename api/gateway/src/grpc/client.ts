@@ -2,8 +2,10 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { FastifyRequest } from "fastify";
 import type { GrpcPool } from "./pool.js";
 import { config } from "../config.js";
+import { injectTraceContext } from "../tracing.js";
 import { grpcCircuitBreakerRejections, grpcCircuitBreakerState } from "../metrics.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,15 +103,24 @@ export class SettlaGrpcClient {
     }
   }
 
+  /**
+   * Adds common metadata headers to gRPC calls: request ID and W3C trace context.
+   */
+  private buildMetadata(requestId?: string, request?: FastifyRequest): grpc.Metadata {
+    const meta = new grpc.Metadata();
+    if (requestId) meta.add("x-request-id", requestId);
+    injectTraceContext(meta, request);
+    return meta;
+  }
+
   /** Promise wrapper for gRPC unary calls. */
-  private callSettlement<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callSettlement<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.SettlementServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.settlement);
 
       client[method](
@@ -124,14 +135,13 @@ export class SettlaGrpcClient {
     }));
   }
 
-  private callTreasury<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callTreasury<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.TreasuryServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.treasury);
 
       client[method](
@@ -146,14 +156,13 @@ export class SettlaGrpcClient {
     }));
   }
 
-  private callAuth<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callAuth<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.AuthServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.auth);
 
       client[method](
@@ -168,14 +177,13 @@ export class SettlaGrpcClient {
     }));
   }
 
-  private callLedger<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callLedger<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.LedgerServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.ledger);
 
       client[method](
@@ -190,9 +198,8 @@ export class SettlaGrpcClient {
     }));
   }
 
-  // ── Auth Service ────────────────────────────────────────────────────────
 
-  validateApiKey(req: { keyHash: string }, requestId?: string): Promise<{
+  validateApiKey(req: { keyHash: string }, requestId?: string, httpReq?: FastifyRequest): Promise<{
     valid: boolean;
     tenantId: string;
     slug: string;
@@ -201,10 +208,9 @@ export class SettlaGrpcClient {
     dailyLimitUsd: string;
     perTransferLimit: string;
   }> {
-    return this.callAuth("ValidateAPIKey", req, requestId);
+    return this.callAuth("ValidateAPIKey", req, requestId, httpReq);
   }
 
-  // ── Settlement Service ──────────────────────────────────────────────────
 
   createQuote(req: {
     tenantId: string;
@@ -212,12 +218,12 @@ export class SettlaGrpcClient {
     sourceAmount: string;
     destCurrency: string;
     destCountry?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("createQuote", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("createQuote", req, requestId, httpReq);
   }
 
-  getQuote(req: { tenantId: string; quoteId: string }, requestId?: string): Promise<any> {
-    return this.callSettlement("getQuote", req, requestId);
+  getQuote(req: { tenantId: string; quoteId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("getQuote", req, requestId, httpReq);
   }
 
   createTransfer(req: {
@@ -230,12 +236,12 @@ export class SettlaGrpcClient {
     sender?: any;
     recipient: any;
     quoteId?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("createTransfer", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("createTransfer", req, requestId, httpReq);
   }
 
-  getTransfer(req: { tenantId: string; transferId: string }, requestId?: string): Promise<any> {
-    return this.callSettlement("getTransfer", req, requestId);
+  getTransfer(req: { tenantId: string; transferId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("getTransfer", req, requestId, httpReq);
   }
 
   listTransfers(req: {
@@ -244,30 +250,30 @@ export class SettlaGrpcClient {
     pageToken?: string;
     statusFilter?: string;
     searchQuery?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("listTransfers", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("listTransfers", req, requestId, httpReq);
   }
 
   getTransferByExternalRef(req: {
     tenantId: string;
     externalRef: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("getTransferByExternalRef", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("getTransferByExternalRef", req, requestId, httpReq);
   }
 
   cancelTransfer(req: {
     tenantId: string;
     transferId: string;
     reason?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("cancelTransfer", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("cancelTransfer", req, requestId, httpReq);
   }
 
   listTransferEvents(req: {
     tenantId: string;
     transferId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("listTransferEvents", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("listTransferEvents", req, requestId, httpReq);
   }
 
   getRoutingOptions(req: {
@@ -275,26 +281,25 @@ export class SettlaGrpcClient {
     fromCurrency: string;
     toCurrency: string;
     amount: string;
-  }, requestId?: string): Promise<any> {
-    return this.callSettlement("getRoutingOptions", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callSettlement("getRoutingOptions", req, requestId, httpReq);
   }
 
-  // ── Treasury Service ────────────────────────────────────────────────────
 
-  getPositions(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callTreasury("getPositions", req, requestId);
+  getPositions(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("getPositions", req, requestId, httpReq);
   }
 
   getPosition(req: {
     tenantId: string;
     currency: string;
     location: string;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("getPosition", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("getPosition", req, requestId, httpReq);
   }
 
-  getLiquidityReport(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callTreasury("getLiquidityReport", req, requestId);
+  getLiquidityReport(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("getLiquidityReport", req, requestId, httpReq);
   }
 
   requestTopUp(req: {
@@ -303,8 +308,8 @@ export class SettlaGrpcClient {
     location: string;
     amount: string;
     method: string;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("requestTopUp", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("requestTopUp", req, requestId, httpReq);
   }
 
   requestWithdrawal(req: {
@@ -314,23 +319,25 @@ export class SettlaGrpcClient {
     amount: string;
     method: string;
     destination: string;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("requestWithdrawal", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("requestWithdrawal", req, requestId, httpReq);
   }
 
   getPositionTransaction(req: {
     tenantId: string;
     transactionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("getPositionTransaction", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("getPositionTransaction", req, requestId, httpReq);
   }
 
   listPositionTransactions(req: {
     tenantId: string;
     limit?: number;
     offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("listPositionTransactions", req, requestId);
+    pageSize?: number;
+    pageToken?: string;
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("listPositionTransactions", req, requestId, httpReq);
   }
 
   getPositionEventHistory(req: {
@@ -341,25 +348,24 @@ export class SettlaGrpcClient {
     to?: { seconds: number; nanos: number };
     limit?: number;
     offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callTreasury("getPositionEventHistory", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callTreasury("getPositionEventHistory", req, requestId, httpReq);
   }
 
-  // ── Ledger Service ────────────────────────────────────────────────────
 
   getAccounts(req: {
     tenantId: string;
     pageSize?: number;
     pageToken?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callLedger("getAccounts", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callLedger("getAccounts", req, requestId, httpReq);
   }
 
   getAccountBalance(req: {
     tenantId: string;
     accountCode: string;
-  }, requestId?: string): Promise<any> {
-    return this.callLedger("getAccountBalance", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callLedger("getAccountBalance", req, requestId, httpReq);
   }
 
   getTransactions(req: {
@@ -369,20 +375,18 @@ export class SettlaGrpcClient {
     to?: any;
     pageSize?: number;
     pageToken?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callLedger("getTransactions", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callLedger("getTransactions", req, requestId, httpReq);
   }
 
-  // ── Tenant Portal Service ─────────────────────────────────────────────
 
-  private callPortal<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callPortal<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.TenantPortalServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.portal);
 
       client[method](
@@ -397,62 +401,61 @@ export class SettlaGrpcClient {
     }));
   }
 
-  getMyTenant(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callPortal("getMyTenant", req, requestId);
+  getMyTenant(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getMyTenant", req, requestId, httpReq);
   }
 
   updateWebhookConfig(req: {
     tenantId: string;
     webhookUrl: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("updateWebhookConfig", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("updateWebhookConfig", req, requestId, httpReq);
   }
 
-  listAPIKeys(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callPortal("listApiKeys", req, requestId);
+  listAPIKeys(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("listApiKeys", req, requestId, httpReq);
   }
 
   createAPIKey(req: {
     tenantId: string;
     environment: string;
     name?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("createApiKey", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("createApiKey", req, requestId, httpReq);
   }
 
-  revokeAPIKey(req: { tenantId: string; keyId: string }, requestId?: string): Promise<any> {
-    return this.callPortal("revokeApiKey", req, requestId);
+  revokeAPIKey(req: { tenantId: string; keyId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("revokeApiKey", req, requestId, httpReq);
   }
 
   rotateAPIKey(req: {
     tenantId: string;
     oldKeyId: string;
     name?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("rotateApiKey", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("rotateApiKey", req, requestId, httpReq);
   }
 
-  getDashboardMetrics(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callPortal("getDashboardMetrics", req, requestId);
+  getDashboardMetrics(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getDashboardMetrics", req, requestId, httpReq);
   }
 
   getTransferStats(req: {
     tenantId: string;
     period: string;
     granularity: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getTransferStats", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getTransferStats", req, requestId, httpReq);
   }
 
   getFeeReport(req: {
     tenantId: string;
     from?: any;
     to?: any;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getFeeReport", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getFeeReport", req, requestId, httpReq);
   }
 
-  // ── Webhook Management ────────────────────────────────────────────────
 
   listWebhookDeliveries(req: {
     tenantId: string;
@@ -460,88 +463,85 @@ export class SettlaGrpcClient {
     status?: string;
     pageSize?: number;
     pageOffset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("listWebhookDeliveries", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("listWebhookDeliveries", req, requestId, httpReq);
   }
 
   getWebhookDelivery(req: {
     tenantId: string;
     deliveryId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getWebhookDelivery", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getWebhookDelivery", req, requestId, httpReq);
   }
 
   getWebhookDeliveryStats(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getWebhookDeliveryStats", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getWebhookDeliveryStats", req, requestId, httpReq);
   }
 
   listWebhookEventSubscriptions(req: {
     tenantId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("listWebhookEventSubscriptions", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("listWebhookEventSubscriptions", req, requestId, httpReq);
   }
 
   updateWebhookEventSubscriptions(req: {
     tenantId: string;
     eventTypes: string[];
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("updateWebhookEventSubscriptions", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("updateWebhookEventSubscriptions", req, requestId, httpReq);
   }
 
-  testWebhook(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callPortal("testWebhook", req, requestId);
+  testWebhook(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("testWebhook", req, requestId, httpReq);
   }
 
-  // ── Analytics ─────────────────────────────────────────────────────────
 
   getTransferStatusDistribution(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getTransferStatusDistribution", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getTransferStatusDistribution", req, requestId, httpReq);
   }
 
   getCorridorMetrics(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getCorridorMetrics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getCorridorMetrics", req, requestId, httpReq);
   }
 
   getTransferLatencyPercentiles(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getTransferLatencyPercentiles", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getTransferLatencyPercentiles", req, requestId, httpReq);
   }
 
   getVolumeComparison(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getVolumeComparison", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getVolumeComparison", req, requestId, httpReq);
   }
 
   getRecentActivity(req: {
     tenantId: string;
     limit?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callPortal("getRecentActivity", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortal("getRecentActivity", req, requestId, httpReq);
   }
 
-  // ── Portal Auth Service ──────────────────────────────────────────────────
 
-  private callPortalAuth<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callPortalAuth<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.PortalAuthServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.portal);
 
       client[method](
@@ -561,23 +561,23 @@ export class SettlaGrpcClient {
     email: string;
     password: string;
     displayName?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("register", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("register", req, requestId, httpReq);
   }
 
   login(req: {
     email: string;
     password: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("login", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("login", req, requestId, httpReq);
   }
 
-  verifyEmail(req: { token: string }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("verifyEmail", req, requestId);
+  verifyEmail(req: { token: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("verifyEmail", req, requestId, httpReq);
   }
 
-  refreshToken(req: { refreshToken: string }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("refreshToken", req, requestId);
+  refreshToken(req: { refreshToken: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("refreshToken", req, requestId, httpReq);
   }
 
   submitKYB(req: {
@@ -588,24 +588,22 @@ export class SettlaGrpcClient {
     contactName: string;
     contactEmail: string;
     contactPhone?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("submitKyb", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("submitKyb", req, requestId, httpReq);
   }
 
-  approveKYB(req: { tenantId: string }, requestId?: string): Promise<any> {
-    return this.callPortalAuth("approveKyb", req, requestId);
+  approveKYB(req: { tenantId: string }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPortalAuth("approveKyb", req, requestId, httpReq);
   }
 
-  // ── Deposit Service ──────────────────────────────────────────────────
 
-  private callDeposit<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callDeposit<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.DepositServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.settlement);
 
       client[method](
@@ -629,50 +627,48 @@ export class SettlaGrpcClient {
     settlementPref?: string;
     idempotencyKey?: string;
     ttlSeconds?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("createDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("createDepositSession", req, requestId, httpReq);
   }
 
   getDepositSession(req: {
     tenantId: string;
     sessionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("getDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("getDepositSession", req, requestId, httpReq);
   }
 
   listDepositSessions(req: {
     tenantId: string;
-    limit?: number;
-    offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("listDepositSessions", req, requestId);
+    pageSize?: number;
+    pageToken?: string;
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("listDepositSessions", req, requestId, httpReq);
   }
 
   cancelDepositSession(req: {
     tenantId: string;
     sessionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("cancelDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("cancelDepositSession", req, requestId, httpReq);
   }
 
   getDepositSessionByTxHash(req: {
     tenantId: string;
     txHash: string;
     chain: string;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("getDepositSessionByTxHash", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("getDepositSessionByTxHash", req, requestId, httpReq);
   }
 
-  // ── Bank Deposit Service ──────────────────────────────────────────────
 
-  private callBankDeposit<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callBankDeposit<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.BankDepositServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.settlement);
 
       client[method](
@@ -699,30 +695,30 @@ export class SettlaGrpcClient {
     settlementPref?: string;
     idempotencyKey?: string;
     ttlSeconds?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("createBankDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("createBankDepositSession", req, requestId, httpReq);
   }
 
   getBankDepositSession(req: {
     tenantId: string;
     sessionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("getBankDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("getBankDepositSession", req, requestId, httpReq);
   }
 
   listBankDepositSessions(req: {
     tenantId: string;
-    limit?: number;
-    offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("listBankDepositSessions", req, requestId);
+    pageSize?: number;
+    pageToken?: string;
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("listBankDepositSessions", req, requestId, httpReq);
   }
 
   cancelBankDepositSession(req: {
     tenantId: string;
     sessionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("cancelBankDepositSession", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("cancelBankDepositSession", req, requestId, httpReq);
   }
 
   listVirtualAccounts(req: {
@@ -731,26 +727,26 @@ export class SettlaGrpcClient {
     accountType?: string;
     limit?: number;
     offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("listVirtualAccounts", req, requestId);
+    pageSize?: number;
+    pageToken?: string;
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("listVirtualAccounts", req, requestId, httpReq);
   }
 
   getBankingPartner(req: {
     partnerId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callBankDeposit("getBankingPartner", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callBankDeposit("getBankingPartner", req, requestId, httpReq);
   }
 
-  // ── Payment Link Service ──────────────────────────────────────────────
 
-  private callPaymentLink<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callPaymentLink<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.PaymentLinkServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.settlement);
 
       client[method](
@@ -777,60 +773,60 @@ export class SettlaGrpcClient {
     token: string;
     settlementPref?: string;
     ttlSeconds?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("createPaymentLink", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("createPaymentLink", req, requestId, httpReq);
   }
 
   getPaymentLink(req: {
     tenantId: string;
     linkId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("getPaymentLink", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("getPaymentLink", req, requestId, httpReq);
   }
 
   listPaymentLinks(req: {
     tenantId: string;
     limit?: number;
     offset?: number;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("listPaymentLinks", req, requestId);
+    pageSize?: number;
+    pageToken?: string;
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("listPaymentLinks", req, requestId, httpReq);
   }
 
   resolvePaymentLink(req: {
     shortCode: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("resolvePaymentLink", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("resolvePaymentLink", req, requestId, httpReq);
   }
 
   redeemPaymentLink(req: {
     shortCode: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("redeemPaymentLink", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("redeemPaymentLink", req, requestId, httpReq);
   }
 
   disablePaymentLink(req: {
     tenantId: string;
     linkId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callPaymentLink("disablePaymentLink", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callPaymentLink("disablePaymentLink", req, requestId, httpReq);
   }
 
   getDepositPublicStatus(req: {
     sessionId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callDeposit("getDepositSessionPublicStatus", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callDeposit("getDepositSessionPublicStatus", req, requestId, httpReq);
   }
 
-  // ── Analytics Service ──────────────────────────────────────────────────
 
-  private callAnalytics<T>(method: string, request: any, requestId?: string): Promise<T> {
+  private callAnalytics<T>(method: string, request: any, requestId?: string, httpReq?: FastifyRequest): Promise<T> {
     return this.withCircuitBreaker(() => new Promise<T>((resolve, reject) => {
       const channel = this.pool.getChannel();
       const client = new this.AnalyticsServiceCtor(null, null, {
         channelOverride: channel,
       });
-      const meta = new grpc.Metadata();
-      if (requestId) meta.add("x-request-id", requestId);
+      const meta = this.buildMetadata(requestId, httpReq);
       const deadline = new Date(Date.now() + config.grpcDeadlineMs.portal);
 
       client[method](
@@ -848,35 +844,35 @@ export class SettlaGrpcClient {
   getTransferAnalytics(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getTransferAnalytics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getTransferAnalytics", req, requestId, httpReq);
   }
 
   getFeeAnalytics(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getFeeAnalytics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getFeeAnalytics", req, requestId, httpReq);
   }
 
   getProviderAnalytics(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getProviderAnalytics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getProviderAnalytics", req, requestId, httpReq);
   }
 
   getReconciliationAnalytics(req: {
     tenantId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getReconciliationAnalytics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getReconciliationAnalytics", req, requestId, httpReq);
   }
 
   getDepositAnalytics(req: {
     tenantId: string;
     period?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getDepositAnalytics", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getDepositAnalytics", req, requestId, httpReq);
   }
 
   createAnalyticsExport(req: {
@@ -884,15 +880,15 @@ export class SettlaGrpcClient {
     exportType: string;
     period?: string;
     format?: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("createExportJob", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("createExportJob", req, requestId, httpReq);
   }
 
   getAnalyticsExport(req: {
     tenantId: string;
     jobId: string;
-  }, requestId?: string): Promise<any> {
-    return this.callAnalytics("getExportJob", req, requestId);
+  }, requestId?: string, httpReq?: FastifyRequest): Promise<any> {
+    return this.callAnalytics("getExportJob", req, requestId, httpReq);
   }
 }
 
