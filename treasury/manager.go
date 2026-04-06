@@ -343,7 +343,7 @@ func (m *Manager) logOp(tenantID uuid.UUID, currency domain.Currency, location s
 	}
 
 	op := ReserveOp{
-		ID:        uuid.New(),
+		ID:        uuid.Must(uuid.NewV7()),
 		TenantID:  tenantID,
 		Currency:  currency,
 		Location:  location,
@@ -354,15 +354,18 @@ func (m *Manager) logOp(tenantID uuid.UUID, currency domain.Currency, location s
 	}
 
 	// WAL: synchronous write to DB if store supports it.
+	// Hard-fail if the WAL write fails — proceeding without a durable record
+	// risks data loss on crash. The caller rolls back the in-memory state.
 	if opStore, ok := m.store.(ReserveOpStore); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if err := opStore.LogReserveOp(ctx, op); err != nil {
-			m.logger.Warn("settla-treasury: WAL write failed, falling back to channel-only",
+			m.logger.Error("settla-treasury: WAL write failed, rejecting operation",
 				"op_type", opType,
 				"reference", reference,
 				"error", err,
 			)
+			return fmt.Errorf("settla-treasury: WAL write failed for %s %s: %w", opType, reference, err)
 		}
 	}
 
@@ -664,10 +667,9 @@ func (m *Manager) GetLiquidityReport(ctx context.Context, tenantID uuid.UUID) (*
 	return report, nil
 }
 
-// TODO: update balance is never called anywhere else, meaning there is no way to update tenants positions in realtime!!! look into this
-
-// UpdateBalance sets the balance for a position. Called by ledger sync when
-// external deposits/withdrawals change the total balance.
+// UpdateBalance directly sets the absolute balance for a position. This is an
+// escape hatch for reconciliation and ledger sync — not for normal operations.
+// Normal balance changes flow through CreditBalance/DebitBalance/Reserve/etc.
 //
 // Validates that the new balance is not less than the currently locked+reserved
 // amount to prevent the available balance from going negative.
@@ -779,16 +781,14 @@ func (m *Manager) CreditBalance(ctx context.Context, tenantID uuid.UUID, currenc
 		return err
 	}
 
-	// Sync flush for large credits.
+	// Sync flush for large credits — roll back if it fails to avoid accepting
+	// a large credit that cannot be durably persisted (consistent with Reserve).
 	threshold := m.syncThresholdFor(currency)
 	if !threshold.IsZero() && amount.GreaterThanOrEqual(threshold) {
 		if err := m.syncFlushPosition(ps); err != nil {
-			m.logger.Error("settla-treasury: sync flush after large credit failed",
-				"position_id", ps.ID,
-				"amount", amount.StringFixed(2),
-				"error", err,
-			)
-			// Don't roll back — the credit is in-memory and will be flushed eventually.
+			ps.balanceMicro.Add(-amountMicro)
+			m.rollbackIdempotency(reference, "credit")
+			return fmt.Errorf("settla-treasury: rejecting large credit (%s) — sync flush failed: %w", amount.String(), err)
 		}
 	}
 
@@ -1010,7 +1010,7 @@ func (m *Manager) publishLiquidityAlert(ctx context.Context, ps *PositionState) 
 		return
 	}
 	event := domain.Event{
-		ID:        uuid.New(),
+		ID:        uuid.Must(uuid.NewV7()),
 		TenantID:  ps.TenantID,
 		Type:      domain.EventLiquidityAlert,
 		Timestamp: time.Now().UTC(),
