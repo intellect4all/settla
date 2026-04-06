@@ -1,7 +1,18 @@
+import { Agent } from "undici";
 import type { Logger } from "./logger.js";
 import type { Config } from "./config.js";
 import type { DeliveryResult, DeliveryTask, WebhookEvent } from "./types.js";
 import { computeSignature } from "./signature.js";
+
+// Shared connection pool for outbound webhook delivery.
+// Reuses TCP connections across deliveries to the same host,
+// avoiding per-request TCP+TLS handshake overhead.
+const webhookAgent = new Agent({
+  connections: 50,
+  pipelining: 1,
+  keepAliveTimeout: 30_000,
+  keepAliveMaxTimeout: 60_000,
+});
 
 /**
  * Deliver a webhook event to a registered endpoint.
@@ -35,6 +46,7 @@ export async function deliverWebhook(
       },
       body,
       signal: controller.signal,
+      dispatcher: webhookAgent,
     });
 
     const durationMs = Date.now() - startTime;
