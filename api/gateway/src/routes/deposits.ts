@@ -64,7 +64,7 @@ export async function depositRoutes(
           settlementPref: request.body.settlement_pref,
           idempotencyKey: request.body.idempotency_key,
           ttlSeconds: request.body.ttl_seconds,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.session?.tenantId, 'deposit session');
         return reply.status(201).send(result);
       } catch (err) {
@@ -107,7 +107,7 @@ export async function depositRoutes(
         const result = await grpc.getDepositSession({
           tenantId: tenantAuth.tenantId,
           sessionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.session?.tenantId, 'deposit session');
         return reply.send(result);
       } catch (err) {
@@ -116,9 +116,9 @@ export async function depositRoutes(
     },
   );
 
-  // GET /v1/deposits — List deposit sessions for a tenant
+  // GET /v1/deposits — List deposit sessions for a tenant (cursor-based pagination)
   app.get<{
-    Querystring: { limit?: number; offset?: number };
+    Querystring: { page_size?: number; page_token?: string };
   }>(
     "/v1/deposits",
     {
@@ -129,8 +129,8 @@ export async function depositRoutes(
         querystring: {
           type: "object",
           properties: {
-            limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-            offset: { type: "integer", minimum: 0, default: 0 },
+            page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            page_token: { type: "string" },
           },
         },
         response: {
@@ -138,7 +138,8 @@ export async function depositRoutes(
             type: "object",
             properties: {
               sessions: { type: "array", items: { type: "object", additionalProperties: true } },
-              total: { type: "integer" },
+              next_page_token: { type: "string" },
+              total_count: { type: "integer" },
             },
           },
         },
@@ -149,13 +150,17 @@ export async function depositRoutes(
       try {
         const result = await grpc.listDepositSessions({
           tenantId: tenantAuth.tenantId,
-          limit: request.query.limit,
-          offset: request.query.offset,
-        }, request.id);
+          pageSize: request.query.page_size,
+          pageToken: request.query.page_token,
+        }, request.id, request);
         for (const s of result.sessions || []) {
           assertTenantMatch(tenantAuth.tenantId, s.tenantId, 'deposit session');
         }
-        return reply.send(result);
+        return reply.send({
+          sessions: result.sessions,
+          next_page_token: result.nextPageToken || "",
+          total_count: result.totalCount || 0,
+        });
       } catch (err) {
         return mapGrpcError(request, reply, err);
       }
@@ -197,7 +202,7 @@ export async function depositRoutes(
         const result = await grpc.cancelDepositSession({
           tenantId: tenantAuth.tenantId,
           sessionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.session?.tenantId, 'deposit session');
         return reply.send(result);
       } catch (err) {
@@ -206,7 +211,6 @@ export async function depositRoutes(
     },
   );
 
-  // ── Crypto Balances ──────────────────────────────────────────────────────
 
   // GET /v1/deposits/balance — Get tenant crypto deposit balances
   app.get(
@@ -232,7 +236,7 @@ export async function depositRoutes(
       const { tenantAuth } = request;
       // Aggregate balances from treasury positions for crypto assets
       try {
-        const positions = await grpc.getPositions({ tenantId: tenantAuth.tenantId }, request.id);
+        const positions = await grpc.getPositions({ tenantId: tenantAuth.tenantId }, request.id, request);
         const cryptoBalances = (positions.positions ?? [])
           .filter((p: any) => ["USDT", "USDC"].includes(p.currency))
           .map((p: any) => ({
