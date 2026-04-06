@@ -171,10 +171,12 @@ export async function verifyRoutes(
         grpcClient.getTransfer(
           { tenantId: tenantAuth.tenantId, transferId: id },
           request.id,
+          request,
         ),
         grpcClient.getDepositSession(
           { tenantId: tenantAuth.tenantId, sessionId: id },
           request.id,
+          request,
         ),
       ]);
 
@@ -254,17 +256,18 @@ export async function verifyRoutes(
         });
       }
 
-      // ── Lookup by UUID ──────────────────────────────────────────────────
       if (id) {
         try {
           const [transferResult, depositResult] = await Promise.allSettled([
             grpcClient.getTransfer(
               { tenantId: tenantAuth.tenantId, transferId: id },
               request.id,
+              request,
             ),
             grpcClient.getDepositSession(
               { tenantId: tenantAuth.tenantId, sessionId: id },
               request.id,
+              request,
             ),
           ]);
 
@@ -296,12 +299,12 @@ export async function verifyRoutes(
         }
       }
 
-      // ── Lookup by external reference ────────────────────────────────────
       if (reference) {
         try {
           const result = await grpcClient.getTransferByExternalRef(
             { tenantId: tenantAuth.tenantId, externalRef: reference },
             request.id,
+            request,
           );
 
           if (result.transfer) {
@@ -320,13 +323,13 @@ export async function verifyRoutes(
         }
       }
 
-      // ── Lookup by on-chain tx hash ──────────────────────────────────────
       if (tx_hash) {
         try {
           const chain = request.query.chain || "tron";
           const result = await grpcClient.getDepositSessionByTxHash(
             { tenantId: tenantAuth.tenantId, txHash: tx_hash, chain },
             request.id,
+            request,
           );
 
           if (result.session) {

@@ -118,6 +118,7 @@ export async function authRoutes(
             displayName: request.body.display_name,
           },
           request.id,
+          request,
         );
         return reply.status(201).send({
           tenant_id: result.tenantId,
@@ -175,6 +176,7 @@ export async function authRoutes(
             password: request.body.password,
           },
           request.id,
+          request,
         );
         return reply.send({
           access_token: result.accessToken,
@@ -224,6 +226,7 @@ export async function authRoutes(
         const result = await grpc.verifyEmail(
           { token: request.body.token },
           request.id,
+          request,
         );
         return reply.send({ message: result.message });
       } catch (err) {
@@ -256,6 +259,7 @@ export async function authRoutes(
         const result = await grpc.refreshToken(
           { refreshToken: request.body.refresh_token },
           request.id,
+          request,
         );
         return reply.send({
           access_token: result.accessToken,
@@ -322,6 +326,7 @@ export async function authRoutes(
             contactPhone: request.body.contact_phone,
           },
           request.id,
+          request,
         );
         return reply.send({
           message: result.message,
@@ -364,6 +369,7 @@ export async function authRoutes(
         const result = await grpc.approveKYB(
           { tenantId: request.params.tenantId },
           request.id,
+          request,
         );
         return reply.send({
           message: result.message,
