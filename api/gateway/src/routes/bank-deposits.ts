@@ -73,7 +73,7 @@ export async function bankDepositRoutes(
           settlementPref: request.body.settlement_pref,
           idempotencyKey: request.body.idempotency_key,
           ttlSeconds: request.body.ttl_seconds,
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -115,7 +115,7 @@ export async function bankDepositRoutes(
         const result = await grpc.getBankDepositSession({
           tenantId: tenantAuth.tenantId,
           sessionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -123,9 +123,9 @@ export async function bankDepositRoutes(
     },
   );
 
-  // GET /v1/bank-deposits — List bank deposit sessions for a tenant
+  // GET /v1/bank-deposits — List bank deposit sessions (cursor-based pagination)
   app.get<{
-    Querystring: { limit?: number; offset?: number };
+    Querystring: { page_size?: number; page_token?: string };
   }>(
     "/v1/bank-deposits",
     {
@@ -136,8 +136,8 @@ export async function bankDepositRoutes(
         querystring: {
           type: "object",
           properties: {
-            limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-            offset: { type: "integer", minimum: 0, default: 0 },
+            page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            page_token: { type: "string" },
           },
         },
         response: {
@@ -145,7 +145,8 @@ export async function bankDepositRoutes(
             type: "object",
             properties: {
               sessions: { type: "array", items: { type: "object", additionalProperties: true } },
-              total: { type: "integer" },
+              next_page_token: { type: "string" },
+              total_count: { type: "integer" },
             },
           },
         },
@@ -156,10 +157,14 @@ export async function bankDepositRoutes(
       try {
         const result = await grpc.listBankDepositSessions({
           tenantId: tenantAuth.tenantId,
-          limit: request.query.limit,
-          offset: request.query.offset,
-        }, request.id);
-        return reply.send(result);
+          pageSize: request.query.page_size,
+          pageToken: request.query.page_token,
+        }, request.id, request);
+        return reply.send({
+          sessions: result.sessions,
+          next_page_token: result.nextPageToken || "",
+          total_count: result.totalCount || 0,
+        });
       } catch (err) {
         return mapGrpcError(request, reply, err);
       }
@@ -201,7 +206,7 @@ export async function bankDepositRoutes(
         const result = await grpc.cancelBankDepositSession({
           tenantId: tenantAuth.tenantId,
           sessionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -211,7 +216,7 @@ export async function bankDepositRoutes(
 
   // GET /v1/bank-deposits/accounts — List virtual accounts for a tenant
   app.get<{
-    Querystring: { limit?: number; offset?: number; currency?: string; account_type?: string };
+    Querystring: { page_size?: number; page_token?: string; limit?: number; offset?: number; currency?: string; account_type?: string };
   }>(
     "/v1/bank-deposits/accounts",
     {
@@ -222,6 +227,8 @@ export async function bankDepositRoutes(
         querystring: {
           type: "object",
           properties: {
+            page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            page_token: { type: "string" },
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
             offset: { type: "integer", minimum: 0, default: 0 },
             currency: { type: "string" },
@@ -234,6 +241,7 @@ export async function bankDepositRoutes(
             properties: {
               accounts: { type: "array", items: { type: "object", additionalProperties: true } },
               total: { type: "integer" },
+              nextPageToken: { type: "string" },
             },
           },
         },
@@ -246,9 +254,11 @@ export async function bankDepositRoutes(
           tenantId: tenantAuth.tenantId,
           currency: request.query.currency,
           accountType: request.query.account_type,
+          pageSize: request.query.page_size || request.query.limit,
+          pageToken: request.query.page_token || "",
           limit: request.query.limit,
           offset: request.query.offset,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);

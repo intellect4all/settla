@@ -56,7 +56,7 @@ export async function bankWebhookRoutes(
     return natsConnecting;
   }
 
-  async function getPartnerSecret(partnerId: string): Promise<string | null> {
+  async function getPartnerSecret(partnerId: string, request?: any): Promise<string | null> {
     // 1. Redis cache
     if (redis) {
       try {
@@ -68,7 +68,7 @@ export async function bankWebhookRoutes(
     // 2. gRPC lookup
     if (grpc) {
       try {
-        const partner = await grpc.getBankingPartner({ partnerId });
+        const partner = await grpc.getBankingPartner({ partnerId }, undefined, request);
         if (partner?.webhookSecret) {
           if (redis) {
             try { await redis.set(`banking-partner:secret:${partnerId}`, partner.webhookSecret, "EX", 300); } catch { /* best-effort */ }
@@ -133,8 +133,7 @@ export async function bankWebhookRoutes(
     async (request, reply) => {
       const { partner_id: partnerId } = request.params;
 
-      // ── 1. Validate HMAC signature ────────────────────────────────────
-      const secret = await getPartnerSecret(partnerId);
+      const secret = await getPartnerSecret(partnerId, request);
       if (!secret) {
         app.log.error({ partnerId }, "Bank webhook partner not configured");
         return reply.status(403).send({ error: "partner not configured" });
@@ -163,7 +162,6 @@ export async function bankWebhookRoutes(
         return reply.status(401).send({ error: "invalid signature" });
       }
 
-      // ── 2. Normalize to IncomingBankCredit ────────────────────────────
       const body = request.body.parsed as Record<string, any>;
       const bankReference = body.bank_reference || body.reference || body.id;
       if (!bankReference) {
@@ -182,7 +180,6 @@ export async function bankWebhookRoutes(
         receivedAt: body.received_at || body.timestamp || new Date().toISOString(),
       };
 
-      // ── 3. Dedup by partner + bank_reference ──────────────────────────
       const dedupKey = `bank-webhook:dedup:${partnerId}:${bankReference}`;
       if (redis) {
         try {
@@ -215,7 +212,6 @@ export async function bankWebhookRoutes(
         return reply.status(503).send({ error: "dedup_unavailable" });
       }
 
-      // ── 4. Publish to NATS ────────────────────────────────────────────
       try {
         const nc = await getNatsConnection();
         if (nc) {
@@ -247,7 +243,6 @@ export async function bankWebhookRoutes(
         return reply.status(503).send({ error: "event_bus_unavailable" });
       }
 
-      // ── 5. Return 200 immediately ────────────────────────────────────
       return reply.status(200).send({ status: "accepted" });
     },
   );
