@@ -120,6 +120,16 @@ func NewChecker(logger *slog.Logger, checks []Check, opts ...Option) *Checker {
 	return c
 }
 
+// RegisterCheck adds a health check after construction. This is useful for
+// checks whose dependencies aren't available until after startup (e.g. worker
+// liveness checks that depend on subscriber instances created later).
+func (c *Checker) RegisterCheck(check Check) {
+	c.mu.Lock()
+	c.checks = append(c.checks, check)
+	c.cached = nil // invalidate cache
+	c.mu.Unlock()
+}
+
 // MarkStartupComplete signals that initialization has finished. Until called,
 // the startup probe returns unhealthy.
 func (c *Checker) MarkStartupComplete() {
@@ -218,7 +228,6 @@ func (c *Checker) runSingle(parent context.Context, ch Check) CheckResult {
 	return result
 }
 
-// ── Built-in check implementations ──────────────────────────────────────────
 
 // PostgresCheck verifies a single Postgres connection pool with SELECT 1.
 type PostgresCheck struct {
