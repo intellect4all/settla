@@ -19,7 +19,6 @@ export async function analyticsRoutes(
 ): Promise<void> {
   const { grpc } = opts;
 
-  // ── GET /v1/analytics/transfers ─────────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/analytics/transfers",
     {
@@ -36,7 +35,7 @@ export async function analyticsRoutes(
         const result = await grpc.getTransferAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           corridors: (result.corridors || []).map((c: any) => ({
             source_currency: c.sourceCurrency,
@@ -68,7 +67,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── GET /v1/analytics/fees ──────────────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/analytics/fees",
     {
@@ -85,7 +83,7 @@ export async function analyticsRoutes(
         const result = await grpc.getFeeAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           entries: (result.entries || []).map((e: any) => ({
             source_currency: e.sourceCurrency,
@@ -105,7 +103,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── GET /v1/analytics/providers ─────────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/analytics/providers",
     {
@@ -122,7 +119,7 @@ export async function analyticsRoutes(
         const result = await grpc.getProviderAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           providers: (result.providers || []).map((p: any) => ({
             provider: p.provider,
@@ -142,7 +139,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── GET /v1/analytics/reconciliation ────────────────────────────────────
   app.get(
     "/v1/analytics/reconciliation",
     {
@@ -157,7 +153,7 @@ export async function analyticsRoutes(
       try {
         const result = await grpc.getReconciliationAnalytics({
           tenantId: request.tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           total_runs: result.totalRuns,
           checks_passed: result.checksPassed,
@@ -172,7 +168,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── GET /v1/analytics/deposits ──────────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/analytics/deposits",
     {
@@ -189,7 +184,7 @@ export async function analyticsRoutes(
         const result = await grpc.getDepositAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           crypto: mapDepositAnalytics(result.crypto),
           bank: mapDepositAnalytics(result.bank),
@@ -200,7 +195,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── POST /v1/analytics/export ───────────────────────────────────────────
   app.post<{
     Body: { export_type: string; period?: string; format?: string };
   }>(
@@ -224,7 +218,7 @@ export async function analyticsRoutes(
           exportType: request.body.export_type,
           period: request.body.period || "7d",
           format: request.body.format || "csv",
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send({
           job: mapExportJob(result.job),
         });
@@ -234,7 +228,6 @@ export async function analyticsRoutes(
     },
   );
 
-  // ── GET /v1/analytics/export/:jobId ─────────────────────────────────────
   app.get<{ Params: { jobId: string } }>(
     "/v1/analytics/export/:jobId",
     {
@@ -259,7 +252,7 @@ export async function analyticsRoutes(
         const result = await grpc.getAnalyticsExport({
           tenantId: request.tenantAuth.tenantId,
           jobId: request.params.jobId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           job: mapExportJob(result.job),
         });

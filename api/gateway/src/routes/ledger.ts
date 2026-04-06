@@ -67,6 +67,7 @@ export async function ledgerRoutes(
             pageToken: page_token,
           },
           request.id,
+          request,
         );
         for (const a of result.accounts || []) {
           assertTenantMatch(tenantAuth.tenantId, a.tenantId, 'account');
@@ -127,6 +128,7 @@ export async function ledgerRoutes(
             accountCode,
           },
           request.id,
+          request,
         );
         return reply.send(result);
       } catch (err) {
@@ -219,6 +221,7 @@ export async function ledgerRoutes(
             pageToken: page_token,
           },
           request.id,
+          request,
         );
         return reply.send({
           entries: result.entries ?? [],
