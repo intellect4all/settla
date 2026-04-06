@@ -85,7 +85,6 @@ export async function tenantPortalRoutes(
 ): Promise<void> {
   const { grpc } = opts;
 
-  // ── GET /v1/me — tenant profile ────────────────────────────────────────
   app.get(
     "/v1/me",
     {
@@ -102,7 +101,7 @@ export async function tenantPortalRoutes(
     async (request, reply) => {
       const { tenantAuth } = request;
       try {
-        const result = await grpc.getMyTenant({ tenantId: tenantAuth.tenantId }, request.id);
+        const result = await grpc.getMyTenant({ tenantId: tenantAuth.tenantId }, request.id, request);
         return reply.send(mapTenantProfile(result.tenant));
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -110,7 +109,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── PUT /v1/me/webhooks — update webhook config ────────────────────────
   app.put<{
     Body: { webhook_url: string };
   }>(
@@ -134,7 +132,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.updateWebhookConfig({
           tenantId: tenantAuth.tenantId,
           webhookUrl: request.body.webhook_url,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           webhook_url: result.webhookUrl,
           webhook_secret: result.webhookSecret,
@@ -145,7 +143,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/api-keys — list API keys ────────────────────────────────
   app.get(
     "/v1/me/api-keys",
     {
@@ -162,7 +159,7 @@ export async function tenantPortalRoutes(
     async (request, reply) => {
       const { tenantAuth } = request;
       try {
-        const result = await grpc.listAPIKeys({ tenantId: tenantAuth.tenantId }, request.id);
+        const result = await grpc.listAPIKeys({ tenantId: tenantAuth.tenantId }, request.id, request);
         return reply.send({
           keys: (result.keys || []).map(mapApiKey),
         });
@@ -172,7 +169,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── POST /v1/me/api-keys — create new API key ─────────────────────────
   app.post<{
     Body: { environment: string; name?: string };
   }>(
@@ -197,7 +193,7 @@ export async function tenantPortalRoutes(
           tenantId: tenantAuth.tenantId,
           environment: request.body.environment,
           name: request.body.name,
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send({
           key: mapApiKey(result.key),
           raw_key: result.rawKey,
@@ -208,7 +204,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── DELETE /v1/me/api-keys/:keyId — revoke API key ─────────────────────
   app.delete<{
     Params: { keyId: string };
   }>(
@@ -236,7 +231,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.revokeAPIKey({
           tenantId: tenantAuth.tenantId,
           keyId: request.params.keyId,
-        }, request.id);
+        }, request.id, request);
 
         // Immediately invalidate the revoked key from L1+L2 auth caches
         // and broadcast to peer gateways via Redis pub/sub.
@@ -258,7 +253,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── POST /v1/me/api-keys/:keyId/rotate — rotate API key ───────────────
   app.post<{
     Params: { keyId: string };
     Body: { name?: string };
@@ -292,7 +286,7 @@ export async function tenantPortalRoutes(
           tenantId: tenantAuth.tenantId,
           oldKeyId: request.params.keyId,
           name: request.body.name,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           key: mapApiKey(result.key),
           raw_key: result.rawKey,
@@ -303,7 +297,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/dashboard — dashboard metrics ──────────────────────────
   app.get(
     "/v1/me/dashboard",
     {
@@ -322,7 +315,7 @@ export async function tenantPortalRoutes(
       try {
         const result = await grpc.getDashboardMetrics({
           tenantId: tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           transfers_today: result.transfersToday,
           volume_today_usd: result.volumeTodayUsd,
@@ -344,7 +337,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/transfers/stats — transfer time-series ─────────────────
   app.get<{
     Querystring: { period?: string; granularity?: string };
   }>(
@@ -368,7 +360,7 @@ export async function tenantPortalRoutes(
           tenantId: tenantAuth.tenantId,
           period: request.query.period || "24h",
           granularity: request.query.granularity || "hour",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           buckets: (result.buckets || []).map((b: any) => ({
             timestamp: b.timestamp,
@@ -385,7 +377,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/fees/report — fee breakdown ────────────────────────────
   app.get<{
     Querystring: { from?: string; to?: string };
   }>(
@@ -413,7 +404,7 @@ export async function tenantPortalRoutes(
           to: request.query.to
             ? { seconds: Math.floor(new Date(request.query.to).getTime() / 1000) }
             : undefined,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           entries: (result.entries || []).map((e: any) => ({
             source_currency: e.sourceCurrency,
@@ -433,7 +424,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/status-distribution ────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/status-distribution",
     {
@@ -450,7 +440,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getTransferStatusDistribution({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           statuses: (result.statuses || []).map((s: any) => ({
             status: s.status,
@@ -463,7 +453,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/corridors ─────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/corridors",
     {
@@ -480,7 +469,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getCorridorMetrics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           corridors: (result.corridors || []).map((c: any) => ({
             source_currency: c.sourceCurrency,
@@ -500,7 +489,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/latency ───────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/latency",
     {
@@ -517,7 +505,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getTransferLatencyPercentiles({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           sample_count: result.sampleCount,
           p50_ms: result.p50Ms,
@@ -531,7 +519,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/comparison ────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/comparison",
     {
@@ -548,7 +535,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getVolumeComparison({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           current_count: result.currentCount,
           current_volume_usd: result.currentVolumeUsd,
@@ -563,7 +550,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/activity ──────────────────────────────────
   app.get<{ Querystring: { limit?: number } }>(
     "/v1/me/analytics/activity",
     {
@@ -580,7 +566,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getRecentActivity({
           tenantId: request.tenantAuth.tenantId,
           limit: request.query.limit || 20,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           items: (result.items || []).map((item: any) => ({
             transfer_id: item.transferId,
@@ -600,7 +586,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/fees ─────────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/fees",
     {
@@ -617,7 +602,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getFeeAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           entries: (result.entries || []).map((e: any) => ({
             source_currency: e.sourceCurrency,
@@ -637,7 +622,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/providers ──────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/providers",
     {
@@ -654,7 +638,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getProviderAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           providers: (result.providers || []).map((p: any) => ({
             provider: p.provider,
@@ -674,7 +658,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/reconciliation ─────────────────────────────────
   app.get(
     "/v1/me/analytics/reconciliation",
     {
@@ -689,7 +672,7 @@ export async function tenantPortalRoutes(
       try {
         const result = await grpc.getReconciliationAnalytics({
           tenantId: request.tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           total_runs: result.totalRuns,
           checks_passed: result.checksPassed,
@@ -704,7 +687,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/deposits ───────────────────────────────────────
   app.get<{ Querystring: { period?: string } }>(
     "/v1/me/analytics/deposits",
     {
@@ -721,7 +703,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getDepositAnalytics({
           tenantId: request.tenantAuth.tenantId,
           period: request.query.period || "7d",
-        }, request.id);
+        }, request.id, request);
         const mapDeposit = (d: any) => d ? {
           total_sessions: d.totalSessions,
           completed_sessions: d.completedSessions,
@@ -742,7 +724,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── POST /v1/me/analytics/export ────────────────────────────────────────
   app.post<{ Body: { export_type: string; period?: string; format?: string } }>(
     "/v1/me/analytics/export",
     {
@@ -764,7 +745,7 @@ export async function tenantPortalRoutes(
           exportType: request.body.export_type,
           period: request.body.period || "7d",
           format: request.body.format || "csv",
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send({
           job: mapExportJob(result.job),
         });
@@ -774,7 +755,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/analytics/export/:jobId ──────────────────────────────────
   app.get<{ Params: { jobId: string } }>(
     "/v1/me/analytics/export/:jobId",
     {
@@ -799,7 +779,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getAnalyticsExport({
           tenantId: request.tenantAuth.tenantId,
           jobId: request.params.jobId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           job: mapExportJob(result.job),
         });
@@ -809,7 +789,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/webhooks/deliveries — delivery history ─────────────────
   app.get<{
     Querystring: { event_type?: string; status?: string; page_size?: number; page_offset?: number };
   }>(
@@ -835,7 +814,7 @@ export async function tenantPortalRoutes(
           status: request.query.status || "",
           pageSize: request.query.page_size || 50,
           pageOffset: request.query.page_offset || 0,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           deliveries: (result.deliveries || []).map(mapWebhookDelivery),
           total_count: result.totalCount,
@@ -846,7 +825,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/webhooks/deliveries/:deliveryId — delivery detail ──────
   app.get<{
     Params: { deliveryId: string };
   }>(
@@ -874,7 +852,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getWebhookDelivery({
           tenantId: tenantAuth.tenantId,
           deliveryId: request.params.deliveryId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           delivery: mapWebhookDelivery(result.delivery),
           request_body: result.requestBody ? JSON.parse(Buffer.from(result.requestBody).toString()) : null,
@@ -885,7 +863,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/webhooks/stats — delivery stats ────────────────────────
   app.get<{
     Querystring: { period?: string };
   }>(
@@ -908,7 +885,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.getWebhookDeliveryStats({
           tenantId: tenantAuth.tenantId,
           period: request.query.period || "24h",
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           total_deliveries: result.totalDeliveries,
           successful: result.successful,
@@ -924,7 +901,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── GET /v1/me/webhooks/subscriptions — event type subscriptions ──────
   app.get(
     "/v1/me/webhooks/subscriptions",
     {
@@ -943,7 +919,7 @@ export async function tenantPortalRoutes(
       try {
         const result = await grpc.listWebhookEventSubscriptions({
           tenantId: tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           subscriptions: (result.subscriptions || []).map((s: any) => ({
             id: s.id,
@@ -958,7 +934,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── PUT /v1/me/webhooks/subscriptions — update event subscriptions ────
   app.put<{
     Body: { event_types: string[] };
   }>(
@@ -982,7 +957,7 @@ export async function tenantPortalRoutes(
         const result = await grpc.updateWebhookEventSubscriptions({
           tenantId: tenantAuth.tenantId,
           eventTypes: request.body.event_types,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           subscriptions: (result.subscriptions || []).map((s: any) => ({
             id: s.id,
@@ -996,7 +971,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── POST /v1/me/webhooks/test — test webhook endpoint ─────────────────
   app.post(
     "/v1/me/webhooks/test",
     {
@@ -1015,7 +989,7 @@ export async function tenantPortalRoutes(
       try {
         const result = await grpc.testWebhook({
           tenantId: tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send({
           success: result.success,
           status_code: result.statusCode,
@@ -1028,7 +1002,6 @@ export async function tenantPortalRoutes(
     },
   );
 
-  // ── Crypto Settings ─────────────────────────────────────────────────────
 
   // GET /v1/portal/crypto-settings
   app.get(
