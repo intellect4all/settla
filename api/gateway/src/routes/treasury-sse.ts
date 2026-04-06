@@ -1,25 +1,39 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SettlaGrpcClient } from "../grpc/client.js";
+import { connect, type NatsConnection, type Subscription, StringCodec } from "nats";
+import { config } from "../config.js";
+
+const sc = StringCodec();
 
 /**
  * SSE endpoint for real-time treasury position updates.
  *
  * Clients connect to GET /v1/treasury/stream and receive position events
- * (CREDIT, DEBIT, RESERVE, RELEASE, COMMIT, CONSUME) as Server-Sent Events.
- *
- * The endpoint polls the gRPC service for position events newer than the
- * client's last-seen timestamp. This is a simple polling-based SSE
- * implementation that avoids direct NATS dependency in the gateway.
+ * as Server-Sent Events, pushed in real-time via a direct NATS subscription
+ * on the settla.treasury.partition.*.> subject.
  *
  * On disconnect, clients should reconnect with the Last-Event-ID header
- * to resume from where they left off. If no Last-Event-ID is provided,
- * the stream starts from the current time.
+ * to resume from where they left off.
  */
 export async function treasurySseRoutes(
   app: FastifyInstance,
   opts: { grpc: SettlaGrpcClient },
 ): Promise<void> {
-  const { grpc } = opts;
+  // Lazily connect to NATS on first SSE client. Shared across all SSE connections.
+  let nc: NatsConnection | null = null;
+
+  async function getNatsConnection(): Promise<NatsConnection> {
+    if (nc && !nc.isClosed()) return nc;
+    nc = await connect({ servers: config.natsUrl });
+    return nc;
+  }
+
+  // Cleanup NATS on server shutdown.
+  app.addHook("onClose", async () => {
+    if (nc && !nc.isClosed()) {
+      await nc.drain();
+    }
+  });
 
   app.get(
     "/v1/treasury/stream",
@@ -28,11 +42,12 @@ export async function treasurySseRoutes(
         tags: ["Treasury"],
         summary: "Stream position events (SSE)",
         operationId: "streamPositionEvents",
-        description: "Server-Sent Events stream for real-time treasury position updates",
+        description: "Server-Sent Events stream for real-time treasury position updates via NATS",
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { tenantAuth } = request;
+      const tenantId = tenantAuth.tenantId;
 
       // Set SSE headers.
       reply.raw.writeHead(200, {
@@ -42,82 +57,70 @@ export async function treasurySseRoutes(
         "X-Accel-Buffering": "no", // disable nginx buffering
       });
 
-      // Determine start time from Last-Event-ID or default to now.
-      const lastEventId = request.headers["last-event-id"] as string | undefined;
-      let cursor = lastEventId
-        ? new Date(lastEventId)
-        : new Date();
+      let sub: Subscription | null = null;
 
-      // Heartbeat interval to keep connection alive.
-      const heartbeatMs = 30_000;
-      const pollMs = 2_000;
+      try {
+        const conn = await getNatsConnection();
 
-      const heartbeatTimer = setInterval(() => {
-        try {
-          reply.raw.write(": heartbeat\n\n");
-        } catch {
-          // Connection closed — cleanup will happen via close handler.
-        }
-      }, heartbeatMs);
+        // Subscribe to all treasury partition events. Filter by tenantId in-process.
+        sub = conn.subscribe("settla.treasury.partition.*.>");
 
-      // Poll for new events.
-      const pollTimer = setInterval(async () => {
-        try {
-          // Fetch all positions for the tenant, then get events for each.
-          const positionsResult = await grpc.getPositions({
-            tenantId: tenantAuth.tenantId,
-          }, request.id);
+        // Heartbeat to keep connection alive.
+        const heartbeatTimer = setInterval(() => {
+          try {
+            reply.raw.write(": heartbeat\n\n");
+          } catch {
+            // Connection closed.
+          }
+        }, 30_000);
 
-          for (const pos of positionsResult.positions || []) {
-            const fromTs = { seconds: Math.floor(cursor.getTime() / 1000), nanos: 0 };
-            const toTs = { seconds: Math.floor(Date.now() / 1000), nanos: 0 };
+        // Process NATS messages and push matching events to SSE.
+        (async () => {
+          for await (const msg of sub) {
+            try {
+              const payload = JSON.parse(sc.decode(msg.data));
 
-            const eventsResult = await grpc.getPositionEventHistory({
-              tenantId: tenantAuth.tenantId,
-              currency: pos.currency,
-              location: pos.location,
-              from: fromTs,
-              to: toTs,
-              limit: 100,
-              offset: 0,
-            }, request.id);
+              // Filter: only send events for this tenant.
+              if (payload.tenant_id !== tenantId && payload.tenantId !== tenantId) {
+                continue;
+              }
 
-            for (const event of eventsResult.events || []) {
               const data = JSON.stringify({
-                positionId: event.positionId,
-                eventType: event.eventType,
-                amount: event.amount,
-                balanceAfter: event.balanceAfter,
-                lockedAfter: event.lockedAfter,
-                currency: pos.currency,
-                location: pos.location,
-                referenceId: event.referenceId,
-                referenceType: event.referenceType,
-                recordedAt: event.recordedAt,
+                positionId: payload.position_id || payload.positionId,
+                eventType: payload.event_type || payload.eventType,
+                amount: payload.amount,
+                balanceAfter: payload.balance_after || payload.balanceAfter,
+                lockedAfter: payload.locked_after || payload.lockedAfter,
+                currency: payload.currency,
+                location: payload.location,
+                referenceId: payload.reference_id || payload.referenceId,
+                referenceType: payload.reference_type || payload.referenceType,
+                recordedAt: payload.recorded_at || payload.recordedAt || new Date().toISOString(),
               });
 
-              reply.raw.write(`id: ${event.recordedAt}\n`);
+              const eventId = payload.recorded_at || payload.recordedAt || new Date().toISOString();
+              reply.raw.write(`id: ${eventId}\n`);
               reply.raw.write(`event: position_update\n`);
               reply.raw.write(`data: ${data}\n\n`);
-
-              // Update cursor to the latest event time.
-              const eventTime = new Date(event.recordedAt);
-              if (eventTime > cursor) {
-                cursor = eventTime;
-              }
+            } catch {
+              // Skip malformed messages silently.
             }
           }
-        } catch (err) {
-          // Log but don't crash the stream — transient gRPC errors are expected.
-          request.log.warn({ err }, "settla-treasury-sse: poll error");
-        }
-      }, pollMs);
+        })().catch(() => {
+          // Subscription ended (client disconnect or NATS drain).
+        });
 
-      // Cleanup on disconnect.
-      request.raw.on("close", () => {
-        clearInterval(heartbeatTimer);
-        clearInterval(pollTimer);
-      });
+        // Cleanup on client disconnect.
+        request.raw.on("close", () => {
+          clearInterval(heartbeatTimer);
+          sub?.unsubscribe();
+        });
+      } catch (err) {
+        request.log.error({ err }, "settla-treasury-sse: NATS connection failed, falling back to closed stream");
+        reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: "stream unavailable" })}\n\n`);
+        reply.raw.end();
+        return;
+      }
 
       // Keep the response open (don't call reply.send).
       await reply;

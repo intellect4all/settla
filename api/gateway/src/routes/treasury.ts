@@ -66,7 +66,7 @@ export async function treasuryRoutes(
       try {
         const result = await grpc.getPositions({
           tenantId: tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         for (const p of result.positions || []) {
           assertTenantMatch(tenantAuth.tenantId, p.tenantId, 'position');
         }
@@ -107,7 +107,7 @@ export async function treasuryRoutes(
           tenantId: tenantAuth.tenantId,
           currency: request.params.currency,
           location: request.params.location,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -141,7 +141,7 @@ export async function treasuryRoutes(
       try {
         const result = await grpc.getLiquidityReport({
           tenantId: tenantAuth.tenantId,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -149,7 +149,6 @@ export async function treasuryRoutes(
     },
   );
 
-  // ── Position Management (Top-Up / Withdraw) ───────────────────────────
 
   app.post<{
     Body: { currency: string; location: string; amount: string; method: string };
@@ -185,7 +184,7 @@ export async function treasuryRoutes(
           location: request.body.location,
           amount: request.body.amount,
           method: request.body.method || "bank_transfer",
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -229,7 +228,7 @@ export async function treasuryRoutes(
           amount: request.body.amount,
           method: request.body.method || "bank_transfer",
           destination: request.body.destination,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -238,7 +237,7 @@ export async function treasuryRoutes(
   );
 
   app.get<{
-    Querystring: { limit?: number; offset?: number };
+    Querystring: { page_size?: number; page_token?: string; limit?: number; offset?: number };
   }>(
     "/v1/treasury/transactions",
     {
@@ -249,6 +248,8 @@ export async function treasuryRoutes(
         querystring: {
           type: "object",
           properties: {
+            page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            page_token: { type: "string" },
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
             offset: { type: "integer", minimum: 0, default: 0 },
           },
@@ -259,6 +260,7 @@ export async function treasuryRoutes(
             properties: {
               transactions: { type: "array", items: positionTransactionSchema },
               totalCount: { type: "integer" },
+              nextPageToken: { type: "string" },
             },
           },
         },
@@ -269,9 +271,11 @@ export async function treasuryRoutes(
       try {
         const result = await grpc.listPositionTransactions({
           tenantId: tenantAuth.tenantId,
+          pageSize: request.query.page_size || request.query.limit || 20,
+          pageToken: request.query.page_token || "",
           limit: request.query.limit || 20,
           offset: request.query.offset || 0,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -307,7 +311,7 @@ export async function treasuryRoutes(
         const result = await grpc.getPositionTransaction({
           tenantId: tenantAuth.tenantId,
           transactionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -371,7 +375,7 @@ export async function treasuryRoutes(
           to: toTs,
           limit: request.query.limit || 50,
           offset: request.query.offset || 0,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
