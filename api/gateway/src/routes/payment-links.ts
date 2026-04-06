@@ -9,7 +9,6 @@ export async function paymentLinkRoutes(
 ): Promise<void> {
   const { grpc } = opts;
 
-  // ── Authenticated (merchant) routes ────────────────────────────────────
 
   // POST /v1/payment-links — Create a new payment link
   app.post<{
@@ -74,7 +73,7 @@ export async function paymentLinkRoutes(
           token: request.body.token,
           settlementPref: request.body.settlement_pref ?? "",
           ttlSeconds: request.body.ttl_seconds ?? 0,
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -84,7 +83,7 @@ export async function paymentLinkRoutes(
 
   // GET /v1/payment-links — List payment links (paginated)
   app.get<{
-    Querystring: { limit?: number; offset?: number };
+    Querystring: { page_size?: number; page_token?: string; limit?: number; offset?: number };
   }>(
     "/v1/payment-links",
     {
@@ -95,6 +94,8 @@ export async function paymentLinkRoutes(
         querystring: {
           type: "object",
           properties: {
+            page_size: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            page_token: { type: "string" },
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
             offset: { type: "integer", minimum: 0, default: 0 },
           },
@@ -105,6 +106,7 @@ export async function paymentLinkRoutes(
             properties: {
               links: { type: "array", items: { type: "object", additionalProperties: true } },
               total: { type: "integer" },
+              nextPageToken: { type: "string" },
             },
           },
         },
@@ -115,9 +117,11 @@ export async function paymentLinkRoutes(
       try {
         const result = await grpc.listPaymentLinks({
           tenantId: tenantAuth.tenantId,
+          pageSize: request.query.page_size || request.query.limit,
+          pageToken: request.query.page_token || "",
           limit: request.query.limit,
           offset: request.query.offset,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -159,7 +163,7 @@ export async function paymentLinkRoutes(
         const result = await grpc.getPaymentLink({
           tenantId: tenantAuth.tenantId,
           linkId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -196,7 +200,7 @@ export async function paymentLinkRoutes(
         await grpc.disablePaymentLink({
           tenantId: tenantAuth.tenantId,
           linkId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.status(204).send();
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -204,7 +208,6 @@ export async function paymentLinkRoutes(
     },
   );
 
-  // ── Public (customer-facing, no auth) routes ──────────────────────────
 
   // GET /v1/payment-links/resolve/:code — Resolve a payment link by short code
   app.get<{
@@ -238,7 +241,7 @@ export async function paymentLinkRoutes(
       try {
         const result = await grpc.resolvePaymentLink({
           shortCode: request.params.code,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -280,7 +283,7 @@ export async function paymentLinkRoutes(
       try {
         const result = await grpc.redeemPaymentLink({
           shortCode: request.params.code,
-        }, request.id);
+        }, request.id, request);
         return reply.status(201).send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
@@ -329,7 +332,7 @@ export async function paymentLinkRoutes(
         // For now, we pass a nil tenant and the gRPC service handles it
         const result = await grpc.getDepositPublicStatus({
           sessionId: request.params.id,
-        }, request.id);
+        }, request.id, request);
         return reply.send(result);
       } catch (err) {
         return mapGrpcError(request, reply, err);
