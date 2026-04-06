@@ -7,7 +7,6 @@ import {
 } from "../schemas/index.js";
 import { mapGrpcError, assertTenantMatch } from "../errors.js";
 
-// ── Quote cache ─────────────────────────────────────────────────────────────
 // In-memory per-tenant quote cache with 30-second TTL. Avoids re-evaluating
 // all candidate routes for identical corridor+amount requests within the TTL
 // window. Keyed by tenant_id:source:dest:amount_bucket.
@@ -176,7 +175,7 @@ export async function quoteRoutes(
           sourceAmount: request.body.source_amount,
           destCurrency: request.body.dest_currency,
           destCountry: request.body.dest_country,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.quote?.tenantId, 'quote');
         const mapped = mapQuote(result.quote);
         putQuoteInCache(cacheKey, mapped);
@@ -214,7 +213,7 @@ export async function quoteRoutes(
         const result = await grpc.getQuote({
           tenantId: tenantAuth.tenantId,
           quoteId: request.params.quoteId,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.quote?.tenantId, 'quote');
         return reply.send(mapQuote(result.quote));
       } catch (err) {

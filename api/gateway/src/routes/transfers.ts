@@ -187,7 +187,7 @@ export async function transferRoutes(
           sender: body.sender,
           recipient: body.recipient,
           quoteId: body.quote_id,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
         const mapped = mapTransfer(result.transfer);
 
@@ -233,7 +233,7 @@ export async function transferRoutes(
         const result = await grpc.getTransfer({
           tenantId: tenantAuth.tenantId,
           transferId: request.params.transferId,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
@@ -273,7 +273,7 @@ export async function transferRoutes(
           pageToken: request.query.page_token,
           statusFilter: request.query.status || "",
           searchQuery: request.query.search || "",
-        }, request.id);
+        }, request.id, request);
         for (const t of result.transfers || []) {
           assertTenantMatch(tenantAuth.tenantId, t.tenantId, 'transfer');
         }
@@ -317,6 +317,7 @@ export async function transferRoutes(
         const result = await grpc.listTransferEvents(
           { tenantId: tenantAuth.tenantId, transferId: request.params.transferId },
           request.id,
+          request,
         );
         return reply.send({ events: result.events ?? [] });
       } catch (err) {
@@ -358,7 +359,7 @@ export async function transferRoutes(
           tenantId: tenantAuth.tenantId,
           transferId: request.params.transferId,
           reason: request.body.reason,
-        }, request.id);
+        }, request.id, request);
         assertTenantMatch(tenantAuth.tenantId, result.transfer?.tenantId, 'transfer');
         return reply.send(mapTransfer(result.transfer));
       } catch (err) {
