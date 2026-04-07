@@ -250,7 +250,7 @@ jobs:
           SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
           SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
         run: |
-          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          go install github.com/pressly/goose/v3/cmd/goose@latest
           make migrate-up
 
       - name: Seed test data
@@ -339,7 +339,7 @@ jobs:
           SETTLA_TRANSFER_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable"
           SETTLA_TREASURY_DB_MIGRATE_URL: "postgres://settla:settla@localhost:5435/settla_treasury?sslmode=disable"
         run: |
-          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          go install github.com/pressly/goose/v3/cmd/goose@latest
           make migrate-up
           PGPASSWORD=settla psql -h localhost -p 5434 -U settla -d settla_transfer -f db/seed/transfer_seed.sql
           PGPASSWORD=settla psql -h localhost -p 5433 -U settla -d settla_ledger -f db/seed/ledger_seed.sql
