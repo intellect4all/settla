@@ -913,7 +913,7 @@ curl -s -X POST "$BASE_URL/v1/ops/settlements/$LEMFI_TENANT/mark-paid" \
 
 **What to say:**
 
-> "Settlements are half the story. The other half is reconciliation -- making sure every number in the system is consistent. We run 6 automated checks."
+> "Settlements are half the story. The other half is reconciliation -- making sure every number in the system is consistent. We run 8 automated checks."
 
 **What to do:**
 
@@ -936,7 +936,9 @@ curl -s -X POST "$BASE_URL/v1/ops/reconciliation/run" \
     { "name": "outbox_health", "status": "PASS", "details": "0 stuck entries (threshold: 60s)" },
     { "name": "provider_transaction_match", "status": "PASS", "details": "All provider txns reconciled" },
     { "name": "daily_volume_check", "status": "PASS", "details": "Volume within expected bounds" },
-    { "name": "settlement_fee_audit", "status": "PASS", "details": "Fee totals match collected amounts" }
+    { "name": "settlement_fee_audit", "status": "PASS", "details": "Fee totals match collected amounts" },
+    { "name": "crypto_deposit_health", "status": "PASS", "details": "All deposit sessions healthy" },
+    { "name": "bank_deposit_reconciliation", "status": "PASS", "details": "Bank deposits match partner records" }
   ],
   "overall_status": "PASS"
 }
@@ -944,7 +946,7 @@ curl -s -X POST "$BASE_URL/v1/ops/reconciliation/run" \
 
 **What to say:**
 
-> "Six checks, all passing. Treasury balances match the ledger. Transfer states are consistent. The outbox has no stuck entries. Provider transactions reconcile. Volume is within bounds. Fee audit checks out.
+> "Eight checks, all passing. Treasury balances match the ledger. Transfer states are consistent. The outbox has no stuck entries. Provider transactions reconcile. Volume is within bounds. Fee audit checks out. Crypto deposit sessions are healthy. Bank deposits match partner records.
 >
 > This runs automatically, but we can trigger it on demand. If any check fails, it creates an alert and a manual review ticket. In eighteen months of operation, we have had zero unresolved reconciliation failures."
 

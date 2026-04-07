@@ -1,7 +1,7 @@
 # Settla Architecture
 
 > **Audience:** Technical CTOs evaluating integration, investors evaluating technical moat.
-> **Last updated:** 2026-03-29
+> **Last updated:** 2026-04-07
 
 ## Table of Contents
 
@@ -105,7 +105,7 @@ The core settlement engine (`core.Engine`) is a pure function: it reads current 
 
 State changes and their corresponding side-effect intents are written in a single database transaction. A relay process polls the outbox table every 20ms and publishes entries to NATS JetStream.
 
-**Why this matters:** The classic dual-write problem -- where a service updates its database and then calls another service, with a crash between the two causing inconsistency -- is eliminated by construction. If the transaction commits, the intent is guaranteed to be published. NATS deduplication (5-minute window) prevents double-delivery.
+**Why this matters:** The classic dual-write problem -- where a service updates its database and then calls another service, with a crash between the two causing inconsistency -- is eliminated by construction. If the transaction commits, the intent is guaranteed to be published. NATS deduplication (24-hour window) prevents double-delivery.
 
 ### 3. TigerBeetle as Ledger Write Authority
 
@@ -197,7 +197,7 @@ Every worker checks whether its action has already been executed (via a `provide
 | RabbitMQ | Per-message ACK model doesn't align with batch processing; partition ordering requires manual routing |
 | SQS/SNS | FIFO queues limited to 300 TPS per message group |
 
-**Why NATS JetStream:** Lightweight (single binary), built-in exactly-once deduplication (5-minute window), WorkQueue retention mode, and subject-based routing that maps naturally to partition sharding. 256 partitions (configurable via `SETTLA_NODE_PARTITIONS`) supports 100K+ tenants with ~400 tenants per partition.
+**Why NATS JetStream:** Lightweight (single binary), built-in exactly-once deduplication (24-hour window), WorkQueue retention mode, and subject-based routing that maps naturally to partition sharding. 256 partitions (configurable via `SETTLA_NODE_PARTITIONS`) supports 100K+ tenants with ~400 tenants per partition.
 
 **Trade-offs accepted:**
 - NATS cluster management (3-node minimum for HA)
@@ -483,7 +483,7 @@ Settla's architecture supports multi-region deployment through regional autonomy
 
 ### Automated Consistency Checks
 
-Six reconciliation jobs run continuously:
+Eight reconciliation jobs run continuously:
 
 1. **Treasury-ledger balance:** Compares in-memory treasury positions against TigerBeetle account balances
 2. **Transfer state:** Detects transfers stuck in non-terminal states beyond expected SLAs
@@ -491,6 +491,8 @@ Six reconciliation jobs run continuously:
 4. **Provider transaction:** Verifies provider-reported outcomes match internal state
 5. **Daily volume:** Validates per-tenant daily volume counters against actual transfer counts
 6. **Settlement fee:** Ensures fee calculations match fee schedule snapshots
+7. **Crypto deposit health:** Monitors deposit session expiry, block checkpoint staleness, and unconfirmed payments
+8. **Bank deposit reconciliation:** Verifies bank deposit sessions against banking partner records
 
 ---
 

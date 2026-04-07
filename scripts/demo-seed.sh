@@ -84,14 +84,14 @@ fi
 # Step 1: Run migrations (idempotent — only applies pending migrations)
 if [ "$SKIP_MIGRATIONS" = false ]; then
   echo "--- Running migrations..."
-  if command -v migrate &>/dev/null; then
-    migrate -path "$PROJECT_ROOT/db/migrations/ledger"   -database "$LEDGER_URL"   up 2>&1 | grep -v "no change" || true
-    migrate -path "$PROJECT_ROOT/db/migrations/transfer" -database "$TRANSFER_URL" up 2>&1 | grep -v "no change" || true
-    migrate -path "$PROJECT_ROOT/db/migrations/treasury" -database "$TREASURY_URL" up 2>&1 | grep -v "no change" || true
+  if command -v goose &>/dev/null; then
+    goose -dir "$PROJECT_ROOT/db/migrations/ledger"   postgres "$LEDGER_URL"   up 2>&1 || true
+    goose -dir "$PROJECT_ROOT/db/migrations/transfer" postgres "$TRANSFER_URL" up 2>&1 || true
+    goose -dir "$PROJECT_ROOT/db/migrations/treasury" postgres "$TREASURY_URL" up 2>&1 || true
     echo "    Migrations applied."
   else
-    echo "    WARNING: migrate CLI not found. Skipping migrations."
-    echo "    Install: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest"
+    echo "    WARNING: goose CLI not found. Skipping migrations."
+    echo "    Install: go install github.com/pressly/goose/v3/cmd/goose@latest"
   fi
   echo ""
 fi

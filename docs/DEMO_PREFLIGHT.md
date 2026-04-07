@@ -21,7 +21,7 @@ This document covers everything you need to run a successful Settla demo, from h
 | psql | 16+ | `brew install libpq && brew link --force libpq` |
 | curl | any | (pre-installed on macOS) |
 | jq | any | `brew install jq` |
-| migrate CLI | latest | `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest` |
+| goose | latest | `go install github.com/pressly/goose/v3/cmd/goose@latest` |
 | asciinema (optional) | any | `brew install asciinema` |
 
 ## Network Requirements
@@ -171,7 +171,7 @@ curl -s http://localhost:9095/admin/logs | jq '.[-5:]'
 ### If seeding fails
 
 1. Check database connectivity: `psql postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable -c "SELECT 1"`
-2. Run migrations manually: `migrate -path db/migrations/transfer -database "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable" up`
+2. Run migrations manually: `goose -dir db/migrations/transfer postgres "postgres://settla:settla@localhost:5434/settla_transfer?sslmode=disable" up`
 3. Seed manually: `go run scripts/demo-seed.go --tenant-count=10 --verbose`
 
 ### If a service won't come healthy
@@ -196,7 +196,7 @@ If the local demo environment cannot be started, use the staging environment:
 | **PgBouncer exhaustion** | `too many clients` errors | Restart PgBouncer: `docker compose restart pgbouncer-transfer` |
 | **Slow 20K seed** | Seeding takes >5 minutes | Check disk I/O; use SSD; increase Docker disk allocation |
 | **NATS connection refused** | Workers can't connect | Check NATS health: `curl http://localhost:8222/healthz`; restart NATS |
-| **Migration dirty** | `Dirty database version X` | Force version: `migrate -path db/migrations/transfer -database "$URL" force X` |
+| **Migration failed** | Migration version stuck | Check status: `goose -dir db/migrations/transfer postgres "$URL" status`; fix with: `goose -dir db/migrations/transfer postgres "$URL" fix` |
 | **Go build fails** | Missing dependencies | Run `go mod download` from project root |
 | **Script permission denied** | `Permission denied` on scripts | Run `chmod +x scripts/demo-*.sh` |
 
