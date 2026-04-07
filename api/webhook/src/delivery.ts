@@ -47,7 +47,7 @@ export async function deliverWebhook(
       body,
       signal: controller.signal,
       dispatcher: webhookAgent,
-    });
+    } as RequestInit);
 
     const durationMs = Date.now() - startTime;
     const result: DeliveryResult = {
