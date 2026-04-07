@@ -1,0 +1,111 @@
+# ============================================================================
+# SETTLA DATA PLANE — MacBook 2 (data-audit)
+# ============================================================================
+# Services:
+#   - PostgreSQL ledger    (port 5433) — double-entry audit records
+#   - PostgreSQL treasury  (port 5435) — position tracking (lowest volume)
+#
+# Target hardware: Apple Silicon MacBook with 16 GB+ RAM, 500 GB+ free SSD
+# Target throughput: 580 TPS sustained (ledger/treasury paths)
+#
+# Usage:
+#   cp .env.example .env
+#   # Edit .env with real credentials
+#   docker compose up -d
+#
+# Verify from another machine on the LAN:
+#   nc -z <this-macbook-ip> 5433 && echo "Ledger DB OK"
+#   nc -z <this-macbook-ip> 5435 && echo "Treasury DB OK"
+# ============================================================================
+
+name: settla-data-mac2
+
+services:
+
+  # ── PostgreSQL: Ledger DB (audit trail) ───────────────────────────────────
+  postgres-ledger:
+    image: postgres:16-alpine
+    container_name: settla-postgres-ledger
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
+    environment:
+      POSTGRES_DB: settla_ledger
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "0.0.0.0:5433:5432"
+    volumes:
+      - pgdata-ledger:/var/lib/postgresql/data
+      - ./config/postgresql-ledger.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_ledger"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+          cpus: "4.0"
+        reservations:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── PostgreSQL: Treasury DB (position tracking) ───────────────────────────
+  postgres-treasury:
+    image: postgres:16-alpine
+    container_name: settla-postgres-treasury
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
+    environment:
+      POSTGRES_DB: settla_treasury
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "0.0.0.0:5435:5432"
+    volumes:
+      - pgdata-treasury:/var/lib/postgresql/data
+      - ./config/postgresql-treasury.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_treasury"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "2.0"
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  pgdata-ledger:
+    driver: local
+  pgdata-treasury:
+    driver: local

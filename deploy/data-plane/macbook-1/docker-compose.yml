@@ -1,0 +1,136 @@
+# ============================================================================
+# SETTLA DATA PLANE — MacBook 1 (data-hot)
+# ============================================================================
+# Services:
+#   - PostgreSQL transfer  (port 5434) — hottest write path
+#   - TigerBeetle          (port 3001) — double-entry ledger engine
+#
+# Target hardware: Apple Silicon MacBook with 16 GB+ RAM, 500 GB+ free SSD
+# Target throughput: 580 TPS sustained
+#
+# Usage:
+#   cp .env.example .env
+#   # Edit .env with real credentials
+#   docker compose up -d
+#
+# Verify from another machine on the LAN:
+#   nc -z <this-macbook-ip> 5434 && echo "Transfer DB OK"
+#   nc -z <this-macbook-ip> 3001 && echo "TigerBeetle OK"
+# ============================================================================
+
+name: settla-data-mac1
+
+services:
+
+  # ── PostgreSQL: Transfer DB (hottest write path) ──────────────────────────
+  # Bind-mounts postgresql.conf and pg_hba.conf so tuning and LAN access are
+  # declarative. Binds to 0.0.0.0 so other machines on the LAN can connect.
+  postgres-transfer:
+    image: postgres:16-alpine
+    container_name: settla-postgres-transfer
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
+    environment:
+      POSTGRES_DB: settla_transfer
+      POSTGRES_USER: ${POSTGRES_USER:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "0.0.0.0:5434:5432"
+    volumes:
+      - pgdata-transfer:/var/lib/postgresql/data
+      - ./config/postgresql-transfer.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settla} -d settla_transfer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "6.0"
+        reservations:
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ── TigerBeetle: double-entry ledger engine ───────────────────────────────
+  # Single replica (cluster=0, replica=0, replica-count=1).
+  # Sufficient for 580 TPS; TigerBeetle can handle 1M+ TPS on a single node.
+  # For HA you'd want 3 replicas across physical machines — not possible on
+  # a single MacBook, so this is a single-replica homelab deployment.
+  tigerbeetle-init:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.44
+    container_name: settla-tigerbeetle-init
+    privileged: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -f /data/0_0.tigerbeetle ]; then
+          echo "TigerBeetle data file already exists, skipping format."
+          exit 0
+        fi
+        /tigerbeetle format \
+          --cluster=${TB_CLUSTER_ID:-0} \
+          --replica=0 \
+          --replica-count=1 \
+          /data/0_0.tigerbeetle
+    volumes:
+      - tbdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.44
+    container_name: settla-tigerbeetle
+    privileged: true
+    restart: unless-stopped
+    command:
+      - "start"
+      - "--addresses=0.0.0.0:3001"
+      - "--cache-grid=2GiB"
+      - "/data/0_0.tigerbeetle"
+    ports:
+      - "0.0.0.0:3001:3001"
+    volumes:
+      - tbdata:/data
+    depends_on:
+      tigerbeetle-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3001"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4.0"
+        reservations:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+volumes:
+  pgdata-transfer:
+    driver: local
+  tbdata:
+    driver: local
