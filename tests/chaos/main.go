@@ -24,8 +24,8 @@ import (
 
 // ChaosConfig configures the chaos test framework.
 type ChaosConfig struct {
-	ComposeFile     string        // Path to docker-compose.yml
-	EnvFile         string        // Path to .env
+	ComposeFile     string // Path to docker-compose.yml
+	EnvFile         string // Path to .env
 	GatewayURL      string
 	ServerURL       string
 	LoadTPS         int           // TPS during chaos (default: 500)
@@ -205,7 +205,6 @@ func (c *ChaosRunner) printSummary() {
 	fmt.Println()
 }
 
-// ─── Docker Compose Helpers ────────────────────────────────────────────────
 
 // dockerCompose runs a docker compose command.
 func (c *ChaosRunner) dockerCompose(args ...string) error {
@@ -275,7 +274,6 @@ func (c *ChaosRunner) waitForHealthy(ctx context.Context, url string, timeout ti
 	return fmt.Errorf("timeout waiting for %s", url)
 }
 
-// ─── Load Generator ────────────────────────────────────────────────────────
 
 // ChaosLoadGenerator generates background load during chaos scenarios.
 type ChaosLoadGenerator struct {
@@ -355,7 +353,7 @@ func (g *ChaosLoadGenerator) TotalRequestsAfterInjection() int64 {
 func (g *ChaosLoadGenerator) executeTransfer(ctx context.Context) {
 	// Create a simple transfer
 	body := map[string]interface{}{
-		"idempotency_key": uuid.New().String(),
+		"idempotency_key": uuid.Must(uuid.NewV7()).String(),
 		"source_currency": "GBP",
 		"source_amount":   fmt.Sprintf("%d", 100+rand.Intn(900)),
 		"dest_currency":   "NGN",
@@ -395,7 +393,6 @@ func (g *ChaosLoadGenerator) executeTransfer(ctx context.Context) {
 	g.created.Add(1)
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────────
 
 func main() {
 	var (
