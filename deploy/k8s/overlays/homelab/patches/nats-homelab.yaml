@@ -1,0 +1,20 @@
+# NATS: single-node JetStream for homelab.
+# Handles 580 TPS easily on a single instance.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: settla
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: nats
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1500m"
+              memory: "1Gi"

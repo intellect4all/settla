@@ -1,0 +1,68 @@
+# Homelab topology: soft anti-affinity only.
+# With 3 nodes and 3 replicas, this achieves 1-per-node spread naturally.
+# With 2 nodes (degraded), pods still schedule — they just double up on one node.
+# No topologySpreadConstraints with DoNotSchedule (would block on 2 nodes).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - settla-server
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - settla-node
+                topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - gateway
+                topologyKey: kubernetes.io/hostname

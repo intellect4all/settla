@@ -1,0 +1,115 @@
+# ============================================================================
+# Wait-for-Migrations InitContainer
+# ============================================================================
+# Blocks settla-server, settla-node, and webhook pods from starting until
+# the settla-migrate Job reaches condition=Complete.
+#
+# Uses `kubectl wait` with a generous timeout. If the migration Job doesn't
+# exist yet (e.g., deleted for redeploy), kubectl will retry and eventually
+# time out, causing the pod to restart and retry.
+#
+# Requires RBAC from migration-rbac.yaml.
+# ============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+  namespace: settla
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-migrations
+          image: bitnami/kubectl:1.29
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for settla-migrate Job to complete..."
+              # Wait up to 10 minutes for the Job to exist and complete
+              for i in $(seq 1 60); do
+                if kubectl get job settla-migrate -n settla >/dev/null 2>&1; then
+                  break
+                fi
+                echo "  Job not found yet, retrying... (${i}/60)"
+                sleep 10
+              done
+              kubectl wait --for=condition=complete job/settla-migrate -n settla --timeout=600s
+              echo "Migrations complete — starting application."
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+  namespace: settla
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-migrations
+          image: bitnami/kubectl:1.29
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for settla-migrate Job to complete..."
+              for i in $(seq 1 60); do
+                if kubectl get job settla-migrate -n settla >/dev/null 2>&1; then
+                  break
+                fi
+                echo "  Job not found yet, retrying... (${i}/60)"
+                sleep 10
+              done
+              kubectl wait --for=condition=complete job/settla-migrate -n settla --timeout=600s
+              echo "Migrations complete — starting application."
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook
+  namespace: settla
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-migrations
+          image: bitnami/kubectl:1.29
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for settla-migrate Job to complete..."
+              for i in $(seq 1 60); do
+                if kubectl get job settla-migrate -n settla >/dev/null 2>&1; then
+                  break
+                fi
+                echo "  Job not found yet, retrying... (${i}/60)"
+                sleep 10
+              done
+              kubectl wait --for=condition=complete job/settla-migrate -n settla --timeout=600s
+              echo "Migrations complete — starting application."
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

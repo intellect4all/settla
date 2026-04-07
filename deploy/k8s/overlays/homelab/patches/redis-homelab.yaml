@@ -1,0 +1,32 @@
+# Redis: standalone mode, tuned down for homelab.
+# No Sentinel — single replica is sufficient for demo.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: settla
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: redis
+          args:
+            - "redis-server"
+            - "--maxmemory"
+            - "1gb"
+            - "--maxmemory-policy"
+            - "volatile-lru"
+            - "--appendonly"
+            - "yes"
+            - "--appendfsync"
+            - "everysec"
+            - "--tcp-backlog"
+            - "511"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"

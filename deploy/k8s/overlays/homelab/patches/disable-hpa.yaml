@@ -1,0 +1,28 @@
+# Relax all PDBs — on a 3-node homelab, PDBs can block rolling restarts.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-server
+spec:
+  minAvailable: 0
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: settla-node
+spec:
+  minAvailable: 0
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+spec:
+  minAvailable: 0
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webhook
+spec:
+  minAvailable: 0

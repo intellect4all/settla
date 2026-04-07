@@ -1,0 +1,124 @@
+# PgBouncer: repoint upstream to external MacBook Postgres instances.
+#
+# Data plane topology (2-MacBook split):
+#   MacBook 1 (data-hot):    transfer DB  (5434)
+#   MacBook 2 (data-audit):  ledger DB    (5433)
+#                            treasury DB  (5435)
+#
+# Replace ${MACBOOK_1_IP} and ${MACBOOK_2_IP} at deploy time.
+# The Makefile target `make k8s-homelab-deploy` handles this automatically
+# via envsubst using values from deploy/k8s/overlays/homelab/.env.homelab.
+---
+# === LEDGER WRITE — MacBook 2 ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-ledger
+  namespace: settla
+spec:
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@${MACBOOK_2_IP}:5433/settla_ledger"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "2000"
+            - name: DEFAULT_POOL_SIZE
+              value: "200"
+            - name: MIN_POOL_SIZE
+              value: "50"
+            - name: RESERVE_POOL_SIZE
+              value: "30"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "5"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+            - name: SERVER_IDLE_TIMEOUT
+              value: "300"
+            - name: SERVER_LIFETIME
+              value: "3600"
+---
+# === TRANSFER WRITE — MacBook 1 (hot path) ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-transfer
+  namespace: settla
+spec:
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@${MACBOOK_1_IP}:5434/settla_transfer"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "2000"
+            - name: DEFAULT_POOL_SIZE
+              value: "200"
+            - name: MIN_POOL_SIZE
+              value: "50"
+            - name: RESERVE_POOL_SIZE
+              value: "30"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "5"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+            - name: SERVER_IDLE_TIMEOUT
+              value: "300"
+            - name: SERVER_LIFETIME
+              value: "3600"
+---
+# === TREASURY WRITE — MacBook 2 ===
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-treasury
+  namespace: settla
+spec:
+  template:
+    spec:
+      containers:
+        - name: pgbouncer
+          env:
+            - name: DATABASE_URL
+              value: "postgres://settla:$(PGPASSWORD)@${MACBOOK_2_IP}:5435/settla_treasury"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "2000"
+            - name: DEFAULT_POOL_SIZE
+              value: "100"
+            - name: MIN_POOL_SIZE
+              value: "25"
+            - name: RESERVE_POOL_SIZE
+              value: "15"
+            - name: RESERVE_POOL_TIMEOUT
+              value: "5"
+            - name: SERVER_RESET_QUERY
+              value: "DISCARD ALL"
+            - name: SERVER_IDLE_TIMEOUT
+              value: "300"
+            - name: SERVER_LIFETIME
+              value: "3600"

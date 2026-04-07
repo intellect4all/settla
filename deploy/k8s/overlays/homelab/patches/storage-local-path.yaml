@@ -1,0 +1,49 @@
+# Use k3s local-path-provisioner for all PVCs.
+# k3s ships with local-path as the default StorageClass.
+# No cloud storage dependencies.
+---
+# NATS JetStream — schedule on the 2TB node if possible via nodeAffinity
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: settla
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: local-path
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: settla.io/storage
+                    operator: In
+                    values:
+                      - "2ti"
+---
+# Redis
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: settla
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: local-path
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

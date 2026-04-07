@@ -1,0 +1,70 @@
+# Homelab replica counts: sized for 580 TPS on 3-node k3s cluster (24 CPU / 96GB).
+# Works on both 2-node degraded and 3-node full configurations.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settla-server
+spec:
+  replicas: 3
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: settla-node
+spec:
+  replicas: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: settla
+spec:
+  replicas: 1
+---
+# Scale down readonly PgBouncer pools — no Patroni replicas in homelab,
+# reads go to the same external Postgres as writes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-ledger-readonly
+  namespace: settla
+spec:
+  replicas: 0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-transfer-readonly
+  namespace: settla
+spec:
+  replicas: 0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-treasury-readonly
+  namespace: settla
+spec:
+  replicas: 0
