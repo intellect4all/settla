@@ -1,0 +1,26 @@
+# SOPS configuration for encrypting Kubernetes secrets with age.
+#
+# Setup:
+#   1. Generate a key pair:  age-keygen -o ~/.config/sops/age/keys.txt
+#   2. Copy the public key from the output and set it below.
+#   3. Export for CLI use:   export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
+#
+# Encrypt:  sops -e -i deploy/k8s/overlays/homelab/secrets.yaml
+# Decrypt:  sops -d -i deploy/k8s/overlays/homelab/secrets.yaml
+# Edit:     sops deploy/k8s/overlays/homelab/secrets.yaml
+#
+# For k3s GitOps (Flux/ArgoCD), create the decryption secret:
+#   kubectl create secret generic sops-age \
+#     --namespace=flux-system \
+#     --from-file=age.agekey=~/.config/sops/age/keys.txt
+
+creation_rules:
+  # Homelab overlay secrets
+  - path_regex: deploy/k8s/overlays/homelab/secrets\.yaml$
+    encrypted_regex: "^(data|stringData)$"
+    age: "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  # Development overlay secrets (optional — dev secrets are not sensitive)
+  - path_regex: deploy/k8s/overlays/development/secrets\.yaml$
+    encrypted_regex: "^(data|stringData)$"
+    age: "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
