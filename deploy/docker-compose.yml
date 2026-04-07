@@ -364,16 +364,19 @@ services:
       - ./config/features.json:/etc/settla/features.json:ro
     environment:
       SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
-      # DB URLs connect directly to Postgres (pgx prepared statements work)
-      # PgBouncer is used in production with session mode or dedicated adapters
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
-      # RLS-enforced pools disabled for local dev (settla_app role has SET LOCAL issues with PgBouncer)
-      # SETTLA_TRANSFER_APP_DB_URL: postgres://settla_app:settla_app@postgres-transfer:5432/settla_transfer?sslmode=disable
-      # SETTLA_LEDGER_APP_DB_URL: postgres://settla_app:settla_app@postgres-ledger:5432/settla_ledger?sslmode=disable
-      # SETTLA_TREASURY_APP_DB_URL: postgres://settla_app:settla_app@postgres-treasury:5432/settla_treasury?sslmode=disable
-      # SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001
+      # DB URLs route through PgBouncer (transaction pooling, simple protocol)
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
+      # Migrations connect directly to Postgres (advisory locks need session state)
+      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      # RLS-enforced pools disabled for local dev
+      # SETTLA_TRANSFER_APP_DB_URL: postgres://settla_app:settla_app@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
+      # SETTLA_LEDGER_APP_DB_URL: postgres://settla_app:settla_app@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
+      # SETTLA_TREASURY_APP_DB_URL: postgres://settla_app:settla_app@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_TIGERBEETLE_ADDRESSES: tigerbeetle:3001
       # Re-enable once TB Go client address parsing is fixed (v0.16.11 bug).
       # Check: go list -m github.com/tigerbeetle/tigerbeetle-go
       # When re-enabled, remove the stub mode fallback in cmd/settla-server/main.go.
@@ -405,11 +408,11 @@ services:
     networks:
       - settla-net
     depends_on:
-      postgres-ledger:
+      pgbouncer-ledger:
         condition: service_healthy
-      postgres-transfer:
+      pgbouncer-transfer:
         condition: service_healthy
-      postgres-treasury:
+      pgbouncer-treasury:
         condition: service_healthy
       tigerbeetle:
         condition: service_healthy
@@ -444,9 +447,14 @@ services:
       SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
       SETTLA_NATS_URL: nats://nats:4222
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      # DB URLs route through PgBouncer (transaction pooling, simple protocol)
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
+      # Migrations connect directly to Postgres (advisory locks need session state)
+      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
       SETTLA_NODE_PARTITIONS: "${SETTLA_NODE_PARTITIONS:-8}"
       SETTLA_NODE_METRICS_PORT: "9091"
       SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
@@ -481,11 +489,11 @@ services:
     networks:
       - settla-net
     depends_on:
-      postgres-ledger:
+      pgbouncer-ledger:
         condition: service_healthy
-      postgres-transfer:
+      pgbouncer-transfer:
         condition: service_healthy
-      postgres-treasury:
+      pgbouncer-treasury:
         condition: service_healthy
       nats:
         condition: service_healthy
