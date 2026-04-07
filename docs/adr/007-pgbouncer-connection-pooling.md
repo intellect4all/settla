@@ -77,7 +77,7 @@ SETTLA_TREASURY_DB_MIGRATE_URL=postgres://settla:pass@postgres-treasury:5435/set
 
 ### Mitigations
 - **Query protocol compatibility**: SQLC generates queries using the simple query protocol by default, which is fully compatible with PgBouncer transaction mode. Go's `database/sql` uses the extended query protocol but PgBouncer 1.21+ handles this correctly with `prepared_statements` mode disabled.
-- **Migrations bypass PgBouncer**: database migrations connect directly to Postgres (raw ports 5433/5434/5435) to use `SET`, advisory locks, and other session-level features required by golang-migrate.
+- **Migrations bypass PgBouncer**: database migrations connect directly to Postgres (raw ports 5433/5434/5435) to use `SET`, advisory locks, and other session-level features required by goose (the migration tool).
 - **Health checks**: Docker Compose health checks verify PgBouncer is accepting connections. Application startup waits for PgBouncer health before serving traffic.
 - **PgBouncer monitoring**: `SHOW STATS`, `SHOW POOLS`, and `SHOW CLIENTS` admin commands expose connection utilization, wait times, and query rates. These metrics are scraped by Prometheus for dashboarding and alerting.
 - **Failover**: PgBouncer is stateless — it can be restarted instantly without data loss. Docker restart policy ensures automatic recovery.

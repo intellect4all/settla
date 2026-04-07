@@ -42,7 +42,7 @@ Transfer DB:
 - **Default partition**: A `DEFAULT` partition catches any rows that fall outside the defined ranges (e.g., far-future timestamps due to bugs). This prevents INSERT failures due to missing partitions.
 - **Naming convention**: `{table}_y{YYYY}m{MM}` (e.g., `transfers_y2026m03`, `entry_lines_y2026m04`)
 
-**Migration format** (using golang-migrate):
+**Migration format** (using goose):
 ```sql
 -- Create parent table as partitioned
 CREATE TABLE transfers (
