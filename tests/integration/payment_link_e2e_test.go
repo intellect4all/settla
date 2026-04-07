@@ -18,7 +18,6 @@ import (
 	"github.com/intellect4all/settla/observability"
 )
 
-// ─── In-Memory Payment Link Store ───────────────────────────────────────────
 
 type memPaymentLinkStore struct {
 	mu            sync.RWMutex
@@ -101,6 +100,23 @@ func (s *memPaymentLinkStore) List(ctx context.Context, tenantID uuid.UUID, limi
 	return result, total, nil
 }
 
+func (s *memPaymentLinkStore) ListCursor(ctx context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.PaymentLink, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []domain.PaymentLink
+	for _, id := range s.linksByTenant[tenantID] {
+		link := s.links[id]
+		if link.CreatedAt.Before(cursor) {
+			result = append(result, *link)
+		}
+	}
+	if len(result) > pageSize {
+		result = result[:pageSize]
+	}
+	return result, nil
+}
+
 func (s *memPaymentLinkStore) IncrementUseCount(ctx context.Context, linkID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,7 +150,6 @@ func (s *memPaymentLinkStore) getLinkDirect(linkID uuid.UUID) *domain.PaymentLin
 	return s.links[linkID]
 }
 
-// ─── Payment Link Test Harness ──────────────────────────────────────────────
 
 type paymentLinkTestHarness struct {
 	Service          *paymentlinkcore.Service
@@ -238,7 +253,6 @@ func newPaymentLinkTestHarness(t *testing.T) *paymentLinkTestHarness {
 	}
 }
 
-// ─── Test: Create + Resolve + Redeem Happy Path ─────────────────────────────
 
 func TestPaymentLinkE2E_HappyPath(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -393,7 +407,6 @@ func TestPaymentLinkE2E_HappyPath(t *testing.T) {
 	}
 }
 
-// ─── Test: Multiple Redemptions with Use Limit ──────────────────────────────
 
 func TestPaymentLinkE2E_UseLimit(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -449,7 +462,6 @@ func TestPaymentLinkE2E_UseLimit(t *testing.T) {
 	}
 }
 
-// ─── Test: Expired Link ─────────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_Expired(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -488,7 +500,6 @@ func TestPaymentLinkE2E_Expired(t *testing.T) {
 	}
 }
 
-// ─── Test: Disabled Link ────────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_Disabled(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -536,7 +547,6 @@ func TestPaymentLinkE2E_Disabled(t *testing.T) {
 	}
 }
 
-// ─── Test: Nonexistent Link ─────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_NotFound(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -555,7 +565,6 @@ func TestPaymentLinkE2E_NotFound(t *testing.T) {
 	}
 }
 
-// ─── Test: Tenant Isolation ─────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_TenantIsolation(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -618,7 +627,6 @@ func TestPaymentLinkE2E_TenantIsolation(t *testing.T) {
 	}
 }
 
-// ─── Test: Crypto Disabled Tenant ───────────────────────────────────────────
 
 func TestPaymentLinkE2E_CryptoDisabledTenant(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -644,7 +652,6 @@ func TestPaymentLinkE2E_CryptoDisabledTenant(t *testing.T) {
 	}
 }
 
-// ─── Test: Invalid Amount ───────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_InvalidAmount(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -673,7 +680,6 @@ func TestPaymentLinkE2E_InvalidAmount(t *testing.T) {
 	}
 }
 
-// ─── Test: List Pagination ──────────────────────────────────────────────────
 
 func TestPaymentLinkE2E_ListPagination(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -733,7 +739,6 @@ func TestPaymentLinkE2E_ListPagination(t *testing.T) {
 	}
 }
 
-// ─── Test: Redeem Creates Unique Sessions ───────────────────────────────────
 
 func TestPaymentLinkE2E_RedeemCreatesUniqueSessions(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -778,7 +783,6 @@ func TestPaymentLinkE2E_RedeemCreatesUniqueSessions(t *testing.T) {
 	}
 }
 
-// ─── Test: Unlimited Uses (no use limit) ────────────────────────────────────
 
 func TestPaymentLinkE2E_UnlimitedUses(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)
@@ -813,7 +817,6 @@ func TestPaymentLinkE2E_UnlimitedUses(t *testing.T) {
 	}
 }
 
-// ─── Test: Session Config Propagation ───────────────────────────────────────
 
 func TestPaymentLinkE2E_SessionConfigPropagation(t *testing.T) {
 	h := newPaymentLinkTestHarness(t)

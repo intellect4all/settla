@@ -17,7 +17,6 @@ import (
 	"github.com/intellect4all/settla/domain"
 )
 
-// ── Mock Store ──────────────────────────────────────────────────────────────
 
 type mockBDStore struct {
 	mu       sync.Mutex
@@ -95,6 +94,21 @@ func (s *mockBDStore) ListSessions(_ context.Context, tenantID uuid.UUID, limit,
 		end = len(result)
 	}
 	return result[offset:end], nil
+}
+
+func (s *mockBDStore) ListSessionsCursor(_ context.Context, tenantID uuid.UUID, pageSize int, cursor time.Time) ([]domain.BankDepositSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []domain.BankDepositSession
+	for _, sess := range s.sessions {
+		if sess.TenantID == tenantID && sess.CreatedAt.Before(cursor) {
+			result = append(result, *sess)
+		}
+	}
+	if pageSize > 0 && len(result) > pageSize {
+		result = result[:pageSize]
+	}
+	return result, nil
 }
 
 func (s *mockBDStore) TransitionWithOutbox(_ context.Context, session *domain.BankDepositSession, _ []domain.OutboxEntry) error {
@@ -233,6 +247,31 @@ func (s *mockBDStore) ListVirtualAccountsPaginated(_ context.Context, params ban
 	return filtered[start:end], total, nil
 }
 
+func (s *mockBDStore) ListVirtualAccountsCursor(_ context.Context, params bankdeposit.VirtualAccountCursorParams) ([]domain.VirtualAccountPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var filtered []domain.VirtualAccountPool
+	for _, a := range s.pool {
+		if a.TenantID != params.TenantID {
+			continue
+		}
+		if params.Currency != "" && string(a.Currency) != params.Currency {
+			continue
+		}
+		if params.AccountType != "" && string(a.AccountType) != params.AccountType {
+			continue
+		}
+		if !a.CreatedAt.After(params.Cursor) {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	if int32(len(filtered)) > params.PageSize {
+		filtered = filtered[:params.PageSize]
+	}
+	return filtered, nil
+}
+
 func (s *mockBDStore) CountAvailableVirtualAccountsByCurrency(_ context.Context, tenantID uuid.UUID) (map[string]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,7 +294,6 @@ func (s *mockBDStore) GetVirtualAccountIndexByNumber(_ context.Context, accountN
 	return idx, nil
 }
 
-// ── Mock Tenant Store ───────────────────────────────────────────────────────
 
 type mockBDTenantStore struct{}
 
