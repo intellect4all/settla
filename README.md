@@ -115,7 +115,7 @@ See [ADR-001: Modular Monolith](docs/adr/001-modular-monolith.md) for extraction
 | Settla Core | `core` | Pure state machine engine — transfer lifecycle, outbox intent writes, no side-effect deps |
 | Core: Compensation | `core/compensation` | Refund and recovery strategies for partial failures (simple refund, reverse on-ramp, credit stablecoin, manual review) |
 | Core: Recovery | `core/recovery` | Stuck-transfer detector (60s interval, panic-safe) — re-publishes intents or escalates to manual review |
-| Core: Reconciliation | `core/reconciliation` | 6 automated checks: treasury-ledger balance, transfer state, outbox health, provider tx, daily volume, settlement fees |
+| Core: Reconciliation | `core/reconciliation` | 8 automated checks: treasury-ledger balance, transfer state, outbox health, provider tx, daily volume, settlement fees, crypto deposit, bank deposit |
 | Core: Settlement | `core/settlement` | Net settlement calculator and daily scheduler for NET_SETTLEMENT tenants |
 | Core: Maintenance | `core/maintenance` | Partition lifecycle (create ahead, drop old), vacuum manager, capacity monitor |
 | Core: Deposit | `core/deposit` | Crypto deposit session engine — on-chain payment detection, confirmation tracking, auto-convert/hold strategies |
@@ -141,7 +141,7 @@ See [ADR-001: Modular Monolith](docs/adr/001-modular-monolith.md) for extraction
 - **Docker** and **Docker Compose**
 - **buf** (protobuf toolchain)
 - **golangci-lint**
-- **golang-migrate** (database migrations)
+- **goose** (database migrations: `go install github.com/pressly/goose/v3/cmd/goose@latest`)
 - **sqlc** (for regenerating database query code)
 
 ## Quickstart
@@ -257,13 +257,14 @@ settla/
 ├── core/              # Settlement engine + state machine
 │   ├── compensation/  # Refund strategies for partial failures
 │   ├── recovery/      # Stuck-transfer detector and escalation
-│   ├── reconciliation/# 6-check automated reconciliation engine
+│   ├── reconciliation/# 8-check automated reconciliation engine
 │   ├── settlement/    # Net settlement calculator and scheduler
 │   ├── maintenance/   # Partition lifecycle, vacuum, capacity monitoring
 │   ├── deposit/       # Crypto deposit session engine
 │   ├── bankdeposit/   # Fiat deposit via virtual bank accounts
 │   ├── analytics/     # Analytics snapshots and data exports
-│   └── paymentlink/   # Payment link generation and redemption
+│   ├── paymentlink/   # Payment link generation and redemption
+│   └── position/      # Position rebalancing engine
 ├── ledger/            # Double-entry ledger (TigerBeetle + Postgres CQRS)
 ├── rail/              # Router, providers, blockchain clients
 │   ├── router/        # Smart routing with scoring and tenant fee application
@@ -274,7 +275,8 @@ settla/
 │   ├── outbox/        # Outbox relay: polls Transfer DB → publishes to NATS
 │   ├── messaging/     # NATS client, publisher, subscriber, 12 stream definitions
 │   ├── chainmonitor/  # On-chain stablecoin transfer watcher (Tron, EVM)
-│   └── worker/        # 11 workers: transfer, treasury, ledger, provider, blockchain, webhook, inbound webhook, deposit, bank deposit, email, DLQ monitor
+│   └── worker/        # 11 NATS workers: transfer, treasury, ledger, provider, blockchain, webhook, inbound webhook, deposit, bank deposit, email, DLQ monitor
+│                      # + background jobs: deposit expiry, bank deposit expiry, virtual account provisioner, chain monitor, address pool refill, recovery detector
 ├── domain/            # Shared domain types, interfaces, outbox entry types
 ├── store/             # Database repositories (SQLC-generated)
 │   ├── ledgerdb/
@@ -290,13 +292,18 @@ settla/
 ├── portal/            # Vue 3 + Nuxt tenant self-service portal
 ├── packages/          # Shared libraries
 │   └── ui/            # Shared Vue component library
+├── bank/              # Banking partner registry and mock implementation
+├── resilience/        # Circuit breakers, bulkhead, drain, feature flags
+├── internal/          # Internal packages
+│   └── appconfig/     # Server + node configuration, env parsing, validation
 ├── cmd/               # Go entrypoints
 │   ├── settla-server/ # Core + Ledger + Rail + Treasury (gRPC :9090, HTTP :8080)
-│   └── settla-node/   # Outbox relay + chain monitor + worker process
+│   ├── settla-node/   # Outbox relay + chain monitor + worker process
+│   └── testnet-tools/ # CLI for testnet wallet setup, verification, and status
 ├── proto/             # Protobuf definitions (settla/v1/)
 ├── gen/               # Generated Go protobuf code
 ├── db/                # Migrations + SQLC queries
-│   ├── migrations/    # golang-migrate SQL files (ledger, transfer, treasury)
+│   ├── migrations/    # goose SQL files (ledger, transfer, treasury)
 │   ├── queries/       # SQLC query definitions
 │   └── seed/          # Seed SQL for dev tenants and positions
 ├── deploy/            # Docker Compose, Kubernetes manifests, Tyk config

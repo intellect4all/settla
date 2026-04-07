@@ -1,11 +1,14 @@
-.PHONY: build test lint proto migrate-up migrate-down docker-up docker-down docker-logs docker-reset \
+.PHONY: build test lint proto migrate-up migrate-down migrate-status docker-up docker-down docker-logs docker-reset \
        seed demo clean bench loadtest loadtest-quick loadtest-sustained loadtest-burst loadtest-flood \
        loadtest-multi loadtest-daily soak soak-short chaos report test-integration profile \
        testnet-setup testnet-verify testnet-status provider-mode-mock provider-mode-testnet \
        tyk-setup openapi-export docs-openapi docs-dev docs-build api-test api-test-full \
        bench-smoke bench-sustained bench-peak bench-soak bench-spike bench-hotspot \
        bench-tenants-20k bench-tenants-100k bench-tenants-peak bench-settlement \
-       bench-micro bench-all bench-report bench-seed bench-seed-20k bench-seed-100k bench-cleanup
+       bench-micro bench-all bench-report bench-seed bench-seed-20k bench-seed-100k bench-cleanup \
+       k8s-homelab-deploy k8s-homelab-template k8s-homelab-validate k8s-homelab-status \
+       k8s-homelab-secrets-encrypt k8s-homelab-secrets-decrypt k8s-homelab-label-nodes \
+       k8s-homelab-migrate-build k8s-homelab-migrate k8s-homelab-migrate-logs
 
 # Go
 GO := go
@@ -49,19 +52,25 @@ proto:
 
 ## migrate-up: Run all database migrations (uses raw Postgres, not PgBouncer)
 migrate-up:
-	migrate -path db/migrations/ledger -database "$${SETTLA_LEDGER_DB_MIGRATE_URL}" up
-	migrate -path db/migrations/transfer -database "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" up
-	migrate -path db/migrations/treasury -database "$${SETTLA_TREASURY_DB_MIGRATE_URL}" up
+	goose -dir db/migrations/ledger postgres "$${SETTLA_LEDGER_DB_MIGRATE_URL}" up
+	goose -dir db/migrations/transfer postgres "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" up
+	goose -dir db/migrations/treasury postgres "$${SETTLA_TREASURY_DB_MIGRATE_URL}" up
 
 ## migrate-down: Rollback all database migrations
 migrate-down:
-	migrate -path db/migrations/treasury -database "$${SETTLA_TREASURY_DB_MIGRATE_URL}" down
-	migrate -path db/migrations/transfer -database "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" down
-	migrate -path db/migrations/ledger -database "$${SETTLA_LEDGER_DB_MIGRATE_URL}" down
+	goose -dir db/migrations/treasury postgres "$${SETTLA_TREASURY_DB_MIGRATE_URL}" down-to 0
+	goose -dir db/migrations/transfer postgres "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" down-to 0
+	goose -dir db/migrations/ledger postgres "$${SETTLA_LEDGER_DB_MIGRATE_URL}" down-to 0
 
 ## migrate-create: Create a new migration (usage: make migrate-create DB=ledger NAME=add_foo)
 migrate-create:
-	migrate create -ext sql -dir db/migrations/$(DB) -seq $(NAME)
+	goose -dir db/migrations/$(DB) -s create $(NAME) sql
+
+## migrate-status: Show migration status for all databases
+migrate-status:
+	@echo "=== Ledger ===" && goose -dir db/migrations/ledger postgres "$${SETTLA_LEDGER_DB_MIGRATE_URL}" status
+	@echo "=== Transfer ===" && goose -dir db/migrations/transfer postgres "$${SETTLA_TRANSFER_DB_MIGRATE_URL}" status
+	@echo "=== Treasury ===" && goose -dir db/migrations/treasury postgres "$${SETTLA_TREASURY_DB_MIGRATE_URL}" status
 
 ## sqlc-generate: Generate Go code from SQL queries
 sqlc-generate:
@@ -421,3 +430,129 @@ bench-report:
 	$(LOADTEST_CMD) report tests/loadtest/results tests/loadtest/results/aggregate-report.json
 	@echo "Aggregate report: tests/loadtest/results/aggregate-report.json"
 	@echo "Report template: tests/loadtest/REPORT_TEMPLATE.md"
+
+# ── Homelab k3s Targets ────────────────────────────────────────────────────
+
+HOMELAB_OVERLAY := deploy/k8s/overlays/homelab
+HOMELAB_ENV := $(HOMELAB_OVERLAY)/.env.homelab
+HOMELAB_NAMESPACE := settla
+
+## k8s-homelab-template: Render the homelab Kustomize overlay (dry-run)
+k8s-homelab-template:
+	@echo "=== Rendering homelab overlay ==="
+	kubectl kustomize --load-restrictor=LoadRestrictionsNone $(HOMELAB_OVERLAY)
+
+## k8s-homelab-deploy: Deploy the homelab overlay to k3s cluster (runs migrations first)
+k8s-homelab-deploy:
+	@echo "=== Deploying homelab overlay ==="
+	@if [ ! -f "$(HOMELAB_ENV)" ]; then \
+		echo "ERROR: $(HOMELAB_ENV) not found."; \
+		echo "Copy .env.homelab.example to .env.homelab and fill in actual IPs."; \
+		exit 1; \
+	fi
+	@echo "--- Step 1: Delete existing migration Job (to force re-run) ---"
+	-kubectl delete job settla-migrate -n $(HOMELAB_NAMESPACE) --ignore-not-found=true
+	@echo ""
+	@echo "--- Step 2: Apply all manifests (migration Job + apps) ---"
+	@echo "App pods have initContainers that wait for the migration Job to complete."
+	@set -a && . $(HOMELAB_ENV) && set +a && \
+		kubectl kustomize --load-restrictor=LoadRestrictionsNone $(HOMELAB_OVERLAY) | envsubst | kubectl apply -f -
+	@echo ""
+	@echo "--- Step 3: Wait for migration Job to complete ---"
+	@kubectl wait --for=condition=complete job/settla-migrate -n $(HOMELAB_NAMESPACE) --timeout=600s || \
+		(echo "Migration Job did not complete. Check logs:" && \
+		 kubectl logs -n $(HOMELAB_NAMESPACE) job/settla-migrate --tail=100 && exit 1)
+	@echo ""
+	@echo "--- Migration Job logs ---"
+	@kubectl logs -n $(HOMELAB_NAMESPACE) job/settla-migrate --tail=50
+	@echo ""
+	@echo "=== Deploy complete. App pods will start after migrations finish. ==="
+	@echo "Run 'make k8s-homelab-validate' to verify once all pods are Running."
+
+## k8s-homelab-validate: Run post-deploy validation checks
+k8s-homelab-validate:
+	NAMESPACE=$(HOMELAB_NAMESPACE) ./scripts/homelab-validate.sh
+
+## k8s-homelab-status: Show cluster status overview
+k8s-homelab-status:
+	@echo "=== Nodes ==="
+	@kubectl get nodes -o wide 2>/dev/null || echo "Cannot reach cluster"
+	@echo ""
+	@echo "=== Pods ==="
+	@kubectl get pods -n $(HOMELAB_NAMESPACE) -o wide 2>/dev/null || echo "No pods in $(HOMELAB_NAMESPACE)"
+	@echo ""
+	@echo "=== Resource Usage ==="
+	@kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+	@echo ""
+	@kubectl top pods -n $(HOMELAB_NAMESPACE) 2>/dev/null || true
+
+## k8s-homelab-label-nodes: Apply node labels for scheduling affinity
+k8s-homelab-label-nodes:
+	@echo "=== Labeling nodes ==="
+	@if [ -f "$(HOMELAB_ENV)" ]; then set -a && . $(HOMELAB_ENV) && set +a; fi
+	kubectl label node optiplex-1 settla.io/role=mixed settla.io/storage=1ti --overwrite 2>/dev/null || echo "optiplex-1 not found"
+	kubectl label node optiplex-2 settla.io/role=mixed settla.io/storage=2ti --overwrite 2>/dev/null || echo "optiplex-2 not found"
+	kubectl label node optiplex-3 settla.io/role=mixed settla.io/storage=1ti --overwrite 2>/dev/null || echo "optiplex-3 not found (offline?)"
+	@echo "Done. Verify with: kubectl get nodes --show-labels"
+
+## k8s-homelab-secrets-encrypt: Encrypt homelab secrets with SOPS + age
+k8s-homelab-secrets-encrypt:
+	@echo "Encrypting $(HOMELAB_OVERLAY)/secrets.yaml ..."
+	sops -e -i $(HOMELAB_OVERLAY)/secrets.yaml
+	@echo "Done. Secrets encrypted in-place."
+
+## k8s-homelab-secrets-decrypt: Decrypt homelab secrets with SOPS + age
+k8s-homelab-secrets-decrypt:
+	@echo "Decrypting $(HOMELAB_OVERLAY)/secrets.yaml ..."
+	sops -d -i $(HOMELAB_OVERLAY)/secrets.yaml
+	@echo "Done. Secrets decrypted in-place. Remember to re-encrypt before committing."
+
+MIGRATE_IMAGE := settla-migrate:latest
+MIGRATE_DOCKERFILE := deploy/k8s/migrations/Dockerfile
+
+## k8s-homelab-migrate-build: Build migration image and import into k3s (run from each k3s node or use k3s image import)
+k8s-homelab-migrate-build:
+	@echo "=== Building migration image ==="
+	docker build -f $(MIGRATE_DOCKERFILE) -t $(MIGRATE_IMAGE) .
+	@echo ""
+	@echo "=== Importing image into k3s containerd ==="
+	@echo "This saves the image locally and imports into each k3s node."
+	@echo "If your k3s cluster uses a different controller host, adjust K3S_SSH_HOSTS."
+	@docker save $(MIGRATE_IMAGE) -o /tmp/settla-migrate.tar
+	@if [ -n "$${K3S_SSH_HOSTS:-}" ]; then \
+		for host in $$K3S_SSH_HOSTS; do \
+			echo "Importing to $$host ..."; \
+			scp /tmp/settla-migrate.tar $$host:/tmp/settla-migrate.tar; \
+			ssh $$host 'sudo k3s ctr images import /tmp/settla-migrate.tar && rm /tmp/settla-migrate.tar'; \
+		done; \
+	else \
+		echo "K3S_SSH_HOSTS not set. Importing locally (assuming k3s runs on this machine)..."; \
+		sudo k3s ctr images import /tmp/settla-migrate.tar 2>/dev/null || \
+			echo "WARNING: sudo k3s ctr failed. Set K3S_SSH_HOSTS='optiplex-1 optiplex-2 optiplex-3' and retry."; \
+	fi
+	@rm -f /tmp/settla-migrate.tar
+	@echo "=== Migration image ready ==="
+
+## k8s-homelab-migrate: Re-run migrations (deletes and reapplies the Job)
+k8s-homelab-migrate:
+	@echo "=== Deleting existing migration Job (if any) ==="
+	-kubectl delete job settla-migrate -n $(HOMELAB_NAMESPACE) --ignore-not-found=true
+	@echo ""
+	@echo "=== Applying migration Job ==="
+	@if [ -f "$(HOMELAB_ENV)" ]; then \
+		set -a && . $(HOMELAB_ENV) && set +a && \
+		kubectl kustomize --load-restrictor=LoadRestrictionsNone $(HOMELAB_OVERLAY) | envsubst | \
+			awk '/^kind: Job$$/,/^---$$/' | kubectl apply -f -; \
+	else \
+		echo "ERROR: $(HOMELAB_ENV) not found. Copy from .env.homelab.example and fill in IPs."; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "=== Waiting for migrations to complete ==="
+	kubectl wait --for=condition=complete job/settla-migrate -n $(HOMELAB_NAMESPACE) --timeout=600s
+	@echo "=== Migrations complete ==="
+	@kubectl logs -n $(HOMELAB_NAMESPACE) job/settla-migrate --tail=50
+
+## k8s-homelab-migrate-logs: Show logs from the most recent migration Job
+k8s-homelab-migrate-logs:
+	kubectl logs -n $(HOMELAB_NAMESPACE) job/settla-migrate --tail=200
