@@ -1,0 +1,71 @@
+# ============================================================================
+# Settla Migration Job
+# ============================================================================
+# Runs goose migrations against all 3 external PostgreSQL databases before
+# any application pods start.
+#
+# Connects DIRECTLY to the external MacBook Postgres instances (not through
+# PgBouncer) because goose uses session-level advisory locks which are
+# incompatible with PgBouncer's transaction pooling mode.
+#
+# The ${MACBOOK_1_IP} and ${MACBOOK_2_IP} placeholders are substituted at
+# deploy time by `make k8s-homelab-deploy` using envsubst.
+#
+# Application pods (settla-server, settla-node, webhook) have initContainers
+# that wait for this Job to reach condition=Complete before starting.
+#
+# Re-running: the Job has a fixed name, so re-applying does nothing unless
+# you delete it first. `make k8s-homelab-migrate` handles this.
+# ============================================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: settla-migrate
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-migrate
+    app.kubernetes.io/component: migrations
+    app.kubernetes.io/part-of: settla
+spec:
+  # Retry up to 5 times if the Job fails (e.g., transient DB connection issues)
+  backoffLimit: 5
+  # Clean up the Job (and its pod) 1 hour after successful completion.
+  # Keeps the namespace tidy without losing the completion state too quickly.
+  ttlSecondsAfterFinished: 3600
+  # Fail the Job if it runs longer than 10 minutes (migrations should be fast)
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: settla-migrate
+        app.kubernetes.io/component: migrations
+        app.kubernetes.io/part-of: settla
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          # Built and imported into k3s with: make k8s-homelab-migrate-build
+          image: settla-migrate:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            # Direct Postgres URLs (NOT through PgBouncer).
+            # ledger + treasury on MacBook 2, transfer + TigerBeetle on MacBook 1.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: app-password
+            - name: SETTLA_LEDGER_DB_MIGRATE_URL
+              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_2_IP}:5433/settla_ledger?sslmode=disable"
+            - name: SETTLA_TRANSFER_DB_MIGRATE_URL
+              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_1_IP}:5434/settla_transfer?sslmode=disable"
+            - name: SETTLA_TREASURY_DB_MIGRATE_URL
+              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_2_IP}:5435/settla_treasury?sslmode=disable"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

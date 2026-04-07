@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  # Plain K8s Secrets for homelab (no External Secrets Operator / AWS Secrets Manager).
+  # Encrypt with SOPS + age before committing: sops -e -i secrets.yaml
+  - secrets.yaml
+  # Infrastructure: only what runs on-cluster (stateless tier).
+  # PostgreSQL and TigerBeetle run externally on MacBooks — NOT included here.
+  - ../../infrastructure/nats/statefulset.yaml
+  - ../../infrastructure/nats/service.yaml
+  - ../../infrastructure/redis/statefulset.yaml
+  - ../../infrastructure/redis/service.yaml
+  - ../../infrastructure/pgbouncer/deployment.yaml
+  - ../../infrastructure/pgbouncer/services.yaml
+  - ../../infrastructure/prometheus/deployment.yaml
+  - ../../infrastructure/prometheus/service.yaml
+  - ../../infrastructure/prometheus/configmap.yaml
+  - ../../infrastructure/grafana/deployment.yaml
+  - ../../infrastructure/grafana/service.yaml
+  # Migration Job + RBAC — runs migrations against external MacBook Postgres
+  # BEFORE any app pods start. See migration-job.yaml for details.
+  - migration-rbac.yaml
+  - migration-job.yaml
+
+namespace: settla
+
+patches:
+  # Core tuning patches
+  - path: patches/homelab-replicas.yaml
+  - path: patches/homelab-resources.yaml
+  - path: patches/homelab-env.yaml
+  - path: patches/homelab-topology.yaml
+  - path: patches/disable-hpa.yaml
+  - path: patches/delete-hpa-server.yaml
+  - path: patches/delete-hpa-gateway.yaml
+  # NOTE: ExternalSecrets and ClusterSecretStore from base still render but are
+  # harmless without ESO operator installed. Plain K8s Secrets in secrets.yaml
+  # provide the actual secret data (same approach as the development overlay).
+  - path: patches/enable-pprof.yaml
+  # Block app pods from starting until the migration Job is Complete
+  - path: patches/wait-for-migrations.yaml
+  # PgBouncer: repoint upstream to external MacBook Postgres
+  - path: patches/pgbouncer-external-db.yaml
+  # Redis: tune down for homelab
+  - path: patches/redis-homelab.yaml
+  # NATS: tune down for homelab
+  - path: patches/nats-homelab.yaml
+  # Storage: use local-path (k3s default) for all PVCs
+  - path: patches/storage-local-path.yaml
+  # Gateway: expose via NodePort for external access
+  - path: patches/gateway-nodeport.yaml
+  # Grafana: expose via NodePort for dashboard access
+  - target:
+      kind: Service
+      name: grafana
+      namespace: settla
+    patch: |
+      - op: replace
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30030

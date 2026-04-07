@@ -1,0 +1,61 @@
+# ============================================================================
+# RBAC for migration-wait initContainers
+# ============================================================================
+# The initContainers in settla-server, settla-node, and webhook use
+# `kubectl wait --for=condition=complete job/settla-migrate` to block until
+# migrations finish. This requires permission to get/list/watch Jobs in the
+# settla namespace.
+# ============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: settla-migration-waiter
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-migration-waiter
+    app.kubernetes.io/component: migrations
+    app.kubernetes.io/part-of: settla
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: settla-migration-waiter
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-migration-waiter
+    app.kubernetes.io/component: migrations
+    app.kubernetes.io/part-of: settla
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: settla-migration-waiter
+  namespace: settla
+  labels:
+    app.kubernetes.io/name: settla-migration-waiter
+    app.kubernetes.io/component: migrations
+    app.kubernetes.io/part-of: settla
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: settla-migration-waiter
+subjects:
+  - kind: ServiceAccount
+    name: settla-migration-waiter
+    namespace: settla
+  # Also grant to the app service accounts so they can use the wait init container
+  # without needing a separate SA.
+  - kind: ServiceAccount
+    name: settla-server
+    namespace: settla
+  - kind: ServiceAccount
+    name: settla-node
+    namespace: settla
+  - kind: ServiceAccount
+    name: webhook
+    namespace: settla
