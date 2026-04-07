@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,7 +157,8 @@ func (s *benchTransferStore) CountPendingTransfers(_ context.Context, _ uuid.UUI
 
 // setupBenchmarkEngine creates an engine with mock dependencies for benchmarking.
 // The engine only needs transferStore, tenantStore, router, logger, and metrics.
-func setupBenchmarkEngine(b *testing.B) *Engine {
+// Returns both the engine and the tenant pointer so benchmarks can adjust limits.
+func setupBenchmarkEngine(b *testing.B) (*Engine, *domain.Tenant) {
 	b.Helper()
 
 	tenant := activeTenant()
@@ -174,16 +176,15 @@ func setupBenchmarkEngine(b *testing.B) *Engine {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	engine := NewEngine(transfers, tenants, router, nil, logger, nil)
 
-	return engine
+	return engine, tenant
 }
 
 // setupBenchmarkEngineWithTransfer creates an engine and a transfer in CREATED state.
 func setupBenchmarkEngineWithTransfer(b *testing.B) (*Engine, uuid.UUID) {
 	b.Helper()
 
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	req := validRequest()
 	transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
@@ -199,9 +200,8 @@ func setupBenchmarkEngineWithTransfer(b *testing.B) (*Engine, uuid.UUID) {
 //
 // Target: <100us per creation
 func BenchmarkCreateTransfer(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 	req := validRequest()
 
 	b.ReportAllocs()
@@ -217,9 +217,8 @@ func BenchmarkCreateTransfer(b *testing.B) {
 //
 // Target: >10,000 transfers/sec total
 func BenchmarkCreateTransferConcurrent(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 	req := validRequest()
 
 	b.ReportAllocs()
@@ -241,9 +240,8 @@ func BenchmarkCreateTransferConcurrent(b *testing.B) {
 //
 // Target: <50us per fund operation
 func BenchmarkFundTransfer(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
@@ -270,9 +268,8 @@ func BenchmarkFundTransfer(b *testing.B) {
 //
 // Target: <100us per on-ramp
 func BenchmarkInitiateOnRamp(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
@@ -302,9 +299,8 @@ func BenchmarkInitiateOnRamp(b *testing.B) {
 //
 // Target: <500us per full pipeline (excludes real provider delays)
 func BenchmarkProcessTransfer_FullPipeline(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	transferIDs := make([]uuid.UUID, 100)
 	for i := 0; i < 100; i++ {
@@ -330,30 +326,25 @@ func BenchmarkProcessTransfer_FullPipeline(b *testing.B) {
 //
 // Target: >2,000 complete pipelines/sec total
 func BenchmarkProcessTransferConcurrent(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
-	transferIDs := make([]uuid.UUID, 1000)
-	for i := 0; i < 1000; i++ {
-		req := validRequest()
-		req.IdempotencyKey = fmt.Sprintf("idem-conc-%d", i)
-		transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
-		if err != nil {
-			b.Fatalf("CreateTransfer: %v", err)
-		}
-		transferIDs[i] = transfer.ID
-	}
+	tenant.DailyLimitUSD = decimal.NewFromFloat(0) // disable limit for throughput bench
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
+	var counter atomic.Int64
 	b.RunParallel(func(pb *testing.PB) {
-		i := 0
 		for pb.Next() {
-			transferID := transferIDs[i%1000]
-			_ = engine.ProcessTransfer(ctx, tenant.ID, transferID)
-			i++
+			i := counter.Add(1)
+			req := validRequest()
+			req.IdempotencyKey = fmt.Sprintf("idem-conc-%d", i)
+			transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
+			if err != nil {
+				continue
+			}
+			_ = engine.ProcessTransfer(ctx, tenant.ID, transfer.ID)
 		}
 	})
 }
@@ -362,9 +353,8 @@ func BenchmarkProcessTransferConcurrent(b *testing.B) {
 //
 // Target: <10us per lookup
 func BenchmarkGetTransfer(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	req := validRequest()
 	transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
@@ -384,9 +374,8 @@ func BenchmarkGetTransfer(b *testing.B) {
 //
 // Target: <100us per quote
 func BenchmarkGetQuote(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	req := domain.QuoteRequest{
 		SourceCurrency: domain.CurrencyGBP,
@@ -407,24 +396,9 @@ func BenchmarkGetQuote(b *testing.B) {
 //
 // Target: <100us per completion
 func BenchmarkCompleteTransfer(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
-
-	// Pre-process transfers through the pipeline
-	transferIDs := make([]uuid.UUID, 100)
-	for i := 0; i < 100; i++ {
-		req := validRequest()
-		req.IdempotencyKey = fmt.Sprintf("idem-complete-%d", i)
-		transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
-		if err != nil {
-			b.Fatalf("CreateTransfer: %v", err)
-		}
-		if err := engine.ProcessTransfer(ctx, tenant.ID, transfer.ID); err != nil {
-			b.Fatalf("ProcessTransfer: %v", err)
-		}
-		transferIDs[i] = transfer.ID
-	}
+	tenant.DailyLimitUSD = decimal.NewFromFloat(0) // disable limit for throughput bench
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -432,7 +406,10 @@ func BenchmarkCompleteTransfer(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		req := validRequest()
 		req.IdempotencyKey = fmt.Sprintf("idem-bench-complete-%d-%d", i, time.Now().UnixNano())
-		transfer, _ := engine.CreateTransfer(ctx, tenant.ID, req)
+		transfer, err := engine.CreateTransfer(ctx, tenant.ID, req)
+		if err != nil {
+			b.Fatalf("CreateTransfer: %v", err)
+		}
 		_ = engine.ProcessTransfer(ctx, tenant.ID, transfer.ID)
 	}
 }
@@ -470,9 +447,8 @@ func BenchmarkTransferStateTransition(b *testing.B) {
 //
 // Target: <150us (includes cache lookup)
 func BenchmarkEngineWithIdempotency(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 	req := validRequest()
 
 	_, _ = engine.CreateTransfer(ctx, tenant.ID, req)
@@ -489,9 +465,8 @@ func BenchmarkEngineWithIdempotency(b *testing.B) {
 //
 // Target: <10ms for 100 transfers
 func BenchmarkListTransfers(b *testing.B) {
-	engine := setupBenchmarkEngine(b)
+	engine, tenant := setupBenchmarkEngine(b)
 	ctx := context.Background()
-	tenant := activeTenant()
 
 	for i := 0; i < 100; i++ {
 		req := validRequest()
