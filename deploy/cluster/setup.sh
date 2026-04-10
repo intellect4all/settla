@@ -82,28 +82,28 @@ case "${1:-help}" in
 
     seed)
         echo "Seeding 50 base tenants..."
-        PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${DATA_HOST}" -p 5434 -U "${POSTGRES_USER}" -d settla_transfer < db/seed/transfer_seed.sql
-        PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${DATA_HOST}" -p 5435 -U "${POSTGRES_USER}" -d settla_treasury < db/seed/treasury_seed.sql
-        PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${DATA_HOST}" -p 5433 -U "${POSTGRES_USER}" -d settla_ledger < db/seed/ledger_seed.sql
+        PGPASSWORD="${POSTGRES_TRANSFER_PASSWORD}" psql -h "${DATA_HOST}" -p 5434 -U "${POSTGRES_USER}" -d settla_transfer < db/seed/transfer_seed.sql
+        PGPASSWORD="${POSTGRES_TREASURY_PASSWORD}" psql -h "${DATA_HOST}" -p 5435 -U "${POSTGRES_USER}" -d settla_treasury < db/seed/treasury_seed.sql
+        PGPASSWORD="${POSTGRES_LEDGER_PASSWORD}" psql -h "${DATA_HOST}" -p 5433 -U "${POSTGRES_USER}" -d settla_ledger < db/seed/ledger_seed.sql
         echo "Done. 50 tenants seeded."
         ;;
     seed-20k)
         echo "Seeding 20,000 tenants..."
         go run ./tests/loadtest/ seed -count=20000 \
-            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
-            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
+            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_TRANSFER_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
+            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_TREASURY_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
         ;;
     seed-100k)
         echo "Seeding 100,000 tenants..."
         go run ./tests/loadtest/ seed -count=100000 \
-            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
-            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
+            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_TRANSFER_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
+            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_TREASURY_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
         ;;
     cleanup)
         echo "Removing scale-test tenants..."
         go run ./tests/loadtest/ seed -cleanup \
-            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
-            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
+            -transfer-db="postgres://${POSTGRES_USER}:${POSTGRES_TRANSFER_PASSWORD}@${DATA_HOST}:5434/settla_transfer?sslmode=disable" \
+            -treasury-db="postgres://${POSTGRES_USER}:${POSTGRES_TREASURY_PASSWORD}@${DATA_HOST}:5435/settla_treasury?sslmode=disable"
         ;;
 
     check)

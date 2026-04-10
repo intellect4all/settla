@@ -47,9 +47,9 @@ services:
       - ../config/features.json:/etc/settla/features.json:ro
     environment:
       SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST:?DATA_HOST required}:6433/settla_ledger?sslmode=disable
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@${DATA_HOST:?DATA_HOST required}:6433/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@${DATA_HOST}:6380
       SETTLA_NATS_URL: nats://nats:4222
       SETTLA_JWT_SECRET: ${SETTLA_JWT_SECRET:?SETTLA_JWT_SECRET required}
@@ -96,9 +96,9 @@ services:
       SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
       SETTLA_NATS_URL: nats://nats:4222
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@${DATA_HOST}:6380
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6433/settla_ledger?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@${DATA_HOST}:6434/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@${DATA_HOST}:6433/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@${DATA_HOST}:6435/settla_treasury?sslmode=disable
       SETTLA_NODE_PARTITIONS: "${SETTLA_NODE_PARTITIONS:-8}"
       SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
       SETTLA_LEDGER_BATCH_WINDOW_MS: "${SETTLA_LEDGER_BATCH_WINDOW_MS:-10}"

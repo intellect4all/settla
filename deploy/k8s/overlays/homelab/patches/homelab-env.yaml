@@ -13,9 +13,9 @@ data:
   SETTLA_PPROF_PORT: "6060"
   SETTLA_ENV: "homelab"
   # DB URLs via in-cluster PgBouncer (PgBouncer proxies to external MacBook Postgres)
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
   # TigerBeetle on MacBook — replace with actual IP at deploy time
   SETTLA_TIGERBEETLE_ADDRESSES: "${MACBOOK_1_IP}:3001"
   # Redis and NATS are in-cluster
@@ -38,9 +38,9 @@ data:
   # 6 partitions across 3 replicas = 2 partitions per node instance
   SETTLA_NODE_PARTITIONS: "6"
   # DB URLs via in-cluster PgBouncer
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
   # TigerBeetle on MacBook
   SETTLA_TIGERBEETLE_ADDRESSES: "${MACBOOK_1_IP}:3001"
   # In-cluster services
@@ -84,4 +84,4 @@ data:
   SETTLA_ENV: "homelab"
   SETTLA_NATS_URL: "nats://nats:4222"
   SETTLA_REDIS_URL: "redis://redis:6379"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"

@@ -2,7 +2,9 @@
 # postgres-backup.sh — Full pg_dump for all three Settla PostgreSQL databases.
 #
 # Environment variables (injected via Secret/ConfigMap):
-#   POSTGRES_PASSWORD      — shared password for the settla user
+#   POSTGRES_TRANSFER_PASSWORD — password for the settla user on transfer DB
+#   POSTGRES_LEDGER_PASSWORD   — password for the settla user on ledger DB
+#   POSTGRES_TREASURY_PASSWORD — password for the settla user on treasury DB
 #   S3_BUCKET              — target S3 bucket (e.g. s3://settla-backups-prod)
 #   S3_PREFIX              — key prefix (default: postgres)
 #   ENVIRONMENT            — deployment environment (production, staging, development)
@@ -28,9 +30,9 @@ BACKUP_DIR="/tmp/pg-backups"
 EXIT_CODE=0
 
 DATABASES=(
-  "settla_ledger:postgres-ledger:5432"
-  "settla_transfer:postgres-transfer:5432"
-  "settla_treasury:postgres-treasury:5432"
+  "settla_ledger:postgres-ledger:5432:POSTGRES_LEDGER_PASSWORD"
+  "settla_transfer:postgres-transfer:5432:POSTGRES_TRANSFER_PASSWORD"
+  "settla_treasury:postgres-treasury:5432:POSTGRES_TREASURY_PASSWORD"
 )
 
 # ---------------------------------------------------------------------------
@@ -139,13 +141,13 @@ SUCCESSFUL_BACKUPS=()
 FAILED_BACKUPS=()
 
 for entry in "${DATABASES[@]}"; do
-  IFS=':' read -r dbname host port <<< "${entry}"
+  IFS=':' read -r dbname host port pw_var <<< "${entry}"
   dump_file="${BACKUP_DIR}/${dbname}_${TIMESTAMP}.pgdump.gz"
   s3_key="${S3_PREFIX}/${ENVIRONMENT}/${DATE}/${dbname}_${TIMESTAMP}.pgdump.gz"
 
   log "Backing up ${dbname} from ${host}:${port} ..."
 
-  if PGPASSWORD="${POSTGRES_PASSWORD}" pg_dump \
+  if PGPASSWORD="${!pw_var}" pg_dump \
       --host="${host}" \
       --port="${port}" \
       --username="settla" \

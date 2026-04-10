@@ -33,7 +33,7 @@ services:
     environment:
       POSTGRES_DB: settla_ledger
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_LEDGER_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5433:5432"
@@ -79,7 +79,7 @@ services:
     environment:
       POSTGRES_DB: settla_transfer
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_TRANSFER_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5434:5432"
@@ -113,7 +113,7 @@ services:
     environment:
       POSTGRES_DB: settla_treasury
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_TREASURY_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "5435:5432"
@@ -139,7 +139,7 @@ services:
   pgbouncer-ledger:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 4000
       DEFAULT_POOL_SIZE: 200
@@ -170,7 +170,7 @@ services:
   pgbouncer-transfer:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 4000
       DEFAULT_POOL_SIZE: 200
@@ -201,7 +201,7 @@ services:
   pgbouncer-treasury:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 4000
       DEFAULT_POOL_SIZE: 200

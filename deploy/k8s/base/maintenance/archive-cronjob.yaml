@@ -107,9 +107,9 @@ metadata:
 data:
   # Database URLs (via PgBouncer in-cluster).
   # Override per-environment via overlay patches.
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=disable"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=disable"
 
   # S3 destination for Glacier Deep Archive.
   # Override in production overlay with the real bucket name.

@@ -152,7 +152,9 @@ MACBOOK_DATA_IP=192.168.1.100    # MacBook running Postgres + TigerBeetle
 OPTIPLEX_1_IP=192.168.1.10
 OPTIPLEX_2_IP=192.168.1.11
 OPTIPLEX_3_IP=192.168.1.12
-POSTGRES_PASSWORD=settla          # Must match MacBook Postgres password
+POSTGRES_TRANSFER_PASSWORD=settla # Must match MacBook 1 transfer DB password
+POSTGRES_LEDGER_PASSWORD=settla   # Must match MacBook 2 ledger DB password
+POSTGRES_TREASURY_PASSWORD=settla # Must match MacBook 2 treasury DB password
 ```
 
 ### Step 2: Configure Secrets

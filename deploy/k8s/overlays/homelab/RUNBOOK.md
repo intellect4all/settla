@@ -533,9 +533,9 @@ kubectl rollout restart deployment/webhook -n settla
 
 ### Rotate PostgreSQL Password
 
-If you change the Postgres password on the MacBook, you must also update:
+If you change a Postgres password on a MacBook, you must also update:
 
-1. `secrets.yaml` — `settla-db-credentials.app-password` and `patroni-credentials.app-password`
+1. `secrets.yaml` — `settla-db-credentials.{transfer,ledger,treasury}-password` and `patroni-credentials.{transfer,ledger,treasury}-password`
 2. Redeploy and restart PgBouncer + all app pods:
 
 ```bash

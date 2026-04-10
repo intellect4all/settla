@@ -9,7 +9,7 @@ data:
   SETTLA_WEBHOOK_PORT: "3001"
 
   # Database for webhook config and dead letter queue
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=disable"
 
   # NATS for consuming webhook events
   SETTLA_NATS_URL: "nats://nats:4222"

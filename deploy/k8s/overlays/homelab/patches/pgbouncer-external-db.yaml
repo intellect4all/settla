@@ -27,7 +27,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: ledger-password
             - name: POOL_MODE
               value: "transaction"
             - name: MAX_CLIENT_CONN
@@ -65,7 +65,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: transfer-password
             - name: POOL_MODE
               value: "transaction"
             - name: MAX_CLIENT_CONN
@@ -103,7 +103,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: treasury-password
             - name: POOL_MODE
               value: "transaction"
             - name: MAX_CLIENT_CONN

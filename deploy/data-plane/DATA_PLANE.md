@@ -205,7 +205,7 @@ Edit `.env`:
 
 ```bash
 POSTGRES_USER=settla
-POSTGRES_PASSWORD=<strong-password-here>
+POSTGRES_TRANSFER_PASSWORD=<strong-password-here>
 TB_CLUSTER_ID=0
 ```
 
@@ -252,11 +252,12 @@ cd ~/settla/deploy/data-plane/macbook-2
 cp .env.example .env
 ```
 
-Edit `.env`, using the **same** `POSTGRES_PASSWORD` as MacBook 1:
+Edit `.env` with unique passwords for each database:
 
 ```bash
 POSTGRES_USER=settla
-POSTGRES_PASSWORD=<same-password-as-mac1>
+POSTGRES_LEDGER_PASSWORD=<strong-password-here>
+POSTGRES_TREASURY_PASSWORD=<strong-password-here>
 ```
 
 Start the stack:
@@ -437,13 +438,13 @@ nc -z 192.168.1.101 5435 && echo "Treasury DB OK"
 
 ```bash
 # Transfer DB
-PGPASSWORD=<password> psql -h 192.168.1.100 -p 5434 -U settla -d settla_transfer -c 'SELECT version();'
+PGPASSWORD=<transfer-password> psql -h 192.168.1.100 -p 5434 -U settla -d settla_transfer -c 'SELECT version();'
 
 # Ledger DB
-PGPASSWORD=<password> psql -h 192.168.1.101 -p 5433 -U settla -d settla_ledger -c 'SELECT version();'
+PGPASSWORD=<ledger-password> psql -h 192.168.1.101 -p 5433 -U settla -d settla_ledger -c 'SELECT version();'
 
 # Treasury DB
-PGPASSWORD=<password> psql -h 192.168.1.101 -p 5435 -U settla -d settla_treasury -c 'SELECT version();'
+PGPASSWORD=<treasury-password> psql -h 192.168.1.101 -p 5435 -U settla -d settla_treasury -c 'SELECT version();'
 ```
 
 ### TigerBeetle Connection Test
@@ -489,7 +490,9 @@ MACBOOK_2_IP=192.168.1.101
 OPTIPLEX_1_IP=192.168.1.10
 OPTIPLEX_2_IP=192.168.1.11
 OPTIPLEX_3_IP=192.168.1.12
-POSTGRES_PASSWORD=<same-password-as-macbooks>
+POSTGRES_TRANSFER_PASSWORD=<same-as-macbook-1-transfer>
+POSTGRES_LEDGER_PASSWORD=<same-as-macbook-2-ledger>
+POSTGRES_TREASURY_PASSWORD=<same-as-macbook-2-treasury>
 ```
 
 ### Update Kubernetes Secrets
@@ -497,8 +500,8 @@ POSTGRES_PASSWORD=<same-password-as-macbooks>
 ```bash
 make k8s-homelab-secrets-decrypt
 # Edit deploy/k8s/overlays/homelab/secrets.yaml
-# Set settla-db-credentials.app-password and patroni-credentials.app-password
-# to the same POSTGRES_PASSWORD used on the MacBooks.
+# Set settla-db-credentials transfer-password, ledger-password, treasury-password
+# to match the passwords used on each MacBook.
 make k8s-homelab-secrets-encrypt
 ```
 
@@ -562,9 +565,9 @@ This deletes the existing Job and re-applies it, waiting for completion.
 To run migrations manually from your workstation (e.g., when the cluster is down):
 
 ```bash
-export SETTLA_LEDGER_DB_MIGRATE_URL="postgres://settla:<password>@192.168.1.101:5433/settla_ledger?sslmode=disable"
-export SETTLA_TRANSFER_DB_MIGRATE_URL="postgres://settla:<password>@192.168.1.100:5434/settla_transfer?sslmode=disable"
-export SETTLA_TREASURY_DB_MIGRATE_URL="postgres://settla:<password>@192.168.1.101:5435/settla_treasury?sslmode=disable"
+export SETTLA_LEDGER_DB_MIGRATE_URL="postgres://settla:<ledger-password>@192.168.1.101:5433/settla_ledger?sslmode=disable"
+export SETTLA_TRANSFER_DB_MIGRATE_URL="postgres://settla:<transfer-password>@192.168.1.100:5434/settla_transfer?sslmode=disable"
+export SETTLA_TREASURY_DB_MIGRATE_URL="postgres://settla:<treasury-password>@192.168.1.101:5435/settla_treasury?sslmode=disable"
 
 make migrate-up
 ```
@@ -958,7 +961,7 @@ Before running the 580 TPS demo, verify:
 - [ ] `./verify.sh` passes all 4 connectivity checks
 - [ ] `ping` shows <1 ms avg latency from OptiPlex nodes to both Macs
 - [ ] `.env.homelab` has correct `MACBOOK_1_IP` and `MACBOOK_2_IP`
-- [ ] K8s secrets have matching `POSTGRES_PASSWORD`
+- [ ] K8s secrets have matching per-DB passwords (`transfer-password`, `ledger-password`, `treasury-password`)
 - [ ] `make migrate-up` completed successfully
 - [ ] `make seed` completed successfully
 - [ ] `make k8s-homelab-deploy` completed successfully

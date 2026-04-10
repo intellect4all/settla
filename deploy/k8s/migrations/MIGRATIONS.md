@@ -115,7 +115,7 @@ kubectl logs -n settla job/settla-migrate --tail=200
 
 Common causes:
 - **"connection refused"** — MacBook Postgres not running
-- **"password authentication failed"** — `POSTGRES_PASSWORD` mismatch
+- **"password authentication failed"** — per-DB password mismatch (check `POSTGRES_TRANSFER_PASSWORD`, `POSTGRES_LEDGER_PASSWORD`, `POSTGRES_TREASURY_PASSWORD`)
 - **"cannot run inside a transaction block"** — missing `-- +goose NO TRANSACTION` on a CONCURRENTLY migration
 
 ### App pods stuck in `Init:0/1`

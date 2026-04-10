@@ -15,7 +15,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     # Actual secrets consumed by settla-server pods (via env var injection):
-    #   - settla-db-credentials: POSTGRES_PASSWORD
+    #   - settla-db-credentials: POSTGRES_TRANSFER_PASSWORD, POSTGRES_LEDGER_PASSWORD, POSTGRES_TREASURY_PASSWORD
     #   - settla-app-secrets: TYK_SECRET, SETTLA_WALLET_ENCRYPTION_KEY, SETTLA_MASTER_SEED, SETTLA_TRON_API_KEY
     resourceNames: ["settla-db-credentials", "settla-app-secrets"]
     verbs: ["get", "watch", "list"]

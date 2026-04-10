@@ -12,9 +12,9 @@ data:
   # Database URLs (via PgBouncer)
   # NOTE: Credentials should come from Secrets, not ConfigMaps.
   # These use placeholder hostnames that match the in-cluster service names.
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=require"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=require"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=require"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=require"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=require"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=require"
 
   # TigerBeetle
   SETTLA_TIGERBEETLE_ADDRESSES: "tigerbeetle:3001"

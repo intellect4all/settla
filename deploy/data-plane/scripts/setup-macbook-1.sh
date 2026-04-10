@@ -43,17 +43,17 @@ fi
 if [ ! -f .env ]; then
   warn ".env not found. Copying from .env.example..."
   cp .env.example .env
-  error "Edit .env and set POSTGRES_PASSWORD, then re-run this script."
+  error "Edit .env and set POSTGRES_TRANSFER_PASSWORD, then re-run this script."
 fi
 
-# Ensure POSTGRES_PASSWORD is set
+# Ensure POSTGRES_TRANSFER_PASSWORD is set
 set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
 
-if [ -z "${POSTGRES_PASSWORD:-}" ] || [ "$POSTGRES_PASSWORD" = "CHANGE_ME_STRONG_PASSWORD" ]; then
-  error "POSTGRES_PASSWORD is not set in .env. Edit .env first."
+if [ -z "${POSTGRES_TRANSFER_PASSWORD:-}" ] || [ "$POSTGRES_TRANSFER_PASSWORD" = "CHANGE_ME_STRONG_PASSWORD" ]; then
+  error "POSTGRES_TRANSFER_PASSWORD is not set in .env. Edit .env first."
 fi
 
 # --- Get LAN IP for informational output ---

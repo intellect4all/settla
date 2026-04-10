@@ -41,16 +41,19 @@ case "$DB" in
     HOST="$MACBOOK_1_IP"
     PORT=5434
     DBNAME=settla_transfer
+    PW="${POSTGRES_TRANSFER_PASSWORD:-}"
     ;;
   ledger)
     HOST="$MACBOOK_2_IP"
     PORT=5433
     DBNAME=settla_ledger
+    PW="${POSTGRES_LEDGER_PASSWORD:-}"
     ;;
   treasury)
     HOST="$MACBOOK_2_IP"
     PORT=5435
     DBNAME=settla_treasury
+    PW="${POSTGRES_TREASURY_PASSWORD:-}"
     ;;
   *)
     echo "Unknown database: $DB"
@@ -60,4 +63,4 @@ case "$DB" in
 esac
 
 echo "Connecting to $DBNAME at $HOST:$PORT ..."
-PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -h "$HOST" -p "$PORT" -U "${POSTGRES_USER:-settla}" -d "$DBNAME"
+PGPASSWORD="$PW" psql -h "$HOST" -p "$PORT" -U "${POSTGRES_USER:-settla}" -d "$DBNAME"

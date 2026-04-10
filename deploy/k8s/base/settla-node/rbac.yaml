@@ -15,7 +15,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     # Actual secrets consumed by settla-node pods (via env var injection):
-    #   - settla-db-credentials: POSTGRES_PASSWORD (transfer DB for outbox relay and workers)
+    #   - settla-db-credentials: POSTGRES_TRANSFER_PASSWORD, POSTGRES_LEDGER_PASSWORD, POSTGRES_TREASURY_PASSWORD
     resourceNames: ["settla-db-credentials"]
     verbs: ["get", "watch", "list"]
 ---

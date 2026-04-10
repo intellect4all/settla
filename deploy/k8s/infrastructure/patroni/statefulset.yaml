@@ -133,7 +133,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: patroni-credentials
-                  key: app-password
+                  key: ledger-password
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
@@ -289,7 +289,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: patroni-credentials
-                  key: app-password
+                  key: transfer-password
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
@@ -445,7 +445,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: patroni-credentials
-                  key: app-password
+                  key: treasury-password
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data

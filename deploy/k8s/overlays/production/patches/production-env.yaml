@@ -8,9 +8,9 @@ data:
   SETTLA_PROVIDER_MODE: "live"
   SETTLA_PPROF: "false"
   # Production: verify-full ensures certificate validation against CA
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=verify-full"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=verify-full"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=verify-full"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=verify-full"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=verify-full"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=verify-full"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -20,9 +20,9 @@ data:
   SETTLA_LOG_LEVEL: "warn"
   SETTLA_PROVIDER_MODE: "live"
   # Production: verify-full ensures certificate validation against CA
-  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=verify-full"
-  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=verify-full"
-  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=verify-full"
+  SETTLA_LEDGER_DB_URL: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@pgbouncer-ledger:6432/settla_ledger?sslmode=verify-full"
+  SETTLA_TRANSFER_DB_URL: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@pgbouncer-transfer:6432/settla_transfer?sslmode=verify-full"
+  SETTLA_TREASURY_DB_URL: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@pgbouncer-treasury:6432/settla_treasury?sslmode=verify-full"
 ---
 apiVersion: v1
 kind: ConfigMap

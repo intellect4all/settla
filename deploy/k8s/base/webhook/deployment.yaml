@@ -72,13 +72,13 @@ spec:
             - configMapRef:
                 name: webhook-config
           env:
-            # DB password injected from the settla-db-credentials ExternalSecret.
-            # ConfigMap SETTLA_TRANSFER_DB_URL uses $(POSTGRES_PASSWORD) substitution.
-            - name: POSTGRES_PASSWORD
+            # Transfer DB password injected from the settla-db-credentials ExternalSecret.
+            # ConfigMap SETTLA_TRANSFER_DB_URL uses $(POSTGRES_TRANSFER_PASSWORD) substitution.
+            - name: POSTGRES_TRANSFER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: transfer-password
             # Per-tenant HMAC-SHA256 secrets for outbound webhook signatures.
             # Sourced from the settla-webhook-secrets ExternalSecret.
             - name: LEMFI_WEBHOOK_SECRET

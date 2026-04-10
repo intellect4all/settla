@@ -83,13 +83,23 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            # DB password injected from the settla-db-credentials ExternalSecret.
-            # ConfigMap DB URLs use $(POSTGRES_PASSWORD) substitution.
-            - name: POSTGRES_PASSWORD
+            # Per-DB passwords injected from the settla-db-credentials ExternalSecret.
+            # ConfigMap DB URLs use $(POSTGRES_*_PASSWORD) substitution.
+            - name: POSTGRES_TRANSFER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: transfer-password
+            - name: POSTGRES_LEDGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: ledger-password
+            - name: POSTGRES_TREASURY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: treasury-password
             - name: SETTLA_ENV
               value: "production"
 ---

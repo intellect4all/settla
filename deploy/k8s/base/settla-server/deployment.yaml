@@ -79,15 +79,24 @@ spec:
             - configMapRef:
                 name: settla-server-config
           env:
-            # DB password injected from the K8s Secret produced by the
-            # settla-db-credentials ExternalSecret (base/secrets/settla-db-secrets.yaml).
-            # The ConfigMap DB URLs reference $(POSTGRES_PASSWORD) which K8s resolves
+            # Per-DB passwords injected from the settla-db-credentials ExternalSecret.
+            # The ConfigMap DB URLs reference $(POSTGRES_*_PASSWORD) which K8s resolves
             # via dependent env var substitution.
-            - name: POSTGRES_PASSWORD
+            - name: POSTGRES_TRANSFER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: transfer-password
+            - name: POSTGRES_LEDGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: ledger-password
+            - name: POSTGRES_TREASURY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: treasury-password
             # Tyk gateway admin secret (used when settla-server calls Tyk admin API).
             - name: TYK_SECRET
               valueFrom:

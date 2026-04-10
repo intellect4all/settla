@@ -33,7 +33,7 @@ docker info >/dev/null 2>&1 || error "Docker daemon not running. Start Docker De
 if [ ! -f .env ]; then
   warn ".env not found. Copying from .env.example..."
   cp .env.example .env
-  error "Edit .env and set POSTGRES_PASSWORD (must match MacBook 1), then re-run this script."
+  error "Edit .env and set POSTGRES_LEDGER_PASSWORD and POSTGRES_TREASURY_PASSWORD, then re-run this script."
 fi
 
 set -a
@@ -41,8 +41,12 @@ set -a
 . ./.env
 set +a
 
-if [ -z "${POSTGRES_PASSWORD:-}" ] || [ "$POSTGRES_PASSWORD" = "CHANGE_ME_STRONG_PASSWORD" ]; then
-  error "POSTGRES_PASSWORD is not set in .env."
+if [ -z "${POSTGRES_LEDGER_PASSWORD:-}" ] || [ "$POSTGRES_LEDGER_PASSWORD" = "CHANGE_ME_STRONG_PASSWORD" ]; then
+  error "POSTGRES_LEDGER_PASSWORD is not set in .env. Edit .env first."
+fi
+
+if [ -z "${POSTGRES_TREASURY_PASSWORD:-}" ] || [ "$POSTGRES_TREASURY_PASSWORD" = "CHANGE_ME_STRONG_PASSWORD" ]; then
+  error "POSTGRES_TREASURY_PASSWORD is not set in .env. Edit .env first."
 fi
 
 LAN_IP=$(ifconfig | grep -E 'inet (192\.168\.|10\.)' | awk '{print $2}' | head -1)

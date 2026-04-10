@@ -10,7 +10,9 @@ This document covers every secret used by Settla, minimum security requirements,
 
 | Secret | Service | Minimum Entropy | Rotation Cadence | Source (production) |
 |--------|---------|----------------|-----------------|---------------------|
-| `POSTGRES_PASSWORD` | All DB connections | 256-bit (32-char hex) | Quarterly | `settla/production/db` in AWS Secrets Manager |
+| `POSTGRES_TRANSFER_PASSWORD` | Transfer DB | 256-bit (32-char hex) | Quarterly | `settla/production/db` in AWS Secrets Manager |
+| `POSTGRES_LEDGER_PASSWORD` | Ledger DB | 256-bit (32-char hex) | Quarterly | `settla/production/db` in AWS Secrets Manager |
+| `POSTGRES_TREASURY_PASSWORD` | Treasury DB | 256-bit (32-char hex) | Quarterly | `settla/production/db` in AWS Secrets Manager |
 | `SETTLA_WALLET_ENCRYPTION_KEY` | Hot wallet AES-256 | 256-bit (32-char hex) | On compromise only | `settla/production/wallets` in AWS Secrets Manager |
 | `SETTLA_MASTER_SEED` | HD wallet derivation | 512-bit (64-char hex) | Never (deterministic) | `settla/production/wallets` in AWS Secrets Manager |
 | `SETTLA_OPS_API_KEY` | Ops dashboard auth | 256-bit (32-char hex) | Quarterly | `settla/production/app` in AWS Secrets Manager |
@@ -54,7 +56,7 @@ Settla uses the **External Secrets Operator (ESO)** to sync secrets from AWS Sec
 ```
 settla/
 ├── production/
-│   ├── db                    # POSTGRES_PASSWORD, app-role passwords
+│   ├── db                    # Per-DB passwords (transfer, ledger, treasury), superuser, replication
 │   ├── wallets               # SETTLA_WALLET_ENCRYPTION_KEY, SETTLA_MASTER_SEED
 │   ├── app                   # SETTLA_OPS_API_KEY, TYK_SECRET, GRAFANA_ADMIN_PASSWORD, SETTLA_API_KEY_HMAC_SECRET, SETTLA_NATS_TOKEN, SETTLA_JWT_SECRET
 │   ├── webhooks              # Per-tenant outbound webhook HMAC secrets

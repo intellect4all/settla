@@ -145,11 +145,21 @@ spec:
                       key: POSTGRES_RETENTION_DAYS
 
                 # --- Secrets ---
-                - name: POSTGRES_PASSWORD
+                - name: POSTGRES_TRANSFER_PASSWORD
                   valueFrom:
                     secretKeyRef:
                       name: backup-secrets
-                      key: POSTGRES_PASSWORD
+                      key: POSTGRES_TRANSFER_PASSWORD
+                - name: POSTGRES_LEDGER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-secrets
+                      key: POSTGRES_LEDGER_PASSWORD
+                - name: POSTGRES_TREASURY_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-secrets
+                      key: POSTGRES_TREASURY_PASSWORD
                 - name: SLACK_WEBHOOK_URL
                   valueFrom:
                     secretKeyRef:

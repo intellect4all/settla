@@ -51,17 +51,27 @@ spec:
           env:
             # Direct Postgres URLs (NOT through PgBouncer).
             # ledger + treasury on MacBook 2, transfer + TigerBeetle on MacBook 1.
-            - name: POSTGRES_PASSWORD
+            - name: POSTGRES_TRANSFER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: settla-db-credentials
-                  key: app-password
+                  key: transfer-password
+            - name: POSTGRES_LEDGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: ledger-password
+            - name: POSTGRES_TREASURY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: settla-db-credentials
+                  key: treasury-password
             - name: SETTLA_LEDGER_DB_MIGRATE_URL
-              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_2_IP}:5433/settla_ledger?sslmode=disable"
+              value: "postgres://settla:$(POSTGRES_LEDGER_PASSWORD)@${MACBOOK_2_IP}:5433/settla_ledger?sslmode=disable"
             - name: SETTLA_TRANSFER_DB_MIGRATE_URL
-              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_1_IP}:5434/settla_transfer?sslmode=disable"
+              value: "postgres://settla:$(POSTGRES_TRANSFER_PASSWORD)@${MACBOOK_1_IP}:5434/settla_transfer?sslmode=disable"
             - name: SETTLA_TREASURY_DB_MIGRATE_URL
-              value: "postgres://settla:$(POSTGRES_PASSWORD)@${MACBOOK_2_IP}:5435/settla_treasury?sslmode=disable"
+              value: "postgres://settla:$(POSTGRES_TREASURY_PASSWORD)@${MACBOOK_2_IP}:5435/settla_treasury?sslmode=disable"
           resources:
             requests:
               cpu: "100m"

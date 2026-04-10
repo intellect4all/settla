@@ -16,7 +16,7 @@ services:
     environment:
       POSTGRES_DB: settla_ledger
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_LEDGER_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "127.0.0.1:5433:5432"  # Local dev migrations only
@@ -45,7 +45,7 @@ services:
     environment:
       POSTGRES_DB: settla_transfer
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_TRANSFER_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "127.0.0.1:5434:5432"  # Local dev migrations only
@@ -74,7 +74,7 @@ services:
     environment:
       POSTGRES_DB: settla_treasury
       POSTGRES_USER: ${POSTGRES_USER:-settla}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settla}
+      POSTGRES_PASSWORD: ${POSTGRES_TREASURY_PASSWORD:-settla}
       SETTLA_APP_DB_PASSWORD: ${SETTLA_APP_DB_PASSWORD:-settla_app}
     ports:
       - "127.0.0.1:5435:5432"  # Local dev migrations only
@@ -105,7 +105,7 @@ services:
   pgbouncer-ledger:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 600
@@ -139,7 +139,7 @@ services:
   pgbouncer-transfer:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 600
@@ -173,7 +173,7 @@ services:
   pgbouncer-treasury:
     image: edoburu/pgbouncer:1.21.0-p2
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
+      DATABASE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 600
@@ -365,13 +365,13 @@ services:
     environment:
       SETTLA_FEATURE_FLAGS_PATH: /etc/settla/features.json
       # DB URLs route through PgBouncer (transaction pooling, simple protocol)
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
       # Migrations connect directly to Postgres (advisory locks need session state)
-      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
       # RLS-enforced pools disabled for local dev
       # SETTLA_TRANSFER_APP_DB_URL: postgres://settla_app:settla_app@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
       # SETTLA_LEDGER_APP_DB_URL: postgres://settla_app:settla_app@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
@@ -448,13 +448,13 @@ services:
       SETTLA_NATS_URL: nats://nats:4222
       SETTLA_REDIS_URL: redis://:${REDIS_PASSWORD:-settla-dev}@redis:6379
       # DB URLs route through PgBouncer (transaction pooling, simple protocol)
-      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_TRANSFER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@pgbouncer-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@pgbouncer-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@pgbouncer-treasury:5432/settla_treasury?sslmode=disable
       # Migrations connect directly to Postgres (advisory locks need session state)
-      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
-      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
-      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
+      SETTLA_TRANSFER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable
+      SETTLA_LEDGER_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable
+      SETTLA_TREASURY_DB_MIGRATE_URL: postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable
       SETTLA_NODE_PARTITIONS: "${SETTLA_NODE_PARTITIONS:-8}"
       SETTLA_NODE_METRICS_PORT: "9091"
       SETTLA_TREASURY_FLUSH_INTERVAL_MS: "${SETTLA_TREASURY_FLUSH_INTERVAL_MS:-100}"
@@ -710,7 +710,7 @@ services:
     ports:
       - "9187:9187"
     environment:
-      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable"
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_LEDGER_PASSWORD:-settla}@postgres-ledger:5432/settla_ledger?sslmode=disable"
     networks:
       - settla-net
     depends_on:
@@ -728,7 +728,7 @@ services:
     ports:
       - "9188:9187"
     environment:
-      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable"
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_TRANSFER_PASSWORD:-settla}@postgres-transfer:5432/settla_transfer?sslmode=disable"
     networks:
       - settla-net
     depends_on:
@@ -746,7 +746,7 @@ services:
     ports:
       - "9189:9187"
     environment:
-      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable"
+      DATA_SOURCE_NAME: "postgres://${POSTGRES_USER:-settla}:${POSTGRES_TREASURY_PASSWORD:-settla}@postgres-treasury:5432/settla_treasury?sslmode=disable"
     networks:
       - settla-net
     depends_on:

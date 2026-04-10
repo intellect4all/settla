@@ -31,7 +31,7 @@ data:
     DATE="$(date -u +%Y-%m-%d)"
     BACKUP_DIR="/tmp/pg-backups"
     EXIT_CODE=0
-    DATABASES=("settla_ledger:postgres-ledger:5432" "settla_transfer:postgres-transfer:5432" "settla_treasury:postgres-treasury:5432")
+    DATABASES=("settla_ledger:postgres-ledger:5432:POSTGRES_LEDGER_PASSWORD" "settla_transfer:postgres-transfer:5432:POSTGRES_TRANSFER_PASSWORD" "settla_treasury:postgres-treasury:5432:POSTGRES_TREASURY_PASSWORD")
     log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
     notify_failure() {
       local subject="$1" detail="$2"
@@ -49,11 +49,11 @@ data:
     mkdir -p "${BACKUP_DIR}"
     SUCCESSFUL=() FAILED=()
     for entry in "${DATABASES[@]}"; do
-      IFS=':' read -r dbname host port <<< "${entry}"
+      IFS=':' read -r dbname host port pw_var <<< "${entry}"
       dump_file="${BACKUP_DIR}/${dbname}_${TIMESTAMP}.pgdump.gz"
       s3_key="${S3_PREFIX}/${ENVIRONMENT}/${DATE}/${dbname}_${TIMESTAMP}.pgdump.gz"
       log "Backing up ${dbname} from ${host}:${port} ..."
-      if PGPASSWORD="${POSTGRES_PASSWORD}" pg_dump --host="${host}" --port="${port}" \
+      if PGPASSWORD="${!pw_var}" pg_dump --host="${host}" --port="${port}" \
           --username="settla" --dbname="${dbname}" --format=custom --compress=0 \
           --no-password 2>"/tmp/${dbname}.err" | gzip > "${dump_file}"; then
         SZ="$(du -sh "${dump_file}" | cut -f1)"
