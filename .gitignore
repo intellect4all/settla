@@ -62,3 +62,5 @@ bench-results.txt
 tests/loadtest/reports/
 tests/api-test/results.json
 tests/api-test/report.md
+keys.txt
+*.agekey

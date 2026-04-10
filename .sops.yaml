@@ -18,7 +18,7 @@ creation_rules:
   # Homelab overlay secrets
   - path_regex: deploy/k8s/overlays/homelab/secrets\.yaml$
     encrypted_regex: "^(data|stringData)$"
-    age: "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    age: "age1va8cgqam4s9sfxq75j6ruacuvsr77nnr7u0626maec8g3hpm0ftqsssmsz"
 
   # Development overlay secrets (optional — dev secrets are not sensitive)
   - path_regex: deploy/k8s/overlays/development/secrets\.yaml$
